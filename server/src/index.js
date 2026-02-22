@@ -145,6 +145,13 @@ function pickWord() { return ALL_WORDS[Math.floor(Math.random() * ALL_WORDS.leng
 
 // ── State ─────────────────────────────────────────────────────────────────────
 const rooms = new Map();
+const serverLogs = []; // circular buffer of recent events
+const MAX_LOGS = 100;
+function addLog(msg) {
+  const entry = { t: new Date().toISOString(), msg };
+  serverLogs.push(entry);
+  if (serverLogs.length > MAX_LOGS) serverLogs.shift();
+}
 const MIN_PLAYERS = 1;
 
 function makeRoom(id, chatId) {
@@ -306,7 +313,9 @@ function startRound(room) {
   room.word          = pickWord();
   room.hintRevealed  = new Array(room.word.length).fill(false);
 
-  console.log(`[round] #${room.roundNumber} START room=${room.id} drawer=${room.drawerName} word=${room.word}`);
+  const startMsg=`[round] #${room.roundNumber} START drawer=${room.drawerName} word=${room.word}`;
+console.log('[round] #'+room.roundNumber+' START room='+room.id+' drawer='+room.drawerName+' word='+room.word);
+addLog(startMsg);
 
   // Send roles
   room.clients.forEach((c,id) => {
@@ -347,17 +356,18 @@ async function endRound(room, guesserName, reason='guess') {
   room.currentDrawer = null;
   clearRoundTimers(room);
 
-  console.log(`[round] #${room.roundNumber} END word=${room.word} guesser=${guesserName||'none'} reason=${reason}`);
+  const endMsg=`[round] #${room.roundNumber} END word=${room.word} guesser=${guesserName||'none'} reason=${reason}`;
+console.log('[round] #'+room.roundNumber+' END word='+room.word+' guesser='+(guesserName||'none')+' reason='+reason);
+addLog(endMsg);
 
   bcast(room, { type:'round_end', word:room.word, drawerName:room.drawerName,
                 guesser:guesserName||null, reason,
                 board: getLeaderboard(room) });
 
   await saveFinal(room, guesserName);
-
-  setTimeout(() => {
-    if (rooms.has(room.id) && room.clients.size >= MIN_PLAYERS) startRound(room);
-  }, 5000);
+  // Round ended — do NOT auto-start next round.
+  // Players must click "New Round" manually. This makes it feel like a real game session.
+  console.log('[round] Waiting for players to start next round...');
 }
 
 function skipWord(room, requesterId) {
@@ -508,8 +518,8 @@ wss.on('connection', (ws, req) => {
   bcast(room, { type:'leaderboard', board: getLeaderboard(room) });
 
   if (!room.roundActive && !room.currentDrawer) {
-    if (room.clients.size >= MIN_PLAYERS) startRound(room);
-    else ws.send(JSON.stringify({ type:'status', message:`Waiting for players… (${room.clients.size}/${MIN_PLAYERS})` }));
+    // Never auto-start — wait for someone to press New Round
+    ws.send(JSON.stringify({ type:'status', message:`${room.clients.size} player${room.clients.size!==1?'s':''} ready. Tap ▶ New Round to start!` }));
   } else if (room.roundActive) {
     // Late joiner — send current state
     ws.send(JSON.stringify({ type:'role', role:'guesser',
@@ -569,9 +579,17 @@ wss.on('connection', (ws, req) => {
         endRound(room, null, 'done');
         break;
 
+      case 'get_logs':
+        ws.send(JSON.stringify({type:'logs',logs:serverLogs.slice(-50)}));
+        break;
       case 'new_round':
-        // Any player can request a new round after round ends
-        if (!room.roundActive && room.clients.size >= MIN_PLAYERS) startRound(room);
+        // Any player can start a new round as long as there's at least 1 player
+        if (!room.roundActive) {
+          if (room.clients.size >= 1) startRound(room);
+          else ws.send(JSON.stringify({type:'status',message:'No players connected!'}));
+        } else {
+          ws.send(JSON.stringify({type:'status',message:'Round already in progress!'}));
+        }
         break;
     }
   });

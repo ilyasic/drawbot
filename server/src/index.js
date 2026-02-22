@@ -579,9 +579,20 @@ const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET ||
 const WEBHOOK_PATH   = `/webhook/${WEBHOOK_SECRET}`;
 const WEBHOOK_URL    = `${PUBLIC_URL}${WEBHOOK_PATH}`;
 
-// Webhook endpoint — Telegram posts updates here
-app.post(WEBHOOK_PATH, (req, res) => {
-  bot.handleUpdate(req.body, res);
+// Webhook endpoint — Telegram POSTs updates here
+// The path itself contains a secret token, so no additional header auth needed.
+app.post(WEBHOOK_PATH, async (req, res) => {
+  try {
+    if (!req.body || !req.body.update_id) {
+      console.warn('[webhook] Invalid body received');
+      return res.sendStatus(400);
+    }
+    await bot.handleUpdate(req.body);
+    res.sendStatus(200);
+  } catch(e) {
+    console.error('[webhook] handleUpdate error:', e.message);
+    res.sendStatus(500);
+  }
 });
 
 async function launchBot() {
@@ -597,16 +608,17 @@ async function launchBot() {
 
     // Set the webhook — Telegram will now POST updates to our URL
     await bot.telegram.setWebhook(WEBHOOK_URL, {
-      drop_pending_updates: true,   // ignore queued updates from previous instance
+      drop_pending_updates: true, // ignore queued updates from previous instance
       allowed_updates: ['message', 'callback_query'],
-      secret_token: WEBHOOK_SECRET, // Telegram sends this header; express verifies it
+      // Note: secret is embedded in the path itself — no secret_token header needed
     });
 
     const info = await bot.telegram.getWebhookInfo();
     botUsername = (await bot.telegram.getMe()).username;
 
     console.log(`🤖 @${botUsername} webhook active → ${WEBHOOK_URL}`);
-    console.log(`[bot] pending_update_count=${info.pending_update_count} last_error=${info.last_error_message||'none'}`);
+    console.log(`[bot] pending=${info.pending_update_count} last_error=${info.last_error_message||'none'} last_error_date=${info.last_error_date||'none'}`);
+    console.log(`[bot] webhook_url=${info.url} has_custom_certificate=${info.has_custom_certificate}`);
   } catch(e) {
     console.error('[bot] launchBot error:', e.message);
     // Retry after 5s — non-fatal, server still handles WebSocket game

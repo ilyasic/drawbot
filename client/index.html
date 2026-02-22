@@ -1,0 +1,696 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+<title>Draw & Guess</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root {
+  --bg:          #0e0e14;
+  --surface:     #1a1a26;
+  --surface2:    #22223a;
+  --border:      #2e2e50;
+  --accent:      #6c63ff;
+  --accent2:     #ff6584;
+  --text:        #e8e8f0;
+  --text2:       #888899;
+  --success:     #43e97b;
+  --radius:      12px;
+  --tool-size:   48px;
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
+html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(--text);
+  font-family:'SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;}
+
+/* ── Layout ── */
+#app{display:flex;flex-direction:column;height:100dvh;position:relative;}
+#topbar{
+  display:flex;align-items:center;gap:8px;padding:8px 12px;
+  background:var(--surface);border-bottom:1px solid var(--border);
+  flex-shrink:0;z-index:10;
+}
+#canvas-wrap{
+  flex:1;position:relative;overflow:hidden;touch-action:none;
+  background:#fff;cursor:crosshair;
+}
+#bottombar{
+  display:flex;align-items:center;gap:6px;padding:8px 10px;
+  padding-bottom:calc(8px + var(--safe-bottom));
+  background:var(--surface);border-top:1px solid var(--border);
+  flex-shrink:0;z-index:10;overflow-x:auto;
+}
+#bottombar::-webkit-scrollbar{display:none;}
+
+/* ── Canvas layers ── */
+.layer{position:absolute;top:0;left:0;width:100%;height:100%;}
+#layer-bg{background:#fff;z-index:1;}
+#layer-main{z-index:2;}
+#layer-ui{z-index:3;pointer-events:none;}
+#layer-cursor{z-index:4;pointer-events:none;}
+
+/* ── Top bar items ── */
+#word-box{
+  flex:1;text-align:center;
+  font-size:.95rem;font-weight:600;letter-spacing:.08em;
+  color:var(--accent);text-transform:uppercase;
+}
+#status-dot{
+  width:8px;height:8px;border-radius:50%;background:var(--success);
+  box-shadow:0 0 6px var(--success);flex-shrink:0;
+}
+#players-count{font-size:.8rem;color:var(--text2);}
+#role-badge{
+  font-size:.72rem;font-weight:700;padding:3px 10px;border-radius:20px;
+  background:var(--surface2);color:var(--text2);letter-spacing:.06em;
+  text-transform:uppercase;
+}
+#role-badge.drawer{background:rgba(108,99,255,.25);color:var(--accent);}
+#role-badge.guesser{background:rgba(255,101,132,.2);color:var(--accent2);}
+
+/* ── Toolbar buttons ── */
+.tb-btn{
+  width:var(--tool-size);height:var(--tool-size);border-radius:var(--radius);
+  border:1.5px solid var(--border);background:var(--surface2);
+  color:var(--text);font-size:1.2rem;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;
+  transition:all .15s;flex-shrink:0;
+}
+.tb-btn:active{transform:scale(.92);}
+.tb-btn.active{border-color:var(--accent);background:rgba(108,99,255,.2);color:var(--accent);}
+.tb-btn.danger:active{background:rgba(255,101,132,.2);border-color:var(--accent2);}
+
+/* ── Color palette ── */
+.color-dot{
+  width:32px;height:32px;border-radius:50%;border:2.5px solid transparent;
+  cursor:pointer;flex-shrink:0;transition:transform .15s;
+}
+.color-dot:active{transform:scale(.88);}
+.color-dot.active{border-color:#fff;transform:scale(1.15);}
+
+/* ── Size slider ── */
+#size-wrap{
+  display:flex;align-items:center;gap:8px;
+  background:var(--surface2);border:1.5px solid var(--border);
+  border-radius:var(--radius);padding:0 10px;height:var(--tool-size);
+  flex-shrink:0;
+}
+#size-range{
+  -webkit-appearance:none;appearance:none;
+  width:90px;height:4px;border-radius:2px;
+  background:var(--border);outline:none;cursor:pointer;
+}
+#size-range::-webkit-slider-thumb{
+  -webkit-appearance:none;width:18px;height:18px;border-radius:50%;
+  background:var(--accent);border:2px solid #fff;
+}
+#size-preview{
+  width:20px;height:20px;display:flex;align-items:center;justify-content:center;
+}
+
+/* ── Guess input ── */
+#guess-row{
+  display:flex;gap:8px;padding:8px 12px;
+  padding-bottom:calc(8px + var(--safe-bottom));
+  background:var(--surface);border-top:1px solid var(--border);
+  flex-shrink:0;
+}
+#guess-input{
+  flex:1;background:var(--surface2);border:1.5px solid var(--border);
+  border-radius:var(--radius);color:var(--text);padding:10px 14px;
+  font-size:.95rem;outline:none;
+}
+#guess-input:focus{border-color:var(--accent);}
+#guess-btn{
+  background:var(--accent);color:#fff;border:none;
+  padding:10px 18px;border-radius:var(--radius);
+  font-size:.9rem;font-weight:600;cursor:pointer;
+}
+
+/* ── Toast ── */
+#toast{
+  position:fixed;top:70px;left:50%;transform:translateX(-50%) translateY(-20px);
+  background:var(--surface2);color:var(--text);
+  padding:10px 20px;border-radius:30px;font-size:.88rem;
+  border:1px solid var(--border);opacity:0;
+  transition:all .3s;z-index:100;white-space:nowrap;pointer-events:none;
+}
+#toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+#toast.correct{background:rgba(67,233,123,.2);border-color:var(--success);color:var(--success);}
+
+/* ── Join overlay ── */
+#overlay{
+  position:fixed;inset:0;background:rgba(0,0,0,.85);
+  display:flex;align-items:center;justify-content:center;z-index:200;
+  backdrop-filter:blur(8px);
+}
+#join-box{
+  background:var(--surface);border:1px solid var(--border);
+  border-radius:20px;padding:32px 24px;
+  width:min(320px,90vw);display:flex;flex-direction:column;gap:16px;
+}
+#join-box h2{
+  text-align:center;font-size:1.5rem;font-weight:700;
+  background:linear-gradient(135deg,var(--accent),var(--accent2));
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+}
+#join-box p{text-align:center;color:var(--text2);font-size:.88rem;}
+#join-box input{
+  background:var(--surface2);border:1.5px solid var(--border);
+  border-radius:var(--radius);color:var(--text);padding:12px 16px;
+  font-size:1rem;outline:none;
+}
+#join-box input:focus{border-color:var(--accent);}
+#join-btn{
+  background:linear-gradient(135deg,var(--accent),#8b84ff);
+  color:#fff;border:none;padding:14px;border-radius:var(--radius);
+  font-size:1rem;font-weight:700;cursor:pointer;
+  transition:opacity .15s;
+}
+#join-btn:active{opacity:.8;}
+
+/* ── Round result overlay ── */
+#result-overlay{
+  position:fixed;inset:0;background:rgba(0,0,0,.7);
+  display:none;align-items:center;justify-content:center;z-index:150;
+  backdrop-filter:blur(4px);
+}
+#result-overlay.show{display:flex;}
+#result-box{
+  background:var(--surface);border:1px solid var(--border);
+  border-radius:20px;padding:28px 24px;text-align:center;
+  width:min(300px,88vw);
+}
+#result-box .emoji{font-size:3rem;margin-bottom:8px;}
+#result-box h3{font-size:1.3rem;font-weight:700;margin-bottom:6px;}
+#result-box p{color:var(--text2);font-size:.9rem;}
+#result-box .word{
+  font-size:1.6rem;font-weight:800;
+  color:var(--accent);margin:12px 0;letter-spacing:.05em;
+}
+
+/* ── Scrollable chat log ── */
+#chat-log{
+  max-height:0;overflow:hidden;transition:max-height .3s;
+  background:var(--surface);
+}
+#chat-log.open{max-height:120px;overflow-y:auto;border-top:1px solid var(--border);}
+#chat-log::-webkit-scrollbar{width:3px;}
+#chat-log::-webkit-scrollbar-thumb{background:var(--border);}
+.chat-msg{padding:4px 12px;font-size:.82rem;color:var(--text2);}
+.chat-msg .name{color:var(--text);font-weight:600;}
+.chat-msg.correct-msg{color:var(--success);}
+.chat-msg.system-msg{color:var(--accent);font-style:italic;}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- Join overlay -->
+  <div id="overlay">
+    <div id="join-box">
+      <h2>🎨 Draw & Guess</h2>
+      <p>Join the game and start drawing!</p>
+      <input id="name-input" placeholder="Your name" maxlength="20" autocomplete="off"/>
+      <input id="room-input" placeholder="Room ID" maxlength="40" autocomplete="off"/>
+      <button id="join-btn">Join Game →</button>
+    </div>
+  </div>
+
+  <!-- Result overlay -->
+  <div id="result-overlay" id="result-overlay">
+    <div id="result-box">
+      <div class="emoji" id="result-emoji">🎉</div>
+      <h3 id="result-title">Correct!</h3>
+      <div class="word" id="result-word"></div>
+      <p id="result-sub"></p>
+    </div>
+  </div>
+
+  <!-- Top bar -->
+  <div id="topbar">
+    <div id="status-dot"></div>
+    <div id="word-box">waiting...</div>
+    <span id="role-badge">—</span>
+    <span id="players-count">0 players</span>
+  </div>
+
+  <!-- Canvas area -->
+  <div id="canvas-wrap">
+    <canvas id="layer-bg" class="layer"></canvas>
+    <canvas id="layer-main" class="layer"></canvas>
+    <canvas id="layer-ui" class="layer"></canvas>
+  </div>
+
+  <!-- Chat log (collapsible) -->
+  <div id="chat-log"></div>
+
+  <!-- Bottom toolbar (drawer only) -->
+  <div id="bottombar">
+    <!-- Colors -->
+    <div id="color-palette" style="display:flex;gap:5px;align-items:center;"></div>
+    <div style="width:1px;height:32px;background:var(--border);flex-shrink:0;"></div>
+    <!-- Size -->
+    <div id="size-wrap">
+      <div id="size-preview"></div>
+      <input type="range" id="size-range" min="2" max="60" value="8"/>
+    </div>
+    <div style="width:1px;height:32px;background:var(--border);flex-shrink:0;"></div>
+    <!-- Tools -->
+    <button class="tb-btn active" id="btn-brush" title="Brush">✏️</button>
+    <button class="tb-btn" id="btn-eraser" title="Eraser">🧽</button>
+    <button class="tb-btn" id="btn-undo" title="Undo">↩️</button>
+    <button class="tb-btn" id="btn-redo" title="Redo">↪️</button>
+    <button class="tb-btn danger" id="btn-clear" title="Clear">🗑</button>
+    <button class="tb-btn" id="btn-done" title="Done" style="background:rgba(67,233,123,.15);border-color:var(--success);color:var(--success);">✅</button>
+  </div>
+
+  <!-- Guess row (guesser only) -->
+  <div id="guess-row" style="display:none;">
+    <input id="guess-input" placeholder="Type your guess..." autocomplete="off" autocorrect="off"/>
+    <button id="guess-btn">Send</button>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast"></div>
+</div>
+
+<script>
+(function(){
+'use strict';
+
+// ── Telegram WebApp init ─────────────────────────────────────────────────────
+const tg = window.Telegram?.WebApp;
+if (tg) {
+  tg.ready();
+  tg.expand();
+  tg.disableClosingConfirmation?.();
+  // Apply Telegram theme colors if available
+  if (tg.themeParams?.bg_color) {
+    document.documentElement.style.setProperty('--bg', tg.themeParams.bg_color);
+    document.documentElement.style.setProperty('--surface', tg.themeParams.section_bg_color || tg.themeParams.secondary_bg_color || '#1a1a26');
+  }
+}
+
+// ── DOM refs ─────────────────────────────────────────────────────────────────
+const overlay       = document.getElementById('overlay');
+const joinBtn       = document.getElementById('join-btn');
+const nameInput     = document.getElementById('name-input');
+const roomInput     = document.getElementById('room-input');
+const wordBox       = document.getElementById('word-box');
+const roleBadge     = document.getElementById('role-badge');
+const playersCount  = document.getElementById('players-count');
+const canvasWrap    = document.getElementById('canvas-wrap');
+const bgCanvas      = document.getElementById('layer-bg');
+const mainCanvas    = document.getElementById('layer-main');
+const uiCanvas      = document.getElementById('layer-ui');
+const bottombar     = document.getElementById('bottombar');
+const guessRow      = document.getElementById('guess-row');
+const guessInput    = document.getElementById('guess-input');
+const guessBtn      = document.getElementById('guess-btn');
+const chatLog       = document.getElementById('chat-log');
+const toast         = document.getElementById('toast');
+const resultOverlay = document.getElementById('result-overlay');
+const sizeRange     = document.getElementById('size-range');
+const sizePreview   = document.getElementById('size-preview');
+const btnBrush      = document.getElementById('btn-brush');
+const btnEraser     = document.getElementById('btn-eraser');
+const btnUndo       = document.getElementById('btn-undo');
+const btnRedo       = document.getElementById('btn-redo');
+const btnClear      = document.getElementById('btn-clear');
+const btnDone       = document.getElementById('btn-done');
+
+const bgCtx   = bgCanvas.getContext('2d');
+const mainCtx = mainCanvas.getContext('2d');
+
+// ── State ────────────────────────────────────────────────────────────────────
+let ws         = null;
+let myName     = '';
+let myRoom     = '';
+let isDrawer   = false;
+let drawing    = false;
+let lastX      = 0, lastY = 0;
+let color      = '#1a1a2e';
+let brushSize  = 8;
+let erasing    = false;
+let undoStack  = [];
+let redoStack  = [];
+const MAX_UNDO = 40;
+
+// ── Canvas resize ─────────────────────────────────────────────────────────────
+function resizeAll() {
+  const w = canvasWrap.clientWidth;
+  const h = canvasWrap.clientHeight;
+  // Save main canvas content
+  const tmp = mainCtx.getImageData(0, 0, mainCanvas.width, mainCanvas.height);
+  [bgCanvas, mainCanvas, uiCanvas].forEach(c => { c.width = w; c.height = h; });
+  bgCtx.fillStyle = '#ffffff';
+  bgCtx.fillRect(0, 0, w, h);
+  mainCtx.putImageData(tmp, 0, 0);
+}
+window.addEventListener('resize', resizeAll);
+
+// ── Color palette ─────────────────────────────────────────────────────────────
+const COLORS = [
+  '#1a1a2e','#ffffff','#ef233c','#ff6b35','#ffd60a',
+  '#06d6a0','#0077b6','#7b2d8b','#f4a261','#8b4513',
+  '#adb5bd','#ff85a1','#43e97b','#4cc9f0','#6c63ff'
+];
+const palette = document.getElementById('color-palette');
+COLORS.forEach(c => {
+  const dot = document.createElement('div');
+  dot.className = 'color-dot' + (c === color ? ' active' : '');
+  dot.style.background = c;
+  if (c === '#ffffff') dot.style.border = '2.5px solid #555';
+  dot.addEventListener('pointerdown', () => {
+    document.querySelectorAll('.color-dot').forEach(d => d.classList.remove('active'));
+    dot.classList.add('active');
+    color = c;
+    erasing = false;
+    btnEraser.classList.remove('active');
+    btnBrush.classList.add('active');
+    updateSizePreview();
+  });
+  palette.appendChild(dot);
+});
+
+// ── Size preview ──────────────────────────────────────────────────────────────
+function updateSizePreview() {
+  const s = Math.max(4, Math.min(brushSize, 20));
+  sizePreview.innerHTML = `<div style="width:${s}px;height:${s}px;border-radius:50%;background:${erasing?'#888':color};"></div>`;
+}
+sizeRange.addEventListener('input', () => {
+  brushSize = +sizeRange.value;
+  updateSizePreview();
+});
+updateSizePreview();
+
+// ── Tool buttons ──────────────────────────────────────────────────────────────
+btnBrush.addEventListener('pointerdown', () => {
+  erasing = false;
+  btnBrush.classList.add('active');
+  btnEraser.classList.remove('active');
+  updateSizePreview();
+});
+btnEraser.addEventListener('pointerdown', () => {
+  erasing = true;
+  btnEraser.classList.add('active');
+  btnBrush.classList.remove('active');
+  updateSizePreview();
+});
+btnUndo.addEventListener('pointerdown', () => { if (isDrawer) doUndo(); });
+btnRedo.addEventListener('pointerdown', () => { if (isDrawer) doRedo(); });
+btnClear.addEventListener('pointerdown', () => {
+  if (!isDrawer) return;
+  saveUndo();
+  mainCtx.clearRect(0, 0, mainCanvas.width, mainCanvas.height);
+  redoStack = [];
+  ws?.send(JSON.stringify({ type: 'clear' }));
+});
+btnDone.addEventListener('pointerdown', () => {
+  if (!isDrawer) return;
+  if (confirm('Finish drawing and reveal the word?')) {
+    ws?.send(JSON.stringify({ type: 'done_drawing' }));
+  }
+});
+
+// ── Undo / Redo ───────────────────────────────────────────────────────────────
+function saveUndo() {
+  undoStack.push(mainCtx.getImageData(0, 0, mainCanvas.width, mainCanvas.height));
+  if (undoStack.length > MAX_UNDO) undoStack.shift();
+  redoStack = [];
+}
+function doUndo() {
+  if (!undoStack.length) return;
+  redoStack.push(mainCtx.getImageData(0, 0, mainCanvas.width, mainCanvas.height));
+  mainCtx.putImageData(undoStack.pop(), 0, 0);
+  // send full canvas state
+  sendCanvasSnapshot();
+}
+function doRedo() {
+  if (!redoStack.length) return;
+  undoStack.push(mainCtx.getImageData(0, 0, mainCanvas.width, mainCanvas.height));
+  mainCtx.putImageData(redoStack.pop(), 0, 0);
+  sendCanvasSnapshot();
+}
+function sendCanvasSnapshot() {
+  const data = mainCanvas.toDataURL('image/png');
+  ws?.send(JSON.stringify({ type: 'snapshot', data }));
+}
+
+// ── Drawing ───────────────────────────────────────────────────────────────────
+function getXY(e) {
+  const rect = mainCanvas.getBoundingClientRect();
+  const src = e.touches ? e.touches[0] : e;
+  return [
+    (src.clientX - rect.left) * (mainCanvas.width / rect.width),
+    (src.clientY - rect.top)  * (mainCanvas.height / rect.height)
+  ];
+}
+
+let currentStroke = null;
+
+function onStart(e) {
+  if (!isDrawer) return;
+  e.preventDefault();
+  drawing = true;
+  saveUndo();
+  [lastX, lastY] = getXY(e);
+  currentStroke = {
+    color: erasing ? '#ffffff' : color,
+    size: brushSize,
+    points: [[lastX, lastY]]
+  };
+  mainCtx.beginPath();
+  mainCtx.arc(lastX, lastY, brushSize/2, 0, Math.PI*2);
+  mainCtx.fillStyle = currentStroke.color;
+  mainCtx.fill();
+}
+
+function onMove(e) {
+  if (!drawing || !isDrawer) return;
+  e.preventDefault();
+  const [x, y] = getXY(e);
+  drawSegment(mainCtx, lastX, lastY, x, y, currentStroke.color, currentStroke.size);
+  currentStroke.points.push([x, y]);
+  lastX = x; lastY = y;
+}
+
+function onEnd() {
+  if (!drawing) return;
+  drawing = false;
+  if (currentStroke && ws?.readyState === 1) {
+    ws.send(JSON.stringify({ type: 'draw', stroke: currentStroke }));
+  }
+  currentStroke = null;
+}
+
+function drawSegment(ctx, x1, y1, x2, y2, c, s) {
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x2, y2);
+  ctx.strokeStyle = c;
+  ctx.lineWidth = s;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.stroke();
+}
+
+function renderStroke(stroke) {
+  const pts = stroke.points || [];
+  if (pts.length === 0) return;
+  if (pts.length === 1) {
+    mainCtx.beginPath();
+    mainCtx.arc(pts[0][0], pts[0][1], stroke.size/2, 0, Math.PI*2);
+    mainCtx.fillStyle = stroke.color;
+    mainCtx.fill();
+    return;
+  }
+  for (let i = 1; i < pts.length; i++) {
+    drawSegment(mainCtx, pts[i-1][0], pts[i-1][1], pts[i][0], pts[i][1], stroke.color, stroke.size);
+  }
+}
+
+mainCanvas.addEventListener('pointerdown', onStart, { passive: false });
+mainCanvas.addEventListener('pointermove', onMove, { passive: false });
+mainCanvas.addEventListener('pointerup', onEnd);
+mainCanvas.addEventListener('pointercancel', onEnd);
+mainCanvas.addEventListener('pointerleave', onEnd);
+
+// ── Toast notification ────────────────────────────────────────────────────────
+let toastTimer = null;
+function showToast(msg, cls = '') {
+  toast.textContent = msg;
+  toast.className = 'show ' + cls;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { toast.className = ''; }, 3000);
+}
+
+// ── Chat log ──────────────────────────────────────────────────────────────────
+function addChat(cls, html) {
+  const d = document.createElement('div');
+  d.className = 'chat-msg ' + cls;
+  d.innerHTML = html;
+  chatLog.appendChild(d);
+  chatLog.scrollTop = chatLog.scrollHeight;
+  // auto-open log
+  chatLog.classList.add('open');
+}
+
+// ── Round result ──────────────────────────────────────────────────────────────
+function showResult(emoji, title, word, sub) {
+  document.getElementById('result-emoji').textContent = emoji;
+  document.getElementById('result-title').textContent = title;
+  document.getElementById('result-word').textContent = word;
+  document.getElementById('result-sub').textContent = sub;
+  resultOverlay.classList.add('show');
+  setTimeout(() => resultOverlay.classList.remove('show'), 4500);
+}
+
+// ── Role setup ────────────────────────────────────────────────────────────────
+function setRole(role, word) {
+  isDrawer = role === 'drawer';
+  bottombar.style.display = isDrawer ? 'flex' : 'none';
+  guessRow.style.display  = isDrawer ? 'none' : 'flex';
+  roleBadge.className = 'role-badge ' + role;
+  roleBadge.textContent = isDrawer ? 'DRAWING' : 'GUESSING';
+
+  if (isDrawer) {
+    wordBox.textContent = `Draw: ${word}`;
+    wordBox.style.color = 'var(--success)';
+    showToast(`🖌 Draw: ${word}`, '');
+    undoStack = []; redoStack = [];
+  } else {
+    const hint = '_ '.repeat(word).trim();
+    wordBox.textContent = hint;
+    wordBox.style.color = 'var(--accent)';
+    showToast(`🤔 Guess! ${word} letters`, '');
+  }
+}
+
+// ── WebSocket ─────────────────────────────────────────────────────────────────
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const url = `${proto}://${location.host}/ws?room=${encodeURIComponent(myRoom)}&name=${encodeURIComponent(myName)}`;
+  ws = new WebSocket(url);
+
+  ws.onopen = () => {
+    document.getElementById('status-dot').style.background = 'var(--success)';
+  };
+
+  ws.onmessage = ({ data }) => {
+    let msg; try { msg = JSON.parse(data); } catch { return; }
+
+    switch (msg.type) {
+      case 'init':
+        mainCtx.clearRect(0, 0, mainCanvas.width, mainCanvas.height);
+        (msg.strokes || []).forEach(renderStroke);
+        playersCount.textContent = `${msg.players} players`;
+        break;
+
+      case 'draw':
+        renderStroke(msg.stroke);
+        break;
+
+      case 'clear':
+        mainCtx.clearRect(0, 0, mainCanvas.width, mainCanvas.height);
+        undoStack = []; redoStack = [];
+        break;
+
+      case 'snapshot':
+        // Full canvas sync (after undo/redo)
+        const img = new Image();
+        img.onload = () => {
+          mainCtx.clearRect(0, 0, mainCanvas.width, mainCanvas.height);
+          mainCtx.drawImage(img, 0, 0, mainCanvas.width, mainCanvas.height);
+        };
+        img.src = msg.data;
+        break;
+
+      case 'role':
+        setRole(msg.role, msg.role === 'drawer' ? msg.word : msg.hint);
+        mainCtx.clearRect(0, 0, mainCanvas.width, mainCanvas.height);
+        undoStack = []; redoStack = [];
+        break;
+
+      case 'guess':
+        addChat(msg.correct ? 'correct-msg' : '', `<span class="name">${msg.name}:</span> ${msg.text}${msg.correct ? ' ✅' : ''}`);
+        if (msg.correct) showToast(`🎉 ${msg.name} got it!`, 'correct');
+        break;
+
+      case 'round_end':
+        showResult(
+          msg.guesser ? '🎉' : '⏰',
+          msg.guesser ? `${msg.guesser} guessed it!` : 'Round Over',
+          msg.word,
+          msg.guesser ? `Artist: ${msg.drawerName}` : `The word was: ${msg.word}`
+        );
+        break;
+
+      case 'status':
+        addChat('system-msg', msg.message);
+        wordBox.textContent = msg.message;
+        break;
+
+      case 'player_joined':
+      case 'player_left':
+        playersCount.textContent = `${msg.count} players`;
+        addChat('system-msg', msg.type === 'player_joined' ? `${msg.name} joined` : `${msg.name} left`);
+        break;
+    }
+  };
+
+  ws.onclose = () => {
+    document.getElementById('status-dot').style.background = '#ef233c';
+    setTimeout(connect, 2500);
+  };
+  ws.onerror = () => ws.close();
+}
+
+// ── Guess ─────────────────────────────────────────────────────────────────────
+function sendGuess() {
+  const t = guessInput.value.trim();
+  if (!t || !ws || ws.readyState !== 1) return;
+  ws.send(JSON.stringify({ type: 'guess', text: t }));
+  guessInput.value = '';
+}
+guessBtn.addEventListener('click', sendGuess);
+guessInput.addEventListener('keydown', e => { if (e.key === 'Enter') sendGuess(); });
+
+// ── Join ──────────────────────────────────────────────────────────────────────
+function doJoin() {
+  myName = nameInput.value.trim() || `Player${Math.floor(Math.random()*1000)}`;
+  myRoom = roomInput.value.trim() || 'default';
+  overlay.style.display = 'none';
+  resizeAll();
+  connect();
+}
+joinBtn.addEventListener('click', doJoin);
+nameInput.addEventListener('keydown', e => { if (e.key === 'Enter') roomInput.focus(); });
+roomInput.addEventListener('keydown', e => { if (e.key === 'Enter') doJoin(); });
+
+// ── Auto-fill from Telegram & URL ─────────────────────────────────────────────
+const urlParams = new URLSearchParams(location.search);
+const urlRoom = urlParams.get('room') || urlParams.get('startapp') || '';
+if (urlRoom) roomInput.value = decodeURIComponent(urlRoom);
+
+if (tg) {
+  const user = tg.initDataUnsafe?.user;
+  if (user) {
+    nameInput.value = [user.first_name, user.last_name].filter(Boolean).join(' ') || user.username || '';
+  }
+  const sp = tg.initDataUnsafe?.start_param;
+  if (sp) roomInput.value = decodeURIComponent(sp);
+}
+
+// Auto-join if room is pre-filled
+if (roomInput.value) {
+  if (!nameInput.value) nameInput.value = `Player${Math.floor(Math.random()*1000)}`;
+  setTimeout(doJoin, 350);
+}
+
+})();
+</script>
+</body>
+</html>

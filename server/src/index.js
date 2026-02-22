@@ -408,13 +408,19 @@ bot.command('startgame', async (ctx) => {
     catch(e) { return ctx.reply('Bot still starting, try again.'); }
   }
 
+  // Use the direct webapp URL so Telegram injects initDataUnsafe (user info)
+  // webApp button = opens as Mini App with full user context
+  // url button = opens as plain browser link, no user context
+  const webappUrl    = `${PUBLIC_URL}/?room=${encodeURIComponent(roomId)}`;
   const startappLink = `https://t.me/${botUsername}/${WEBAPP_SHORT_NAME}?startapp=${encodeURIComponent(roomId)}`;
   console.log(`[bot] /startgame room=${roomId} link=${startappLink}`);
 
   await ctx.reply(
-    `🎨 *Draw & Guess is ready!*\n\n👇 Tap *🖌 Open Canvas* to draw inside Telegram!\nEveryone else: type your guesses here!`,
+    `🎨 *Draw & Guess is ready!*\n\n👇 Tap *🖌 Open Canvas* to join!\nEveryone else: type your guesses in this chat.`,
     { parse_mode:'Markdown',
-      ...Markup.inlineKeyboard([[Markup.button.url('🖌 Open Canvas', startappLink)]]) });
+      ...Markup.inlineKeyboard([
+        [Markup.button.webApp('🖌 Open Canvas', webappUrl)],
+      ]) });
 });
 
 bot.command('stopgame', async (ctx) => {

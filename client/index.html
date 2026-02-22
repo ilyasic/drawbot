@@ -5,217 +5,403 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
 <title>Draw & Guess</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet"/>
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&display=swap');
-:root{
-  --bg:#0c0c14;--surf:#161622;--surf2:#1e1e30;--bord:#2a2a42;
-  --acc:#7c6ff7;--acc2:#ff6b8a;--grn:#3dd68c;--warn:#ffd60a;
-  --txt:#e2e2f0;--txt2:#7777aa;--r:10px;--sb:env(safe-area-inset-bottom,0px);
+/* ─── Design tokens ─────────────────────────────────────── */
+:root {
+  --bg:        #253334;   /* dark teal background like reference */
+  --bg2:       #1e2a2b;
+  --surface:   #2d3f40;
+  --surface2:  #354849;
+  --border:    #3d5355;
+  --btn-bg:    #c4956a;   /* warm tan/orange buttons like reference */
+  --btn-bg2:   #b8875e;
+  --btn-active:#e0a870;
+  --accent:    #6c63ff;
+  --green:     #3dd68c;
+  --yellow:    #ffd166;
+  --red:       #e05555;
+  --text:      #eef2f2;
+  --text2:     #8aabac;
+  --r:         14px;      /* rounded like reference */
+  --topbar-h:  44px;
+  --toolbar-h: 160px;     /* 2 rows of large buttons */
 }
-*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
-html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);
-  color:var(--txt);font-family:'Nunito',sans-serif;touch-action:none;}
-#app{display:flex;flex-direction:column;height:100dvh;}
 
-/* ─ Topbar ─────────────────────────────────────────────────────────── */
-#topbar{display:flex;align-items:center;gap:6px;padding:6px 10px;
-  background:var(--surf);border-bottom:1px solid var(--bord);
-  flex-shrink:0;z-index:20;min-height:46px;}
-#word-display{flex:1;text-align:center;font-size:.85rem;font-weight:800;
-  letter-spacing:.1em;text-transform:uppercase;color:var(--acc);
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-#timer-box{font-size:.78rem;font-weight:900;color:var(--grn);
-  background:rgba(61,214,140,.12);border:1px solid rgba(61,214,140,.3);
-  padding:3px 8px;border-radius:20px;white-space:nowrap;flex-shrink:0;transition:color .3s,background .3s;}
-#timer-box.warn{color:var(--warn);background:rgba(255,214,10,.12);border-color:rgba(255,214,10,.3);}
-#timer-box.danger{color:var(--acc2);background:rgba(255,107,138,.15);border-color:rgba(255,107,138,.4);}
-#role-pill{font-size:.66rem;font-weight:800;padding:3px 9px;border-radius:20px;
-  background:var(--surf2);color:var(--txt2);text-transform:uppercase;white-space:nowrap;flex-shrink:0;}
-#role-pill.drawer{background:rgba(124,111,247,.2);color:var(--acc);}
-#role-pill.guesser{background:rgba(255,107,138,.18);color:var(--acc2);}
-#conn-dot{width:7px;height:7px;border-radius:50%;background:#444;flex-shrink:0;transition:background .3s;}
-#conn-dot.on{background:var(--grn);box-shadow:0 0 5px var(--grn);}
-
-/* ─ Canvas ──────────────────────────────────────────────────────────── */
-#canvas-outer{flex:1;position:relative;overflow:hidden;background:#222;}
-#canvas-inner{position:absolute;top:0;left:0;transform-origin:0 0;will-change:transform;}
-.cvl{position:absolute;top:0;left:0;}
-#cv-bg{background:#fff;z-index:1;}
-#cv-l1{z-index:2;}#cv-l2{z-index:3;}#cv-l3{z-index:4;}
-
-/* Guesser overlay on canvas */
-#canvas-outer.guesser-mode{cursor:default;}
-#guesser-overlay{
-  display:none;position:absolute;inset:0;z-index:10;
-  align-items:center;justify-content:center;pointer-events:none;
+*,*::before,*::after { box-sizing:border-box; margin:0; padding:0; -webkit-tap-highlight-color:transparent; }
+html, body {
+  width:100%; height:100%; overflow:hidden;
+  background:var(--bg); color:var(--text);
+  font-family:'DM Sans',sans-serif; touch-action:none;
 }
-#canvas-outer.guesser-mode #guesser-overlay{display:flex;}
 
-/* ─ Toolbar ─────────────────────────────────────────────────────────── */
-#toolbar{display:flex;align-items:center;gap:5px;
-  padding:7px 8px calc(7px + var(--sb));
-  background:var(--surf);border-top:1px solid var(--bord);
-  flex-shrink:0;overflow-x:auto;z-index:20;scrollbar-width:none;}
-#toolbar::-webkit-scrollbar{display:none;}
-/* Scroll fade hint */
-#toolbar::after{content:'';position:sticky;right:0;width:20px;height:40px;
-  background:linear-gradient(to left,var(--surf),transparent);flex-shrink:0;pointer-events:none;}
-.tbtn{width:40px;height:40px;border-radius:var(--r);border:1.5px solid var(--bord);
-  background:var(--surf2);color:var(--txt);font-size:1rem;cursor:pointer;
-  display:flex;align-items:center;justify-content:center;
-  transition:border-color .12s,background .12s,transform .1s;flex-shrink:0;}
-.tbtn:active{transform:scale(.88);}
-.tbtn.on{border-color:var(--acc);background:rgba(124,111,247,.18);color:var(--acc);}
-.tbtn.gbtn{border-color:var(--grn);background:rgba(61,214,140,.12);color:var(--grn);}
-.tbtn.rbtn{border-color:var(--acc2);background:rgba(255,107,138,.12);color:var(--acc2);}
-.sep{width:1px;height:28px;background:var(--bord);flex-shrink:0;}
-.cdot{width:28px;height:28px;border-radius:50%;border:2.5px solid transparent;
-  cursor:pointer;flex-shrink:0;transition:transform .12s,border-color .12s;}
-.cdot:active{transform:scale(.82);}
-.cdot.on{border-color:#fff;box-shadow:0 0 0 2px var(--acc);transform:scale(1.15);}
-#sz-wrap{display:flex;align-items:center;gap:6px;background:var(--surf2);
-  border:1.5px solid var(--bord);border-radius:var(--r);padding:0 8px;height:40px;flex-shrink:0;}
-#sz-range{-webkit-appearance:none;width:78px;height:3px;border-radius:2px;
-  background:var(--bord);outline:none;}
-#sz-range::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;
-  border-radius:50%;background:var(--acc);border:2px solid #fff;cursor:pointer;}
-#sz-dot{width:20px;height:20px;display:flex;align-items:center;justify-content:center;}
-#zoom-wrap{display:flex;align-items:center;gap:3px;flex-shrink:0;}
-#zoom-lbl{font-size:.7rem;color:var(--txt2);font-weight:800;
-  background:var(--surf2);border:1px solid var(--bord);
-  border-radius:6px;padding:2px 6px;min-width:40px;text-align:center;}
+/* ─── App shell ─────────────────────────────────────────── */
+#app {
+  display:flex; flex-direction:column;
+  position:fixed; inset:0;
+  top: var(--tg-safe-top, 0px);
+  height: var(--tg-viewport-stable-height, 100dvh);
+  overflow:hidden;
+}
 
-/* ─ Panels ──────────────────────────────────────────────────────────── */
-.panel{position:fixed;background:var(--surf);border:1px solid var(--bord);
-  border-radius:var(--r);padding:8px;z-index:50;display:none;flex-direction:column;
-  gap:5px;box-shadow:0 10px 40px rgba(0,0,0,.7);}
-.panel.open{display:flex;}
-#brush-panel{left:8px;bottom:calc(56px + var(--sb));min-width:130px;}
-#layer-panel{right:8px;bottom:calc(56px + var(--sb));min-width:150px;}
-#settings-panel{left:50%;bottom:calc(56px + var(--sb));transform:translateX(-50%);min-width:195px;}
-.ptitle{font-size:.7rem;color:var(--txt2);font-weight:800;padding:0 2px 3px;letter-spacing:.06em;}
-.bopt{display:flex;align-items:center;gap:8px;padding:7px 8px;border-radius:6px;
-  cursor:pointer;font-size:.82rem;font-weight:700;border:1.5px solid transparent;
-  transition:background .1s,border-color .1s;}
-.bopt.on{border-color:var(--acc);background:rgba(124,111,247,.12);}
-.bopt:active{background:var(--surf2);}
-.bi{font-size:1rem;width:20px;text-align:center;}
-.lrow{display:flex;align-items:center;gap:6px;padding:5px 6px;border-radius:6px;
-  cursor:pointer;font-size:.82rem;font-weight:700;border:1.5px solid transparent;}
-.lrow.al{border-color:var(--acc);background:rgba(124,111,247,.1);}
-.lrow:active{background:var(--surf2);}
-.lvis{font-size:.85rem;cursor:pointer;opacity:.3;transition:opacity .15s;user-select:none;}
-.lvis.sv{opacity:1;}
-.lname{flex:1;}
-.lthumb{width:28px;height:18px;border-radius:3px;border:1px solid var(--bord);
-  background:#fff;overflow:hidden;flex-shrink:0;}
-.lthumb canvas{width:100%;height:100%;}
-.panel label{font-size:.78rem;color:var(--txt2);font-weight:700;}
-.panel select,.panel input[type=text]{background:var(--surf2);border:1px solid var(--bord);
-  color:var(--txt);padding:7px 10px;border-radius:6px;font-size:.83rem;
-  font-family:'Nunito',sans-serif;width:100%;outline:none;}
-.pbtn{background:var(--acc);color:#fff;border:none;padding:8px;
-  border-radius:6px;font-size:.83rem;font-weight:700;cursor:pointer;
-  font-family:'Nunito',sans-serif;width:100%;transition:opacity .15s;}
-.pbtn:active{opacity:.8;}
-.pbtn.sm{background:var(--surf2);color:var(--txt2);border:1px solid var(--bord);font-size:.75rem;padding:5px;}
+/* ─── Topbar (minimal — just word + timer) ─────────────── */
+#topbar {
+  height:var(--topbar-h); min-height:var(--topbar-h);
+  display:flex; align-items:center; gap:8px; padding:0 14px;
+  background:transparent; flex-shrink:0; z-index:20;
+}
+#conn-dot {
+  width:7px; height:7px; border-radius:50%;
+  background:var(--green); flex-shrink:0; transition:background .3s;
+}
+#word-display {
+  flex:1; text-align:center; font-family:'Syne',sans-serif;
+  font-size:.9rem; font-weight:700; letter-spacing:.12em;
+  text-transform:uppercase; color:var(--text);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0;
+}
+#role-pill {
+  font-size:.58rem; font-weight:700; padding:3px 8px; border-radius:20px;
+  background:rgba(255,255,255,.1); color:var(--text2);
+  text-transform:uppercase; white-space:nowrap; flex-shrink:0;
+}
+#role-pill.drawer  { background:rgba(108,99,255,.3); color:#b3adff; }
+#role-pill.guesser { background:rgba(61,214,140,.2); color:var(--green); }
+#timer-display {
+  font-family:'Syne',sans-serif; font-size:.88rem; font-weight:700;
+  color:var(--yellow); min-width:34px; text-align:right; flex-shrink:0;
+}
+#timer-display.urgent { color:var(--red); animation:pulse .5s ease-in-out infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
 
-/* ─ Guess row ───────────────────────────────────────────────────────── */
-#guess-area{display:none;flex-direction:column;background:var(--surf);
-  border-top:1px solid var(--bord);flex-shrink:0;z-index:20;}
-#chat-log{max-height:80px;overflow-y:auto;background:var(--surf);
-  border-bottom:1px solid var(--bord);scrollbar-width:thin;}
-#chat-log::-webkit-scrollbar{width:2px;}
-#chat-log::-webkit-scrollbar-thumb{background:var(--bord);}
-.cmsg{padding:3px 12px;font-size:.79rem;color:var(--txt2);}
-.cmsg .cn{color:var(--txt);font-weight:700;}
-.cmsg.ok{color:var(--grn);font-weight:700;}
-.cmsg.sys{color:var(--acc);font-style:italic;}
-#guess-row{display:flex;align-items:center;gap:7px;
-  padding:7px 10px calc(7px + var(--sb));}
-#guess-in{flex:1;background:var(--surf2);border:1.5px solid var(--bord);
-  border-radius:var(--r);color:var(--txt);padding:9px 13px;font-size:.9rem;
-  outline:none;font-family:'Nunito',sans-serif;transition:border-color .15s;}
-#guess-in:focus{border-color:var(--acc);}
-#guess-go{background:var(--acc);color:#fff;border:none;padding:9px 16px;
-  border-radius:var(--r);font-size:.88rem;font-weight:800;cursor:pointer;
-  font-family:'Nunito',sans-serif;}
-#hint-btn{background:rgba(255,214,10,.12);color:var(--warn);border:1px solid rgba(255,214,10,.3);
-  padding:9px 12px;border-radius:var(--r);font-size:.8rem;font-weight:800;cursor:pointer;
-  font-family:'Nunito',sans-serif;white-space:nowrap;flex-shrink:0;}
-#hint-btn:disabled{opacity:.4;cursor:default;}
+/* top-right corner icons (like reference 3-dot + X) */
+#top-actions {
+  display:flex; gap:8px; flex-shrink:0;
+}
+.top-icon {
+  width:36px; height:36px; border-radius:50%;
+  background:rgba(0,0,0,.35); border:none; color:var(--text);
+  font-size:1rem; cursor:pointer; display:flex;
+  align-items:center; justify-content:center;
+  backdrop-filter:blur(4px);
+}
+.top-icon:active { background:rgba(0,0,0,.5); transform:scale(.9); }
 
-/* ─ Drawer chat (read-only) ─────────────────────────────────────────── */
-#drawer-chat{display:none;max-height:70px;overflow-y:auto;
-  background:var(--surf);border-top:1px solid var(--bord);
-  flex-shrink:0;scrollbar-width:thin;}
-#drawer-chat::-webkit-scrollbar{width:2px;}
+/* ─── Canvas — takes ALL space between topbar and toolbar ─ */
+#canvas-area {
+  flex:1; position:relative; overflow:hidden;
+  background:var(--bg); min-height:0;
+}
+#canvas-wrap { position:absolute; top:0; left:0; transform-origin:0 0; will-change:transform; }
+.cvl { position:absolute; top:0; left:0; }
+#cv-bg { background:#fff; z-index:1; }
+#cv-main { z-index:2; cursor:crosshair; }
+#cv-preview { z-index:3; pointer-events:none; }
 
-/* ─ Toast ───────────────────────────────────────────────────────────── */
-#toast{position:fixed;top:54px;left:50%;
-  transform:translateX(-50%) translateY(-12px);
-  background:var(--surf2);color:var(--txt);
-  padding:8px 18px;border-radius:30px;font-size:.83rem;font-weight:700;
-  border:1px solid var(--bord);opacity:0;
-  transition:all .25s;z-index:100;pointer-events:none;white-space:nowrap;}
-#toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
-#toast.ok{background:rgba(61,214,140,.2);border-color:var(--grn);color:var(--grn);}
-#toast.bad{background:rgba(255,107,138,.15);border-color:var(--acc2);color:var(--acc2);}
+/* ─── Chat strip (guesser view) ─────────────────────────── */
+#chat-panel {
+  flex-shrink:0; display:none; flex-direction:column; gap:4px;
+  padding:6px 12px calc(6px + env(safe-area-inset-bottom,0px));
+  background:var(--surface); border-top:1px solid var(--border); z-index:15;
+}
+#chat-panel.visible { display:flex; }
+#chat-log {
+  max-height:44px; overflow-y:auto; display:flex;
+  flex-direction:column; gap:1px; scrollbar-width:none;
+}
+#chat-log::-webkit-scrollbar { display:none; }
+.cmsg { font-size:.75rem; color:var(--text2); line-height:1.3; }
+.cmsg .cn { color:var(--text); font-weight:600; }
+.cmsg.ok  { color:var(--green); font-weight:700; }
+.cmsg.sys { color:#8abfbf; font-style:italic; }
+#guess-row { display:flex; gap:8px; }
+#guess-in {
+  flex:1; background:var(--surface2); border:1.5px solid var(--border);
+  border-radius:10px; color:var(--text); padding:8px 12px;
+  font-size:.88rem; outline:none; font-family:'DM Sans',sans-serif; min-width:0;
+}
+#guess-in:focus { border-color:var(--accent); }
+#guess-go {
+  background:var(--accent); color:#fff; border:none; padding:8px 18px;
+  border-radius:10px; font-size:.85rem; font-weight:700; cursor:pointer;
+  font-family:'Syne',sans-serif; flex-shrink:0;
+}
 
-/* ─ Custom confirm modal ────────────────────────────────────────────── */
-#modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.8);
-  display:none;align-items:center;justify-content:center;z-index:300;backdrop-filter:blur(6px);}
-#modal-overlay.open{display:flex;}
-#modal-box{background:var(--surf);border:1px solid var(--bord);border-radius:16px;
-  padding:24px 20px;text-align:center;width:min(280px,86vw);display:flex;flex-direction:column;gap:14px;}
-#modal-box p{color:var(--txt2);font-size:.9rem;}
-#modal-box .mbtnrow{display:flex;gap:8px;}
-#modal-box .mbtnrow button{flex:1;padding:10px;border-radius:var(--r);font-size:.88rem;
-  font-weight:800;cursor:pointer;border:none;font-family:'Nunito',sans-serif;}
-#modal-yes{background:var(--grn);color:#000;}
-#modal-no{background:var(--surf2);color:var(--txt);border:1px solid var(--bord)!important;}
+/* ─── Toolbar — 2 rows of 4 centered icon buttons ────────
+   Exactly like reference: warm rounded square buttons, centered,
+   with small size/opacity text label at bottom-right of last btn
+──────────────────────────────────────────────────────────── */
+#toolbar {
+  flex-shrink:0; display:none; flex-direction:column;
+  align-items:center; gap:10px;
+  padding:10px 16px calc(10px + env(safe-area-inset-bottom,0px));
+  background:transparent; z-index:20;
+}
+#toolbar.visible { display:flex; }
 
-/* ─ Join overlay ────────────────────────────────────────────────────── */
-#join-overlay{position:fixed;inset:0;background:rgba(0,0,0,.92);
-  display:flex;align-items:center;justify-content:center;
-  z-index:200;backdrop-filter:blur(12px);}
-#join-box{background:var(--surf);border:1px solid var(--bord);
-  border-radius:18px;padding:28px 22px;width:min(310px,90vw);
-  display:flex;flex-direction:column;gap:14px;}
-#join-box h2{text-align:center;font-size:1.4rem;font-weight:900;
-  background:linear-gradient(135deg,var(--acc),var(--acc2));
-  -webkit-background-clip:text;-webkit-text-fill-color:transparent;}
-#join-box p{text-align:center;color:var(--txt2);font-size:.82rem;}
-#join-box input{background:var(--surf2);border:1.5px solid var(--bord);
-  border-radius:var(--r);color:var(--txt);padding:11px 14px;font-size:.95rem;
-  outline:none;font-family:'Nunito',sans-serif;transition:border-color .15s;}
-#join-box input:focus{border-color:var(--acc);}
-#join-btn{background:linear-gradient(135deg,var(--acc),#9d96ff);color:#fff;
-  border:none;padding:13px;border-radius:var(--r);font-size:.95rem;font-weight:800;
-  cursor:pointer;font-family:'Nunito',sans-serif;}
+.tb-row {
+  display:flex; gap:10px; align-items:center; justify-content:center;
+}
 
-/* ─ Round result overlay ────────────────────────────────────────────── */
-#result-overlay{position:fixed;inset:0;background:rgba(0,0,0,.8);
-  display:none;align-items:center;justify-content:center;z-index:150;backdrop-filter:blur(6px);}
-#result-overlay.show{display:flex;}
-#result-box{background:var(--surf);border:1px solid var(--bord);
-  border-radius:18px;padding:26px 22px;text-align:center;width:min(290px,86vw);}
-#result-box .re{font-size:2.8rem;margin-bottom:8px;}
-#result-box h3{font-size:1.2rem;font-weight:800;margin-bottom:4px;}
-#result-box .rw{font-size:1.6rem;font-weight:900;color:var(--acc);margin:10px 0;letter-spacing:.04em;}
-#result-box p{color:var(--txt2);font-size:.85rem;}
-#result-box .next-info{color:var(--txt2);font-size:.78rem;margin-top:10px;
-  background:var(--surf2);padding:6px 12px;border-radius:8px;}
+/* The big rounded icon buttons — exactly like reference */
+.tbtn {
+  width:56px; height:56px; min-width:56px;
+  border-radius:var(--r); border:none;
+  background:var(--btn-bg); color:#fff;
+  font-size:1.3rem; cursor:pointer;
+  display:flex; align-items:center; justify-content:center;
+  transition:all .14s; flex-shrink:0;
+  -webkit-user-select:none;
+  box-shadow:0 3px 10px rgba(0,0,0,.3);
+  position:relative;
+}
+.tbtn:active { transform:scale(.86); background:var(--btn-bg2); }
+.tbtn.on     { background:var(--btn-active); box-shadow:0 4px 14px rgba(196,149,106,.5); }
+.tbtn.tred   { background:#c44; }
+.tbtn.tred:active { background:#a33; }
+.tbtn.tgreen { background:#2a9c6a; }
+.tbtn.tgreen:active { background:#237a54; }
+
+/* Size+opacity label — shown next to last btn in row 2 like reference */
+#sz-op-label {
+  font-size:.7rem; color:var(--text2); font-weight:600;
+  line-height:1.5; text-align:left; min-width:40px;
+}
+
+/* Color indicator dot on brush button */
+.color-dot {
+  position:absolute; bottom:5px; right:5px;
+  width:11px; height:11px; border-radius:50%;
+  border:2px solid rgba(255,255,255,.7);
+  pointer-events:none; background:#1a1a2e;
+}
+
+/* ─── Popups ─────────────────────────────────────────────── */
+.popup {
+  position:fixed;
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:16px;
+  padding:12px;
+  z-index:300;
+  display:none;
+  flex-direction:column; gap:8px;
+  box-shadow:0 16px 50px rgba(0,0,0,.75);
+  animation:popUp .16s cubic-bezier(.17,.67,.41,1.3);
+  max-height:70vh; overflow-y:auto;
+}
+.popup.open { display:flex; }
+@keyframes popUp {
+  from { opacity:0; transform:scale(.88) translateY(10px); }
+  to   { opacity:1; transform:scale(1)   translateY(0); }
+}
+
+/* Anchor positions */
+#brush-popup   { bottom:calc(var(--toolbar-h) + 8px); left:50%; transform:translateX(-50%); min-width:160px; }
+#color-popup   { bottom:calc(var(--toolbar-h) + 8px); left:50%; transform:translateX(-50%); min-width:220px; }
+#opacity-popup { bottom:calc(var(--toolbar-h) + 8px); left:50%; transform:translateX(-50%); min-width:200px; }
+#layer-popup   { bottom:calc(var(--toolbar-h) + 8px); right:14px; min-width:175px; }
+#settings-popup{ top:calc(var(--topbar-h) + 8px); right:14px; min-width:210px; }
+#players-popup { top:calc(var(--topbar-h) + 8px); left:50%; transform:translateX(-50%); min-width:165px; max-height:280px; }
+#lb-popup      { top:calc(var(--topbar-h) + 8px); left:50%; transform:translateX(-50%); min-width:210px; }
+
+.pop-label {
+  font-size:.62rem; color:var(--text2); font-weight:700;
+  letter-spacing:.08em; text-transform:uppercase;
+}
+.pop-divider { height:1px; background:var(--border); margin:2px 0; }
+
+/* Brush options */
+.brush-opt {
+  display:flex; align-items:center; gap:10px; padding:8px 10px;
+  border-radius:9px; cursor:pointer; font-size:.83rem; font-weight:600;
+  border:1.5px solid transparent; transition:all .1s; white-space:nowrap;
+}
+.brush-opt:hover { background:var(--surface2); }
+.brush-opt.on    { border-color:var(--btn-bg); background:rgba(196,149,106,.15); color:var(--btn-active); }
+.brush-icon      { font-size:1rem; width:22px; text-align:center; }
+
+/* Color swatches */
+.color-row { display:flex; gap:7px; flex-wrap:wrap; }
+.cswatch {
+  width:32px; height:32px; min-width:32px;
+  border-radius:50%; border:2px solid transparent;
+  cursor:pointer; flex-shrink:0; transition:transform .1s;
+}
+.cswatch:active { transform:scale(.82); }
+.cswatch.on { border-color:#fff; transform:scale(1.18); box-shadow:0 0 0 2px var(--btn-bg); }
+#custom-color-wrap { display:flex; align-items:center; gap:8px; padding-top:2px; }
+#custom-color { width:30px; height:30px; border-radius:50%; border:2px solid var(--border); cursor:pointer; padding:0; }
+#custom-color-lbl { font-size:.76rem; color:var(--text2); }
+
+/* Opacity popup */
+#op-popup-wrap { display:flex; align-items:center; gap:10px; }
+#op-range {
+  -webkit-appearance:none; flex:1; height:4px;
+  border-radius:2px; background:var(--border); outline:none;
+}
+#op-range::-webkit-slider-thumb {
+  -webkit-appearance:none; width:18px; height:18px;
+  border-radius:50%; background:var(--btn-bg); border:2px solid #fff; cursor:pointer;
+}
+#op-lbl { font-size:.76rem; color:var(--text2); font-weight:700; min-width:36px; text-align:right; }
+
+/* Size popup */
+#sz-popup-wrap { display:flex; align-items:center; gap:10px; }
+#sz-range {
+  -webkit-appearance:none; flex:1; height:4px;
+  border-radius:2px; background:var(--border); outline:none;
+}
+#sz-range::-webkit-slider-thumb {
+  -webkit-appearance:none; width:18px; height:18px;
+  border-radius:50%; background:var(--btn-bg); border:2px solid #fff; cursor:pointer;
+}
+#sz-lbl { font-size:.76rem; color:var(--text2); font-weight:700; min-width:28px; text-align:right; }
+#sz-preview { width:20px; height:20px; display:flex; align-items:center; justify-content:center; }
+
+/* Layer rows */
+.layer-row {
+  display:flex; align-items:center; gap:6px; padding:7px 8px;
+  border-radius:9px; cursor:pointer; font-size:.8rem; font-weight:600;
+  border:1.5px solid transparent;
+}
+.layer-row:hover  { background:var(--surface2); }
+.layer-row.active { border-color:var(--btn-bg); background:rgba(196,149,106,.1); color:var(--btn-active); }
+.layer-vis { font-size:.85rem; opacity:.3; transition:opacity .15s; }
+.layer-vis.on { opacity:1; }
+.layer-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.layer-op-slider {
+  -webkit-appearance:none; width:46px; height:3px;
+  background:var(--border); border-radius:2px; outline:none; flex-shrink:0;
+}
+.layer-op-slider::-webkit-slider-thumb {
+  -webkit-appearance:none; width:12px; height:12px;
+  border-radius:50%; background:var(--text2); cursor:pointer;
+}
+#layer-add { font-size:.76rem; padding:8px 10px; width:100%; border-radius:9px; }
+
+/* Settings popup items */
+.setting-row {
+  display:flex; align-items:center; gap:10px; padding:9px 8px;
+  border-radius:9px; cursor:pointer; font-size:.83rem; font-weight:500;
+  border:1px solid transparent; transition:background .1s;
+}
+.setting-row:hover { background:var(--surface2); }
+.setting-row .s-icon { font-size:1.1rem; width:24px; text-align:center; flex-shrink:0; }
+.setting-row .s-label { flex:1; }
+.setting-row .s-value { font-size:.75rem; color:var(--text2); font-weight:600; }
+.setting-section { font-family:'Syne',sans-serif; font-size:.72rem; font-weight:700; color:var(--btn-bg); letter-spacing:.06em; text-transform:uppercase; padding:2px 4px; }
+
+/* Players / LB */
+.player-row { display:flex; align-items:center; gap:7px; padding:5px 6px; font-size:.8rem; }
+.player-dot  { width:8px; height:8px; border-radius:50%; background:var(--green); flex-shrink:0; }
+.player-name { flex:1; font-weight:500; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.player-score{ color:var(--yellow); font-weight:700; font-size:.75rem; }
+.lb-title { font-family:'Syne',sans-serif; font-size:.82rem; font-weight:700; color:var(--yellow); margin-bottom:4px; }
+.lb-row   { display:flex; align-items:center; gap:8px; padding:5px 6px; font-size:.82rem; border-radius:6px; }
+.lb-row:nth-child(2) { background:rgba(255,209,102,.08); }
+.lb-rank  { font-weight:700; color:var(--text2); min-width:18px; }
+.lb-name  { flex:1; font-weight:500; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.lb-pts   { color:var(--yellow); font-weight:700; white-space:nowrap; }
+
+/* ─── Toast ──────────────────────────────────────────────── */
+#toast {
+  position:fixed; top:calc(var(--topbar-h) + 10px); left:50%;
+  transform:translateX(-50%) translateY(-6px);
+  background:rgba(30,42,43,.92); color:var(--text);
+  padding:8px 18px; border-radius:30px; font-size:.8rem; font-weight:600;
+  border:1px solid var(--border); opacity:0; transition:all .2s;
+  z-index:400; pointer-events:none; white-space:nowrap;
+  max-width:86vw; overflow:hidden; text-overflow:ellipsis;
+  backdrop-filter:blur(6px);
+}
+#toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+#toast.ok   { background:rgba(61,214,140,.18); border-color:var(--green); color:var(--green); }
+#toast.warn { background:rgba(224,85,85,.18);  border-color:var(--red);   color:var(--red); }
+
+/* ─── Round result ───────────────────────────────────────── */
+#round-overlay {
+  position:fixed; inset:0; background:rgba(0,0,0,.88);
+  display:none; align-items:center; justify-content:center;
+  z-index:500; backdrop-filter:blur(10px);
+}
+#round-overlay.show { display:flex; }
+#round-box {
+  background:var(--surface); border:1px solid var(--border); border-radius:20px;
+  padding:28px 22px; text-align:center; width:min(300px,90vw);
+  animation:popUp .3s cubic-bezier(.17,.67,.41,1.4);
+}
+.re-emoji { font-size:2.8rem; margin-bottom:8px; }
+.re-title { font-family:'Syne',sans-serif; font-size:1.15rem; font-weight:800; margin-bottom:4px; }
+.re-word  { font-size:1.4rem; font-weight:800; color:var(--btn-active); margin:8px 0; }
+.re-sub   { color:var(--text2); font-size:.84rem; margin-bottom:14px; }
+#re-newround {
+  background:var(--btn-bg); color:#fff; border:none; padding:11px;
+  border-radius:var(--r); font-size:.9rem; font-weight:700; cursor:pointer;
+  font-family:'Syne',sans-serif; width:100%;
+}
+
+/* ─── Join overlay ───────────────────────────────────────── */
+#join-overlay {
+  position:fixed; inset:0; background:rgba(15,22,23,.97);
+  display:flex; align-items:center; justify-content:center;
+  z-index:600; backdrop-filter:blur(14px);
+}
+#join-box {
+  background:var(--surface); border:1px solid var(--border); border-radius:22px;
+  padding:28px 22px; width:min(320px,92vw);
+  display:flex; flex-direction:column; gap:12px;
+}
+#join-box h2 {
+  text-align:center; font-family:'Syne',sans-serif; font-size:1.5rem; font-weight:800;
+  color:var(--btn-active);
+}
+#join-box input {
+  background:var(--surface2); border:1.5px solid var(--border);
+  border-radius:var(--r); color:var(--text); padding:11px 14px;
+  font-size:.9rem; outline:none; font-family:'DM Sans',sans-serif;
+}
+#join-box input:focus { border-color:var(--btn-bg); }
+#join-btn {
+  background:var(--btn-bg); color:#fff; border:none; padding:13px;
+  border-radius:var(--r); font-size:.95rem; font-weight:700; cursor:pointer;
+  font-family:'Syne',sans-serif;
+}
+
+/* ─── Replay ─────────────────────────────────────────────── */
+#replay-overlay {
+  position:fixed; inset:0; background:rgba(0,0,0,.9);
+  display:none; align-items:center; justify-content:center;
+  z-index:450; backdrop-filter:blur(6px); flex-direction:column; gap:14px;
+}
+#replay-overlay.show { display:flex; }
+#replay-canvas { border-radius:12px; max-width:90vw; max-height:56vh; background:#fff; }
+#replay-close {
+  background:var(--surface2); border:1px solid var(--border); color:var(--text);
+  padding:8px 18px; border-radius:20px; cursor:pointer; font-size:.84rem;
+}
+
+/* ─── Desktop ────────────────────────────────────────────── */
+@media(min-width:640px){
+  :root{ --topbar-h:50px; --toolbar-h:80px; }
+  #toolbar{ flex-direction:row; padding:0 20px; gap:14px; }
+  .tb-row{ gap:12px; }
+  .tbtn{ width:52px; height:52px; font-size:1.25rem; }
+}
+@media(max-width:380px){
+  .tbtn{ width:48px; height:48px; font-size:1.15rem; }
+  #toolbar{ gap:7px; padding:8px 10px; }
+  .tb-row{ gap:7px; }
+}
 </style>
 </head>
 <body>
 <div id="app">
 
-  <!-- Join -->
+  <!-- Join overlay -->
   <div id="join-overlay">
     <div id="join-box">
       <h2>🎨 Draw & Guess</h2>
-      <p>Join the game to start playing!</p>
       <input id="name-in" placeholder="Your name" maxlength="24" autocomplete="off"/>
       <input id="room-in" placeholder="Room ID" maxlength="60" autocomplete="off"/>
       <button id="join-btn">Join Game →</button>
@@ -223,125 +409,147 @@ html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);
   </div>
 
   <!-- Round result -->
-  <div id="result-overlay">
-    <div id="result-box">
-      <div class="re" id="re-emoji">🎉</div>
-      <h3 id="re-title"></h3>
-      <div class="rw" id="re-word"></div>
-      <p id="re-sub"></p>
-      <p class="next-info">Next round starting automatically...</p>
+  <div id="round-overlay">
+    <div id="round-box">
+      <div class="re-emoji" id="re-emoji">🎉</div>
+      <div class="re-title" id="re-title"></div>
+      <div class="re-word"  id="re-word"></div>
+      <div class="re-sub"   id="re-sub"></div>
+      <button id="re-newround">▶ New Round</button>
     </div>
   </div>
 
-  <!-- Custom confirm modal -->
-  <div id="modal-overlay">
-    <div id="modal-box">
-      <p id="modal-msg">Are you sure?</p>
-      <div class="mbtnrow">
-        <button id="modal-no">Cancel</button>
-        <button id="modal-yes">Confirm</button>
-      </div>
+  <!-- Replay -->
+  <div id="replay-overlay">
+    <canvas id="replay-canvas"></canvas>
+    <button id="replay-close">✕ Close</button>
+  </div>
+
+  <!-- ── Popups ── -->
+  <div class="popup" id="brush-popup">
+    <div class="pop-label">Brush Type</div>
+    <div class="brush-opt on"  data-brush="pen">    <span class="brush-icon">🖊</span>Pen</div>
+    <div class="brush-opt"     data-brush="pencil"> <span class="brush-icon">✏️</span>Pencil</div>
+    <div class="brush-opt"     data-brush="marker"> <span class="brush-icon">🖍</span>Marker</div>
+    <div class="brush-opt"     data-brush="bristle"><span class="brush-icon">🎨</span>Bristle</div>
+    <div class="brush-opt"     data-brush="flat">   <span class="brush-icon">▬</span>Flat</div>
+    <div class="brush-opt"     data-brush="eraser"> <span class="brush-icon">🧽</span>Eraser</div>
+  </div>
+
+  <div class="popup" id="color-popup">
+    <div class="pop-label">Basic</div>
+    <div class="color-row" id="colors-basic"></div>
+    <div class="pop-label">Pastel</div>
+    <div class="color-row" id="colors-pastel"></div>
+    <div class="pop-label">Neon</div>
+    <div class="color-row" id="colors-neon"></div>
+    <div id="custom-color-wrap">
+      <input type="color" id="custom-color" value="#1a1a2e"/>
+      <span id="custom-color-lbl">Custom color</span>
     </div>
   </div>
 
-  <!-- Brush panel (anchored above toolbar) -->
-  <div id="brush-panel" class="panel">
-    <div class="ptitle">BRUSH TYPE</div>
-    <div class="bopt on" data-brush="pen">  <span class="bi">🖊</span> Pen</div>
-    <div class="bopt" data-brush="pencil">  <span class="bi">✏️</span> Pencil</div>
-    <div class="bopt" data-brush="marker">  <span class="bi">🖍</span> Marker</div>
-    <div class="bopt" data-brush="eraser">  <span class="bi">🧽</span> Eraser</div>
+  <div class="popup" id="opacity-popup">
+    <div class="pop-label">Brush Size</div>
+    <div id="sz-popup-wrap">
+      <div id="sz-preview"></div>
+      <input type="range" id="sz-range" min="1" max="60" value="8"/>
+      <span id="sz-lbl">8px</span>
+    </div>
+    <div class="pop-divider"></div>
+    <div class="pop-label">Opacity</div>
+    <div id="op-popup-wrap">
+      <input type="range" id="op-range" min="5" max="100" value="100"/>
+      <span id="op-lbl">100%</span>
+    </div>
   </div>
 
-  <!-- Layer panel -->
-  <div id="layer-panel" class="panel">
-    <div class="ptitle">LAYERS</div>
-    <div class="lrow al" data-layer="3">
-      <span class="lvis sv" data-lv="3">👁</span><span class="lname">Layer 3</span>
-      <div class="lthumb"><canvas id="lt3"></canvas></div>
-    </div>
-    <div class="lrow" data-layer="2">
-      <span class="lvis sv" data-lv="2">👁</span><span class="lname">Layer 2</span>
-      <div class="lthumb"><canvas id="lt2"></canvas></div>
-    </div>
-    <div class="lrow" data-layer="1">
-      <span class="lvis sv" data-lv="1">👁</span><span class="lname">Layer 1</span>
-      <div class="lthumb"><canvas id="lt1"></canvas></div>
-    </div>
-    <button id="merge-btn" class="pbtn sm">Merge All Layers</button>
+  <div class="popup" id="layer-popup">
+    <div class="pop-label">Layers</div>
+    <div id="layer-list"></div>
+    <button class="tbtn" id="layer-add" style="height:36px;font-size:.78rem;border-radius:9px;background:var(--surface2);color:var(--text2)">+ Add Layer</button>
   </div>
 
-  <!-- Settings panel -->
-  <div id="settings-panel" class="panel">
-    <div class="ptitle">CANVAS SETTINGS</div>
-    <label>Canvas Size</label>
-    <select id="canvas-size-sel">
-      <option value="640x360">640 × 360</option>
-      <option value="800x500" selected>800 × 500</option>
-      <option value="1024x640">1024 × 640</option>
-      <option value="1280x720">1280 × 720 (HD)</option>
-    </select>
-    <button id="apply-size-btn" class="pbtn">Apply Size</button>
+  <!-- Settings popup — 3-dot menu -->
+  <div class="popup" id="settings-popup">
+    <div class="setting-section">Game</div>
+    <div class="setting-row" id="s-players"><span class="s-icon">👥</span><span class="s-label">Players</span></div>
+    <div class="setting-row" id="s-leaderboard"><span class="s-icon">🏆</span><span class="s-label">Leaderboard</span></div>
+    <div class="pop-divider"></div>
+    <div class="setting-section">Drawing</div>
+    <div class="setting-row" id="s-save-drawing"><span class="s-icon">💾</span><span class="s-label">Save drawing</span></div>
+    <div class="setting-row" id="s-send-bot"><span class="s-icon">📤</span><span class="s-label">Send to my Telegram</span></div>
+    <div class="setting-row" id="s-gallery"><span class="s-icon">🖼</span><span class="s-label">Gallery</span></div>
+    <div class="pop-divider"></div>
+    <div class="setting-section">Display</div>
+    <div class="setting-row" id="s-theme"><span class="s-icon">☀️</span><span class="s-label">Light mode</span><span class="s-value" id="s-theme-val">Off</span></div>
+    <div class="setting-row" id="s-sound"><span class="s-icon">🔊</span><span class="s-label">Sound</span><span class="s-value" id="s-sound-val">On</span></div>
+    <div class="pop-divider"></div>
+    <div class="setting-section">Round</div>
+    <div class="setting-row" id="s-skip"><span class="s-icon">⏭</span><span class="s-label">Skip word</span></div>
+    <div class="setting-row" id="s-done"><span class="s-icon">✅</span><span class="s-label">Finish drawing</span></div>
+    <div class="setting-row" id="s-newround"><span class="s-icon">▶</span><span class="s-label">New round</span></div>
+  </div>
+
+  <!-- Players popup -->
+  <div class="popup" id="players-popup">
+    <div class="pop-label">Players</div>
+    <div id="player-list"><div style="font-size:.76rem;color:var(--text2);padding:4px 6px">No players</div></div>
+  </div>
+
+  <!-- Leaderboard popup -->
+  <div class="popup" id="lb-popup">
+    <div class="lb-title">🏆 Leaderboard</div>
+    <div id="lb-list"></div>
   </div>
 
   <!-- Topbar -->
   <div id="topbar">
     <div id="conn-dot"></div>
     <div id="word-display">connecting…</div>
-    <div id="timer-box" style="display:none">90s</div>
     <span id="role-pill">—</span>
-    <button class="tbtn" id="btn-settings" style="width:32px;height:32px;font-size:.82rem;">⚙️</button>
-  </div>
-
-  <!-- Canvas -->
-  <div id="canvas-outer">
-    <div id="canvas-inner">
-      <canvas id="cv-bg" class="cvl"></canvas>
-      <canvas id="cv-l1" class="cvl"></canvas>
-      <canvas id="cv-l2" class="cvl"></canvas>
-      <canvas id="cv-l3" class="cvl"></canvas>
-    </div>
-    <div id="guesser-overlay">
-      <!-- empty — just blocks drawing cursor for guessers -->
+    <span id="timer-display"></span>
+    <div id="top-actions">
+      <button class="top-icon" id="btn-menu" title="Settings">⋯</button>
     </div>
   </div>
 
-  <!-- Drawer chat (sees guesses, read-only) -->
-  <div id="drawer-chat"></div>
+  <!-- Canvas area -->
+  <div id="canvas-area">
+    <div id="canvas-wrap">
+      <canvas id="cv-bg"      class="cvl"></canvas>
+      <canvas id="cv-main"    class="cvl"></canvas>
+      <canvas id="cv-preview" class="cvl"></canvas>
+    </div>
+    <!-- Chat (guesser) -->
+    <div id="chat-panel" class="visible">
+      <div id="chat-log"></div>
+      <div id="guess-row">
+        <input id="guess-in" placeholder="Type your guess…" autocomplete="off" autocorrect="off" autocapitalize="off"/>
+        <button id="guess-go">Send</button>
+      </div>
+    </div>
+  </div>
 
-  <!-- Drawer toolbar -->
+  <!-- Toolbar (drawer) — 2×4 icon grid like reference -->
   <div id="toolbar">
-    <div id="palette" style="display:flex;gap:4px;align-items:center;flex-shrink:0;"></div>
-    <div class="sep"></div>
-    <button class="tbtn on" id="btn-brush">🖊</button>
-    <button class="tbtn" id="btn-layers">📋</button>
-    <div class="sep"></div>
-    <div id="sz-wrap">
-      <div id="sz-dot"></div>
-      <input type="range" id="sz-range" min="1" max="80" value="8"/>
+    <!-- Row 1: brush, color, size/opacity, layers, (filler) -->
+    <div class="tb-row">
+      <button class="tbtn on" id="btn-brush"   title="Brush">✏️<div class="color-dot" id="color-dot"></div></button>
+      <button class="tbtn"    id="btn-color"   title="Color">🎨</button>
+      <button class="tbtn"    id="btn-opacity" title="Size & Opacity">💧</button>
+      <button class="tbtn"    id="btn-layers"  title="Layers">📋</button>
     </div>
-    <div class="sep"></div>
-    <button class="tbtn" id="btn-undo">↩️</button>
-    <button class="tbtn" id="btn-redo">↪️</button>
-    <button class="tbtn rbtn" id="btn-clear" style="font-size:.85rem;">🗑</button>
-    <div class="sep"></div>
-    <div id="zoom-wrap">
-      <button class="tbtn" id="btn-zo" style="font-size:1.1rem;font-weight:900;">−</button>
-      <span id="zoom-lbl">100%</span>
-      <button class="tbtn" id="btn-zi" style="font-size:1.1rem;font-weight:900;">+</button>
-      <button class="tbtn" id="btn-zf" style="font-size:.62rem;font-weight:900;">FIT</button>
-    </div>
-    <div class="sep"></div>
-    <button class="tbtn gbtn" id="btn-done">✅</button>
-  </div>
-
-  <!-- Guesser area -->
-  <div id="guess-area">
-    <div id="chat-log"></div>
-    <div id="guess-row">
-      <input id="guess-in" placeholder="Type your guess…" autocomplete="off" autocorrect="off" autocapitalize="off"/>
-      <button id="hint-btn">💡 Hint</button>
-      <button id="guess-go">Send</button>
+    <!-- Row 2: undo, redo, clear, settings + size label -->
+    <div class="tb-row">
+      <button class="tbtn"       id="btn-undo"  title="Undo">↩</button>
+      <button class="tbtn"       id="btn-redo"  title="Redo">↪</button>
+      <button class="tbtn tred"  id="btn-clear" title="Clear">✕</button>
+      <button class="tbtn"       id="btn-menu2" title="More">⋯</button>
+      <div id="sz-op-label">
+        <div id="sz-op-size">5px</div>
+        <div id="sz-op-opacity">100%</div>
+      </div>
     </div>
   </div>
 
@@ -352,569 +560,755 @@ html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);
 (function(){
 'use strict';
 
-// ── Telegram ──────────────────────────────────────────────────────────────────
-const tg=window.Telegram?.WebApp;
-if(tg){tg.ready();tg.expand();}
+const tg = window.Telegram?.WebApp;
+if (tg) {
+  tg.ready(); tg.expand();
+  if (typeof tg.requestFullscreen === 'function') tg.requestFullscreen();
+  tg.onEvent('viewportChanged', () => { if (!tg.isExpanded) tg.expand(); });
+}
 
 // ── Canvas setup ──────────────────────────────────────────────────────────────
-let CW=800,CH=500;
-const LAYERS={bg:document.getElementById('cv-bg'),
-  1:document.getElementById('cv-l1'),2:document.getElementById('cv-l2'),3:document.getElementById('cv-l3')};
-const CTX={};
-const layerVis={1:true,2:true,3:true};
-let activeLayer=3;
-let isDrawer=false;  // declared early — fixes bug #2
-let ws=null,myName='',myRoom='';
-let hintCooldown=false;
+let CW = 800, CH = 500;
+const bgCanvas      = document.getElementById('cv-bg');
+const mainCanvas    = document.getElementById('cv-main');
+const previewCanvas = document.getElementById('cv-preview');
+let   bgCtx, mainCtx, previewCtx;
 
-function initCanvases(){
-  Object.entries(LAYERS).forEach(([k,cv])=>{
-    cv.width=CW;cv.height=CH;cv.style.width=CW+'px';cv.style.height=CH+'px';
-    CTX[k]=cv.getContext('2d');
+// Layer system
+const MAX_LAYERS = 5;
+let layers = [];
+let activeLayerIdx = 0;
+
+function createLayer(name) {
+  const canvas = document.createElement('canvas');
+  canvas.width = CW; canvas.height = CH;
+  canvas.style.cssText = `position:absolute;top:0;left:0;z-index:${2+layers.length}`;
+  document.getElementById('canvas-wrap').insertBefore(canvas, previewCanvas);
+  const ctx = canvas.getContext('2d');
+  ctx.lineCap = ctx.lineJoin = 'round';
+  return { id:Date.now(), name, canvas, ctx, visible:true, opacity:1.0 };
+}
+
+function initCanvases() {
+  [bgCanvas, mainCanvas, previewCanvas].forEach(c => {
+    c.width = CW; c.height = CH;
+    c.style.width = CW+'px'; c.style.height = CH+'px';
   });
-  CTX.bg.fillStyle='#fff';CTX.bg.fillRect(0,0,CW,CH);
+  bgCtx = bgCanvas.getContext('2d');
+  mainCtx = mainCanvas.getContext('2d');
+  previewCtx = previewCanvas.getContext('2d');
+  bgCtx.fillStyle = '#fff'; bgCtx.fillRect(0,0,CW,CH);
+  mainCtx.lineCap = mainCtx.lineJoin = 'round';
+
+  layers = [];
+  document.querySelectorAll('#canvas-wrap canvas:not(#cv-bg):not(#cv-main):not(#cv-preview)').forEach(c=>c.remove());
+  layers.push(createLayer('Layer 1'));
+  activeLayerIdx = 0;
+  renderLayerPanel();
   fitCanvas();
 }
-const actCtx=()=>CTX[activeLayer];
 
-// ── Zoom / pan ─────────────────────────────────────────────────────────────────
-let zoom=1,panX=0,panY=0,pinching=false,lastPinchD=0,lastPinchM=null;
-const inner=document.getElementById('canvas-inner');
-const outer=document.getElementById('canvas-outer');
+function activeLayer() { return layers[activeLayerIdx]; }
+function activeCtx()   { return activeLayer()?.ctx || mainCtx; }
 
-function applyT(){
-  inner.style.transform=`translate(${panX}px,${panY}px) scale(${zoom})`;
-  document.getElementById('zoom-lbl').textContent=Math.round(zoom*100)+'%';
+// ── Zoom / pan ────────────────────────────────────────────────────────────────
+let zoom=1, panX=0, panY=0;
+const canvasWrap = document.getElementById('canvas-wrap');
+const canvasArea = document.getElementById('canvas-area');
+
+function applyTransform() {
+  canvasWrap.style.transform = `translate(${panX}px,${panY}px) scale(${zoom})`;
 }
-function fitCanvas(){
-  const ow=outer.clientWidth,oh=outer.clientHeight;
-  zoom=Math.min(ow/CW,oh/CH,1);
-  panX=(ow-CW*zoom)/2;panY=(oh-CH*zoom)/2;
-  applyT();
+function fitCanvas() {
+  const aw = canvasArea.clientWidth, ah = canvasArea.clientHeight;
+  zoom = Math.min(aw/CW, ah/CH, 1);
+  panX = (aw - CW*zoom)/2;
+  panY = (ah - CH*zoom)/2;
+  applyTransform();
 }
-window.addEventListener('resize',fitCanvas);
+window.addEventListener('resize', fitCanvas);
 
-function zoomAt(d,cx,cy){
-  const r=outer.getBoundingClientRect();
-  const ox=cx-r.left,oy=cy-r.top;
-  const nz=Math.max(.15,Math.min(8,zoom*d));
-  panX=ox-(ox-panX)*(nz/zoom);panY=oy-(oy-panY)*(nz/zoom);
-  zoom=nz;applyT();
+function clientToCanvas(cx, cy) {
+  const rect = canvasArea.getBoundingClientRect();
+  return [(cx-rect.left-panX)/zoom, (cy-rect.top-panY)/zoom];
 }
 
-outer.addEventListener('wheel',e=>{
-  if(e.ctrlKey||e.metaKey){e.preventDefault();zoomAt(e.deltaY<0?1.12:.89,e.clientX,e.clientY);}
+// ── Drawing tools ─────────────────────────────────────────────────────────────
+let brushType='pen', brushSize=8, brushOpacity=1.0;
+let currentColor='#1a1a2e';
+let isDrawing=false, currentStroke=null;
+let lastX=0, lastY=0;
+
+const undoStacks = new WeakMap();
+const redoStacks = new WeakMap();
+
+function getStack(layer, map) {
+  if (!map.has(layer)) map.set(layer, []);
+  return map.get(layer);
+}
+function saveUndo() {
+  const l = activeLayer(); if (!l) return;
+  const stack = getStack(l, undoStacks);
+  stack.push(l.ctx.getImageData(0,0,CW,CH));
+  if (stack.length > 20) stack.shift();
+  getStack(l, redoStacks).length = 0;
+}
+function doUndo() {
+  const l=activeLayer(); if (!l) return;
+  const us=getStack(l,undoStacks), rs=getStack(l,redoStacks);
+  if (!us.length) return;
+  rs.push(l.ctx.getImageData(0,0,CW,CH));
+  l.ctx.putImageData(us.pop(),0,0);
+}
+function doRedo() {
+  const l=activeLayer(); if (!l) return;
+  const us=getStack(l,undoStacks), rs=getStack(l,redoStacks);
+  if (!rs.length) return;
+  us.push(l.ctx.getImageData(0,0,CW,CH));
+  l.ctx.putImageData(rs.pop(),0,0);
+}
+
+function applyBrushSettings(ctx) {
+  ctx.globalAlpha = brushOpacity;
+  ctx.globalCompositeOperation = brushType==='eraser' ? 'destination-out' : 'source-over';
+  ctx.lineWidth = brushSize;
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  ctx.strokeStyle = brushType==='eraser' ? 'rgba(0,0,0,1)' : currentColor;
+}
+
+function drawSegment(ctx, x0, y0, x1, y1) {
+  applyBrushSettings(ctx);
+  switch(brushType) {
+    case 'pencil': {
+      ctx.setLineDash([brushSize*.6, brushSize*.3]);
+      ctx.globalAlpha = brushOpacity * .75;
+      ctx.lineWidth = brushSize * .8;
+      for (let i=0;i<2;i++) {
+        ctx.beginPath();
+        ctx.moveTo(x0+(Math.random()-.5)*1.2, y0+(Math.random()-.5)*1.2);
+        ctx.lineTo(x1+(Math.random()-.5)*1.2, y1+(Math.random()-.5)*1.2);
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+      break;
+    }
+    case 'marker': {
+      ctx.globalAlpha = brushOpacity * .6;
+      ctx.lineWidth = brushSize * 1.4;
+      ctx.beginPath(); ctx.moveTo(x0,y0); ctx.lineTo(x1,y1); ctx.stroke();
+      break;
+    }
+    case 'bristle': {
+      const bristles = Math.max(3, Math.floor(brushSize/2));
+      ctx.globalAlpha = brushOpacity / bristles * 2;
+      ctx.lineWidth = Math.max(1, brushSize/bristles);
+      for (let i=0;i<bristles;i++) {
+        const r = brushSize*.6;
+        ctx.beginPath();
+        ctx.moveTo(x0+(Math.random()-.5)*r, y0+(Math.random()-.5)*r);
+        ctx.lineTo(x1+(Math.random()-.5)*r, y1+(Math.random()-.5)*r);
+        ctx.stroke();
+      }
+      break;
+    }
+    case 'flat': {
+      ctx.lineWidth = brushSize*2.5; ctx.lineCap='square';
+      ctx.beginPath(); ctx.moveTo(x0,y0); ctx.lineTo(x1,y1); ctx.stroke();
+      break;
+    }
+    default: {
+      ctx.beginPath(); ctx.moveTo(x0,y0); ctx.lineTo(x1,y1); ctx.stroke();
+    }
+  }
+  ctx.globalAlpha=1; ctx.globalCompositeOperation='source-over'; ctx.lineCap='round';
+}
+
+// ── Pointer events ────────────────────────────────────────────────────────────
+let pointerId=null;
+
+function onPointerDown(e) {
+  if (!isDrawer) return;
+  if (e.pointerType==='touch' && e.touches?.length>1) return;
+  e.preventDefault();
+  pointerId=e.pointerId;
+  canvasArea.setPointerCapture?.(e.pointerId);
+  const [x,y]=clientToCanvas(e.clientX,e.clientY);
+  saveUndo();
+  isDrawing=true; lastX=x; lastY=y;
+  currentStroke={color:currentColor,size:brushSize,opacity:brushOpacity,brushType,points:[[x,y]]};
+}
+function onPointerMove(e) {
+  if (!isDrawing||!isDrawer||e.pointerId!==pointerId) return;
+  e.preventDefault();
+  const [x,y]=clientToCanvas(e.clientX,e.clientY);
+  currentStroke.points.push([x,y]);
+  drawSegment(activeCtx(),lastX,lastY,x,y);
+  lastX=x; lastY=y;
+  if (currentStroke.points.length%4===0) ws?.send(JSON.stringify({type:'draw',stroke:{...currentStroke}}));
+}
+function onPointerUp(e) {
+  if (!isDrawing||!isDrawer) return;
+  isDrawing=false; pointerId=null;
+  if (currentStroke?.points.length>0) ws?.send(JSON.stringify({type:'draw',stroke:currentStroke}));
+  currentStroke=null;
+}
+
+canvasArea.addEventListener('pointerdown', onPointerDown, {passive:false});
+canvasArea.addEventListener('pointermove', onPointerMove, {passive:false});
+canvasArea.addEventListener('pointerup',   onPointerUp);
+canvasArea.addEventListener('pointercancel', onPointerUp);
+
+// Pinch zoom
+let pinchDist=0, pinchZoom=1;
+canvasArea.addEventListener('touchstart', e=>{
+  if (e.touches.length===2) {
+    isDrawing=false;
+    const t=e.touches;
+    pinchDist=Math.hypot(t[0].clientX-t[1].clientX,t[0].clientY-t[1].clientY);
+    pinchZoom=zoom; e.preventDefault();
+  }
 },{passive:false});
-
-outer.addEventListener('touchstart',e=>{
-  if(e.touches.length===2){
-    pinching=true;
-    lastPinchD=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,
-      e.touches[0].clientY-e.touches[1].clientY);
-    lastPinchM={x:(e.touches[0].clientX+e.touches[1].clientX)/2,
-      y:(e.touches[0].clientY+e.touches[1].clientY)/2};
+canvasArea.addEventListener('touchmove', e=>{
+  if (e.touches.length===2) {
     e.preventDefault();
+    const t=e.touches;
+    const d=Math.hypot(t[0].clientX-t[1].clientX,t[0].clientY-t[1].clientY);
+    zoom=Math.max(.2,Math.min(8,pinchZoom*(d/pinchDist)));
+    applyTransform();
+  }
+},{passive:false});
+canvasArea.addEventListener('wheel',e=>{
+  if(e.ctrlKey||e.metaKey){
+    e.preventDefault();
+    const rect=canvasArea.getBoundingClientRect();
+    const ox=e.clientX-rect.left,oy=e.clientY-rect.top;
+    const nz=Math.max(.15,Math.min(8,zoom*(e.deltaY<0?1.12:.89)));
+    panX=ox-(ox-panX)*(nz/zoom); panY=oy-(oy-panY)*(nz/zoom);
+    zoom=nz; applyTransform();
   }
 },{passive:false});
 
-outer.addEventListener('touchmove',e=>{
-  if(e.touches.length===2&&pinching){
-    e.preventDefault();
-    const d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,
-      e.touches[0].clientY-e.touches[1].clientY);
-    const m={x:(e.touches[0].clientX+e.touches[1].clientX)/2,
-      y:(e.touches[0].clientY+e.touches[1].clientY)/2};
-    if(lastPinchD>0)zoomAt(d/lastPinchD,m.x,m.y);
-    panX+=m.x-lastPinchM.x;panY+=m.y-lastPinchM.y;
-    lastPinchD=d;lastPinchM=m;applyT();
-  }
-},{passive:false});
-outer.addEventListener('touchend',e=>{if(e.touches.length<2)pinching=false;});
-
-document.getElementById('btn-zi').addEventListener('click',()=>{const r=outer.getBoundingClientRect();zoomAt(1.25,r.left+r.width/2,r.top+r.height/2);});
-document.getElementById('btn-zo').addEventListener('click',()=>{const r=outer.getBoundingClientRect();zoomAt(.8,r.left+r.width/2,r.top+r.height/2);});
-document.getElementById('btn-zf').addEventListener('click',fitCanvas);
-
-function getXY(e){
-  const r=outer.getBoundingClientRect();
-  const s=e.touches?e.touches[0]:e;
-  return[(s.clientX-r.left-panX)/zoom,(s.clientY-r.top-panY)/zoom];
+// ── Render incoming strokes ────────────────────────────────────────────────────
+function renderStroke(s, ctx) {
+  if (!ctx) return;
+  const pts=s.points||[]; if (pts.length<2) return;
+  ctx.globalAlpha=s.opacity||1;
+  ctx.globalCompositeOperation=(s.brushType==='eraser')?'destination-out':'source-over';
+  ctx.strokeStyle=(s.brushType==='eraser')?'rgba(0,0,0,1)':(s.color||'#000');
+  ctx.lineWidth=s.size||4; ctx.lineCap=ctx.lineJoin='round';
+  ctx.beginPath(); ctx.moveTo(pts[0][0],pts[0][1]);
+  for(let i=1;i<pts.length;i++) ctx.lineTo(pts[i][0],pts[i][1]);
+  ctx.stroke();
+  ctx.globalAlpha=1; ctx.globalCompositeOperation='source-over';
+}
+function clearAll() {
+  layers.forEach(l=>l.ctx.clearRect(0,0,CW,CH));
+  bgCtx.fillStyle='#fff'; bgCtx.fillRect(0,0,CW,CH);
 }
 
-// ── Drawing ────────────────────────────────────────────────────────────────────
-let drawing=false,lx=0,ly=0,brushType='pen',color='#222222',brushSize=8;
-let undoStack=[],redoStack=[];
-let curStroke=null;
+// ── Layer panel ───────────────────────────────────────────────────────────────
+function renderLayerPanel() {
+  const list=document.getElementById('layer-list'); list.innerHTML='';
+  layers.forEach((l,i)=>{
+    const row=document.createElement('div');
+    row.className='layer-row'+(i===activeLayerIdx?' active':'');
+    row.innerHTML=`
+      <span class="layer-vis ${l.visible?'on':''}" data-li="${i}">👁</span>
+      <span class="layer-name">${l.name}</span>
+      <input type="range" class="layer-op-slider" min="5" max="100" value="${Math.round(l.opacity*100)}" data-li="${i}"/>
+      ${layers.length>1?`<span style="cursor:pointer;font-size:.78rem;color:var(--red)" data-del="${i}">🗑</span>`:''}
+    `;
+    row.addEventListener('click',ev=>{
+      if(ev.target.dataset.del!==undefined){layers.splice(+ev.target.dataset.del,1);if(activeLayerIdx>=layers.length)activeLayerIdx=layers.length-1;renderLayerPanel();return;}
+      if(ev.target.classList.contains('layer-vis')){layers[+ev.target.dataset.li].visible=!layers[+ev.target.dataset.li].visible;layers[+ev.target.dataset.li].canvas.style.opacity=layers[+ev.target.dataset.li].visible?layers[+ev.target.dataset.li].opacity:0;renderLayerPanel();return;}
+      activeLayerIdx=i; renderLayerPanel();
+    });
+    row.querySelector('.layer-op-slider')?.addEventListener('input',ev=>{const li=+ev.target.dataset.li;layers[li].opacity=+ev.target.value/100;if(layers[li].visible)layers[li].canvas.style.opacity=layers[li].opacity;});
+    list.appendChild(row);
+  });
+}
+document.getElementById('layer-add').addEventListener('click',()=>{
+  if(layers.length>=MAX_LAYERS){showToast('Max layers reached','warn');return;}
+  layers.push(createLayer(`Layer ${layers.length+1}`));
+  activeLayerIdx=layers.length-1; renderLayerPanel();
+});
 
-const BRUSHES={
-  pen:   {op:'source-over',alpha:1,  lw:1,  blur:0},
-  pencil:{op:'source-over',alpha:.6, lw:.8, blur:.4},
-  marker:{op:'source-over',alpha:.4, lw:2.5,blur:0},
-  eraser:{op:'destination-out',alpha:1,lw:1,blur:0},
+// ── Color palette ─────────────────────────────────────────────────────────────
+const PALETTE = {
+  basic:  ['#1a1a2e','#ffffff','#e63946','#f4842d','#ffd166','#3dd68c','#118ab2','#7c6ff7'],
+  pastel: ['#ffb3ba','#ffdfba','#ffffba','#baffc9','#bae1ff','#e8baff','#ffd4ba','#c9ffba'],
+  neon:   ['#ff0090','#ff6600','#ffee00','#00ff41','#00cfff','#7b00ff','#ff00ff','#00ffcc'],
 };
 
-function applyBS(ctx,c,s,bt){
-  const b=BRUSHES[bt||brushType]||BRUSHES.pen;
-  ctx.globalCompositeOperation=b.op;
-  ctx.globalAlpha=b.alpha;
-  // Fix bug #3: eraser uses white fill visually but destination-out compositionally
-  ctx.strokeStyle=b.op==='destination-out'?'rgba(255,255,255,1)':c;
-  ctx.fillStyle=ctx.strokeStyle;
-  ctx.lineWidth=s*b.lw;ctx.lineCap='round';ctx.lineJoin='round';
-  ctx.filter=b.blur?`blur(${b.blur}px)`:'none';
-}
-function resetBS(ctx){ctx.globalCompositeOperation='source-over';ctx.globalAlpha=1;ctx.filter='none';}
-
-function renderStroke(stroke,tCtx){
-  const ctx=tCtx||CTX[stroke.layer||3]||actCtx();
-  const pts=stroke.points||[];if(!pts.length)return;
-  const bt=stroke.brush||'pen';
-  // Fix bug #3: eraser color can be null — handle it
-  const strokeColor=stroke.color||'#222222';
-  applyBS(ctx,strokeColor,stroke.size||8,bt);
-  ctx.beginPath();
-  if(pts.length===1){
-    ctx.arc(pts[0][0],pts[0][1],(stroke.size||8)/2,0,Math.PI*2);ctx.fill();
-  } else {
-    ctx.moveTo(pts[0][0],pts[0][1]);
-    for(let i=1;i<pts.length;i++)ctx.lineTo(pts[i][0],pts[i][1]);
-    ctx.stroke();
-  }
-  resetBS(ctx);
-}
-
-// Undo/redo — snapshots all layers
-function saveUndo(){
-  const s={};[1,2,3].forEach(n=>s[n]=CTX[n].getImageData(0,0,CW,CH));
-  undoStack.push(s);if(undoStack.length>40)undoStack.shift();redoStack=[];
-}
-function doUndo(){
-  if(!undoStack.length)return;
-  const c={};[1,2,3].forEach(n=>c[n]=CTX[n].getImageData(0,0,CW,CH));
-  redoStack.push(c);const s=undoStack.pop();
-  [1,2,3].forEach(n=>CTX[n].putImageData(s[n],0,0));
-  // Fix bug #4: debounce snapshot — send only after user stops tapping
-  scheduleSendSnap();updateThumbs();
-}
-function doRedo(){
-  if(!redoStack.length)return;
-  const c={};[1,2,3].forEach(n=>c[n]=CTX[n].getImageData(0,0,CW,CH));
-  undoStack.push(c);const s=redoStack.pop();
-  [1,2,3].forEach(n=>CTX[n].putImageData(s[n],0,0));
-  scheduleSendSnap();updateThumbs();
-}
-let snapTimer=null;
-function scheduleSendSnap(){
-  clearTimeout(snapTimer);
-  snapTimer=setTimeout(()=>{ ws?.send(JSON.stringify({type:'snapshot',data:getMerged()})); },600);
-}
-
-function getMerged(){
-  const t=document.createElement('canvas');t.width=CW;t.height=CH;
-  const tc=t.getContext('2d');tc.fillStyle='#fff';tc.fillRect(0,0,CW,CH);
-  [1,2,3].forEach(n=>{if(layerVis[n])tc.drawImage(LAYERS[n],0,0);});
-  return t.toDataURL('image/png');
-}
-
-function updateThumbs(){
-  [1,2,3].forEach(n=>{
-    const th=document.getElementById(`lt${n}`);if(!th)return;
-    th.width=28;th.height=18;
-    const tc=th.getContext('2d');tc.fillStyle='#fff';tc.fillRect(0,0,28,18);
-    tc.drawImage(LAYERS[n],0,0,28,18);
+function renderPalette() {
+  ['basic','pastel','neon'].forEach(group=>{
+    const row=document.getElementById('colors-'+group); if(!row) return;
+    PALETTE[group].forEach(hex=>{
+      const d=document.createElement('div');
+      d.className='cswatch'; d.style.background=hex;
+      if(hex===currentColor) d.classList.add('on');
+      d.addEventListener('click',()=>setColor(hex));
+      row.appendChild(d);
+    });
   });
+  updateColorDot(currentColor);
 }
 
-// ── Color palette ──────────────────────────────────────────────────────────────
-const COLORS=['#222222','#ffffff','#ff3855','#ff8c42','#ffd60a',
-  '#06d6a0','#0077b6','#7b2d8b','#ff6b8a','#8b4513',
-  '#adb5bd','#4cc9f0','#7c6ff7','#f72585','#2dc653'];
-const palette=document.getElementById('palette');
-COLORS.forEach(c=>{
-  const d=document.createElement('div');
-  d.className='cdot'+(c===color?' on':'');
-  d.style.background=c;
-  if(c==='#ffffff')d.style.border='2.5px solid #555';
-  d.addEventListener('pointerdown',()=>{
-    document.querySelectorAll('.cdot').forEach(x=>x.classList.remove('on'));
-    d.classList.add('on');color=c;
-    if(brushType==='eraser'){brushType='pen';updateBrushUI();}
-    updateSzDot();
-  });
-  palette.appendChild(d);
-});
-
-function updateSzDot(){
-  const s=Math.max(3,Math.min(brushSize,22));
-  document.getElementById('sz-dot').innerHTML=
-    `<div style="width:${s}px;height:${s}px;border-radius:50%;background:${brushType==='eraser'?'#888':color};pointer-events:none;"></div>`;
-}
-document.getElementById('sz-range').addEventListener('input',e=>{brushSize=+e.target.value;updateSzDot();});
-updateSzDot();
-
-// ── Brush panel ────────────────────────────────────────────────────────────────
-const brushPanel=document.getElementById('brush-panel');
-const layerPanel=document.getElementById('layer-panel');
-const settingsPanel=document.getElementById('settings-panel');
-
-function closeAllPanels(){brushPanel.classList.remove('open');layerPanel.classList.remove('open');settingsPanel.classList.remove('open');}
-
-document.getElementById('btn-brush').addEventListener('click',()=>{
-  brushPanel.classList.toggle('open');layerPanel.classList.remove('open');settingsPanel.classList.remove('open');
-});
-document.querySelectorAll('.bopt').forEach(el=>{
-  el.addEventListener('click',()=>{
-    document.querySelectorAll('.bopt').forEach(x=>x.classList.remove('on'));
-    el.classList.add('on');brushType=el.dataset.brush;
-    document.getElementById('btn-brush').textContent=el.querySelector('.bi').textContent;
-    updateSzDot();brushPanel.classList.remove('open');
-  });
-});
-function updateBrushUI(){
-  document.querySelectorAll('.bopt').forEach(x=>x.classList.remove('on'));
-  document.querySelector(`.bopt[data-brush="${brushType}"]`)?.classList.add('on');
-  updateSzDot();
+function hexToRgb(hex) {
+  const r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16);
+  return `rgb(${r}, ${g}, ${b})`;
 }
 
-// ── Layer panel ────────────────────────────────────────────────────────────────
-document.getElementById('btn-layers').addEventListener('click',()=>{
-  layerPanel.classList.toggle('open');brushPanel.classList.remove('open');settingsPanel.classList.remove('open');
-  updateThumbs();
-});
-document.querySelectorAll('.lrow').forEach(el=>{
-  el.addEventListener('click',e=>{
-    if(e.target.classList.contains('lvis'))return;
-    document.querySelectorAll('.lrow').forEach(x=>x.classList.remove('al'));
-    el.classList.add('al');activeLayer=+el.dataset.layer;
-  });
-});
-document.querySelectorAll('.lvis').forEach(el=>{
-  el.addEventListener('click',e=>{
-    e.stopPropagation();const n=+el.dataset.lv;
-    layerVis[n]=!layerVis[n];
-    LAYERS[n].style.opacity=layerVis[n]?'1':'0';
-    el.classList.toggle('sv',layerVis[n]);
-  });
-});
-document.getElementById('merge-btn').addEventListener('click',()=>{
-  saveUndo();
-  const t=document.createElement('canvas');t.width=CW;t.height=CH;
-  const tc=t.getContext('2d');[1,2,3].forEach(n=>tc.drawImage(LAYERS[n],0,0));
-  CTX[1].clearRect(0,0,CW,CH);CTX[1].drawImage(t,0,0);
-  [2,3].forEach(n=>CTX[n].clearRect(0,0,CW,CH));
-  activeLayer=1;
-  document.querySelectorAll('.lrow').forEach(x=>x.classList.remove('al'));
-  document.querySelector('.lrow[data-layer="1"]')?.classList.add('al');
-  showToast('Layers merged');updateThumbs();layerPanel.classList.remove('open');
-});
-
-// ── Settings panel ─────────────────────────────────────────────────────────────
-document.getElementById('btn-settings').addEventListener('click',()=>{
-  settingsPanel.classList.toggle('open');brushPanel.classList.remove('open');layerPanel.classList.remove('open');
-});
-document.getElementById('apply-size-btn').addEventListener('click',()=>{
-  const[w,h]=document.getElementById('canvas-size-sel').value.split('x').map(Number);
-  const saved={};[1,2,3].forEach(n=>saved[n]=LAYERS[n].toDataURL());
-  CW=w;CH=h;initCanvases();
-  [1,2,3].forEach(n=>{const img=new Image();img.src=saved[n];img.onload=()=>CTX[n].drawImage(img,0,0,CW,CH);});
-  settingsPanel.classList.remove('open');showToast(`Canvas: ${w}×${h}`);
-});
-
-// Close panels on outside click
-document.addEventListener('pointerdown',e=>{
-  if(!e.target.closest('#brush-panel,#btn-brush'))brushPanel.classList.remove('open');
-  if(!e.target.closest('#layer-panel,#btn-layers'))layerPanel.classList.remove('open');
-  if(!e.target.closest('#settings-panel,#btn-settings'))settingsPanel.classList.remove('open');
-});
-
-// ── Custom modal (replaces confirm) ───────────────────────────────────────────
-const modalOverlay=document.getElementById('modal-overlay');
-let modalResolve=null;
-function showModal(msg){
-  document.getElementById('modal-msg').textContent=msg;
-  modalOverlay.classList.add('open');
-  return new Promise(res=>{modalResolve=res;});
-}
-document.getElementById('modal-yes').addEventListener('click',()=>{modalOverlay.classList.remove('open');modalResolve&&modalResolve(true);});
-document.getElementById('modal-no').addEventListener('click',()=>{modalOverlay.classList.remove('open');modalResolve&&modalResolve(false);});
-
-// ── Drawing events ─────────────────────────────────────────────────────────────
-function onStart(e){
-  // Fix bug #10: check ws connected AND is drawer
-  if(!isDrawer||pinching||!ws||ws.readyState!==1)return;
-  if(e.touches?.length>1)return;
-  e.preventDefault();
-  drawing=true;saveUndo();[lx,ly]=getXY(e);
-  curStroke={brush:brushType,
-    // Fix bug #3: eraser sends '#ffffff' not null
-    color:brushType==='eraser'?'#ffffff':color,
-    size:brushSize,layer:activeLayer,points:[[lx,ly]]};
-}
-function onMove(e){
-  if(!drawing||!isDrawer||pinching)return;
-  if(e.touches?.length>1)return;
-  e.preventDefault();
-  const[x,y]=getXY(e);
-  // draw the actual stroke color for eraser is white
-  const drawColor=brushType==='eraser'?'#ffffff':color;
-  applyBS(actCtx(),drawColor,brushSize);
-  actCtx().beginPath();actCtx().moveTo(lx,ly);actCtx().lineTo(x,y);actCtx().stroke();
-  resetBS(actCtx());
-  curStroke.points.push([x,y]);lx=x;ly=y;
-}
-function onEnd(){
-  if(!drawing)return;drawing=false;
-  if(curStroke&&ws?.readyState===1)ws.send(JSON.stringify({type:'draw',stroke:curStroke}));
-  curStroke=null;updateThumbs();
-}
-outer.addEventListener('pointerdown',onStart,{passive:false});
-outer.addEventListener('pointermove',onMove,{passive:false});
-outer.addEventListener('pointerup',onEnd);
-outer.addEventListener('pointercancel',onEnd);
-
-// Toolbar buttons
-document.getElementById('btn-undo').addEventListener('click',()=>{if(isDrawer)doUndo();});
-document.getElementById('btn-redo').addEventListener('click',()=>{if(isDrawer)doRedo();});
-document.getElementById('btn-clear').addEventListener('click',()=>{
-  if(!isDrawer)return;
-  showModal('Clear the entire canvas?').then(ok=>{
-    if(!ok)return;
-    saveUndo();[1,2,3].forEach(n=>CTX[n].clearRect(0,0,CW,CH));
-    redoStack=[];ws?.send(JSON.stringify({type:'clear'}));updateThumbs();
-  });
-});
-document.getElementById('btn-done').addEventListener('click',()=>{
-  if(!isDrawer)return;
-  // Fix bug #6: use custom modal not confirm()
-  showModal('Finish drawing and reveal the word?').then(ok=>{
-    if(ok)ws?.send(JSON.stringify({type:'done_drawing'}));
-  });
-});
-
-// ── Toast ──────────────────────────────────────────────────────────────────────
-let toastT=null;const toastEl=document.getElementById('toast');
-function showToast(msg,cls=''){
-  toastEl.textContent=msg;toastEl.className='show '+(cls||'');
-  clearTimeout(toastT);toastT=setTimeout(()=>{toastEl.className='';},3000);
+function updateColorDot(hex) {
+  const dot=document.getElementById('color-dot'); if(dot) dot.style.background=hex;
+  const szDot=document.querySelector('#sz-preview div'); if(szDot) szDot.style.background=hex;
 }
 
-// ── Chat helpers ───────────────────────────────────────────────────────────────
-function addToLog(el,cls,html){
-  const d=document.createElement('div');d.className='cmsg '+cls;d.innerHTML=html;
-  el.appendChild(d);el.scrollTop=el.scrollHeight;
-}
-
-// ── Timer display ──────────────────────────────────────────────────────────────
-const timerBox=document.getElementById('timer-box');
-function updateTimer(t){
-  timerBox.style.display='block';
-  timerBox.textContent=`⏱ ${t}s`;
-  timerBox.className=t>30?'':t>10?'warn':'danger';
-}
-
-// ── Role setup ─────────────────────────────────────────────────────────────────
-function setRole(role,wordOrLen,hintText){
-  isDrawer=role==='drawer';
-  // Fix bug #14: close all panels when role switches
+function setColor(hex) {
+  currentColor=hex;
+  document.querySelectorAll('.cswatch').forEach(s=>s.classList.toggle('on',s.style.background===hex||s.style.background===hexToRgb(hex)));
+  document.getElementById('custom-color').value=hex;
+  updateColorDot(hex);
+  if(brushType==='eraser'){brushType='pen'; updateBrushBtn();}
   closeAllPanels();
+}
+document.getElementById('custom-color').addEventListener('input',e=>setColor(e.target.value));
 
-  document.getElementById('toolbar').style.display=isDrawer?'flex':'none';
-  document.getElementById('guess-area').style.display=isDrawer?'none':'flex';
-  document.getElementById('drawer-chat').style.display=isDrawer?'block':'none';
-  // Fix bug #7: guesser mode cursor
-  outer.classList.toggle('guesser-mode',!isDrawer);
-
-  const pill=document.getElementById('role-pill');
-  // Fix bug #1: set class correctly
-  pill.className=isDrawer?'drawer':'guesser';
-  pill.id='role-pill';
-  pill.textContent=isDrawer?'DRAWING':'GUESSING';
-
-  if(isDrawer){
-    document.getElementById('word-display').textContent=`Draw: ${wordOrLen}`;
-    document.getElementById('word-display').style.color='var(--grn)';
-    showToast(`🖌 Draw: ${wordOrLen}`);
-    undoStack=[];redoStack=[];
-  } else {
-    const display=hintText||Array(+wordOrLen).fill('_').join(' ');
-    document.getElementById('word-display').textContent=display;
-    document.getElementById('word-display').style.color='var(--acc)';
-    showToast(`🤔 Guess the word! ${wordOrLen} letters`);
-    // reset hint cooldown
-    hintCooldown=false;
-    document.getElementById('hint-btn').disabled=false;
-    document.getElementById('hint-btn').textContent='💡 Hint';
-  }
+function updateBrushBtn() {
+  const ICONS={pen:'✏️',pencil:'✏️',marker:'🖍',bristle:'🎨',flat:'▬',eraser:'🧽'};
+  const btn=document.getElementById('btn-brush');
+  btn.innerHTML=(ICONS[brushType]||'✏️')+`<div class="color-dot" id="color-dot" style="background:${currentColor}"></div>`;
 }
 
-// ── Hint button ────────────────────────────────────────────────────────────────
-document.getElementById('hint-btn').addEventListener('click',()=>{
-  if(hintCooldown||!ws||ws.readyState!==1)return;
-  ws.send(JSON.stringify({type:'request_hint'}));
-  hintCooldown=true;
-  document.getElementById('hint-btn').disabled=true;
-  document.getElementById('hint-btn').textContent='💡 30s';
-  let cd=30;
-  const iv=setInterval(()=>{
-    cd--;
-    if(cd<=0){
-      clearInterval(iv);
-      hintCooldown=false;
-      document.getElementById('hint-btn').disabled=false;
-      document.getElementById('hint-btn').textContent='💡 Hint';
-    } else {
-      document.getElementById('hint-btn').textContent=`💡 ${cd}s`;
-    }
-  },1000);
+// ── Brush panel ───────────────────────────────────────────────────────────────
+document.querySelectorAll('.brush-opt').forEach(el=>{
+  el.addEventListener('click',()=>{
+    brushType=el.dataset.brush;
+    document.querySelectorAll('.brush-opt').forEach(b=>b.classList.remove('on'));
+    el.classList.add('on');
+    updateBrushBtn();
+    closeAllPanels();
+  });
 });
 
-// ── Round result ───────────────────────────────────────────────────────────────
-const resultOverlay=document.getElementById('result-overlay');
+// ── Sliders ───────────────────────────────────────────────────────────────────
+function updateSzOpLabel() {
+  const el=document.getElementById('sz-op-size'); if(el) el.textContent=brushSize+'px';
+  const el2=document.getElementById('sz-op-opacity'); if(el2) el2.textContent=Math.round(brushOpacity*100)+'%';
+  const lbl=document.getElementById('sz-lbl'); if(lbl) lbl.textContent=brushSize+'px';
+}
+
+document.getElementById('sz-range').addEventListener('input',e=>{
+  brushSize=+e.target.value;
+  const sz=Math.max(4,Math.min(20,brushSize));
+  const dot=document.getElementById('sz-preview');
+  dot.innerHTML=`<div style="width:${sz}px;height:${sz}px;border-radius:50%;background:${currentColor}"></div>`;
+  updateSzOpLabel();
+});
+document.getElementById('op-range').addEventListener('input',e=>{
+  brushOpacity=+e.target.value/100;
+  document.getElementById('op-lbl').textContent=e.target.value+'%';
+  updateSzOpLabel();
+});
+
+// ── Panel management ──────────────────────────────────────────────────────────
+function closeAllPanels() {
+  document.querySelectorAll('.popup').forEach(p=>p.classList.remove('open'));
+}
+function togglePanel(id) {
+  const el=document.getElementById(id);
+  const was=el.classList.contains('open');
+  closeAllPanels();
+  if(!was) el.classList.add('open');
+}
+
+document.getElementById('btn-brush').addEventListener('click',()=>togglePanel('brush-popup'));
+document.getElementById('btn-color').addEventListener('click',()=>togglePanel('color-popup'));
+document.getElementById('btn-opacity').addEventListener('click',()=>togglePanel('opacity-popup'));
+document.getElementById('btn-layers').addEventListener('click',()=>togglePanel('layer-popup'));
+document.getElementById('btn-menu').addEventListener('click',()=>togglePanel('settings-popup'));
+document.getElementById('btn-menu2').addEventListener('click',()=>togglePanel('settings-popup'));
+document.getElementById('btn-undo').addEventListener('click',doUndo);
+document.getElementById('btn-redo').addEventListener('click',doRedo);
+document.getElementById('btn-clear').addEventListener('click',()=>{
+  if(!isDrawer) return;
+  saveUndo(); clearAll();
+  ws?.send(JSON.stringify({type:'clear'}));
+});
+
+document.addEventListener('pointerdown',e=>{
+  if(!e.target.closest('.tbtn')&&!e.target.closest('.top-icon')&&!e.target.closest('.popup')) closeAllPanels();
+});
+
+// ── Settings panel actions ────────────────────────────────────────────────────
+let isDark=true, soundEnabled=true;
+
+document.getElementById('s-players').addEventListener('click',()=>{togglePanel('players-popup');});
+document.getElementById('s-leaderboard').addEventListener('click',()=>{togglePanel('lb-popup');});
+
+document.getElementById('s-skip').addEventListener('click',()=>{
+  if(!isDrawer){showToast('Only the drawer can skip','warn');return;}
+  if(confirm('Skip this word?')) ws?.send(JSON.stringify({type:'skip_word'}));
+  closeAllPanels();
+});
+document.getElementById('s-done').addEventListener('click',()=>{
+  if(!isDrawer){showToast('Only the drawer can finish','warn');return;}
+  if(confirm('Finish drawing?')) ws?.send(JSON.stringify({type:'done_drawing'}));
+  closeAllPanels();
+});
+document.getElementById('s-newround').addEventListener('click',()=>{
+  ws?.send(JSON.stringify({type:'new_round'}));
+  closeAllPanels();
+});
+
+document.getElementById('s-theme').addEventListener('click',()=>{
+  isDark=!isDark; applyTheme(isDark);
+  document.getElementById('s-theme-val').textContent=isDark?'Off':'On';
+  document.getElementById('s-theme').querySelector('.s-icon').textContent=isDark?'☀️':'🌙';
+});
+document.getElementById('s-sound').addEventListener('click',()=>{
+  soundEnabled=!soundEnabled;
+  document.getElementById('s-sound-val').textContent=soundEnabled?'On':'Off';
+  showToast(soundEnabled?'Sound on 🔊':'Sound off 🔇');
+});
+document.getElementById('s-save-drawing').addEventListener('click',()=>{
+  saveToGallery(currentWord||'drawing', myName);
+  showToast('Drawing saved to gallery ✅','ok');
+  closeAllPanels();
+});
+document.getElementById('s-send-bot').addEventListener('click',()=>{
+  sendDrawingToTelegram();
+  closeAllPanels();
+});
+document.getElementById('s-gallery').addEventListener('click',()=>{
+  openGallery(); closeAllPanels();
+});
+
+// Send current canvas as image to user's private Telegram chat via bot
+function sendDrawingToTelegram() {
+  try {
+    const temp=document.createElement('canvas');
+    temp.width=CW; temp.height=CH;
+    const tctx=temp.getContext('2d');
+    tctx.fillStyle='#fff'; tctx.fillRect(0,0,CW,CH);
+    layers.forEach(l=>{if(l.visible) tctx.drawImage(l.canvas,0,0);});
+    const dataUrl=temp.toDataURL('image/png');
+    if(ws&&ws.readyState===1){
+      ws.send(JSON.stringify({type:'snapshot',data:dataUrl,sendToUser:true,userName:myName}));
+      showToast('Sent to your Telegram ✅','ok');
+    } else {
+      showToast('Not connected','warn');
+    }
+  } catch(e){ showToast('Failed to send','warn'); }
+}
+
+// ── Toast ─────────────────────────────────────────────────────────────────────
+let toastTimer=null;
+const toastEl=document.getElementById('toast');
+function showToast(msg,cls=''){
+  toastEl.textContent=msg; toastEl.className='show '+cls;
+  clearTimeout(toastTimer);
+  toastTimer=setTimeout(()=>toastEl.className='',3200);
+}
+
+// ── Chat / Guess ──────────────────────────────────────────────────────────────
+const chatLog=document.getElementById('chat-log');
+function addChat(cls,html){
+  const d=document.createElement('div'); d.className='cmsg '+cls; d.innerHTML=html;
+  chatLog.appendChild(d); chatLog.scrollTop=chatLog.scrollHeight;
+}
+function sendGuess(){
+  const t=document.getElementById('guess-in').value.trim();
+  if(!t||!ws||ws.readyState!==1) return;
+  ws.send(JSON.stringify({type:'guess',text:t}));
+  document.getElementById('guess-in').value='';
+}
+document.getElementById('guess-go').addEventListener('click',sendGuess);
+document.getElementById('guess-in').addEventListener('keydown',e=>{if(e.key==='Enter')sendGuess();});
+
+// ── Round overlay ─────────────────────────────────────────────────────────────
+const roundOverlay=document.getElementById('round-overlay');
+let savedStrokes=[], currentWord='';
+
 function showResult(emoji,title,word,sub){
   document.getElementById('re-emoji').textContent=emoji;
   document.getElementById('re-title').textContent=title;
   document.getElementById('re-word').textContent=word;
   document.getElementById('re-sub').textContent=sub;
-  resultOverlay.classList.add('show');
-  setTimeout(()=>resultOverlay.classList.remove('show'),5000);
+  roundOverlay.classList.add('show');
+  setTimeout(()=>roundOverlay.classList.remove('show'),7000);
+}
+document.getElementById('re-newround').addEventListener('click',()=>{
+  roundOverlay.classList.remove('show');
+  ws?.send(JSON.stringify({type:'new_round'}));
+});
+
+// ── Replay ────────────────────────────────────────────────────────────────────
+function playReplay(strokes){
+  const overlay=document.getElementById('replay-overlay');
+  const rc=document.getElementById('replay-canvas');
+  overlay.classList.add('show');
+  rc.width=480; rc.height=300;
+  const ctx=rc.getContext('2d');
+  ctx.fillStyle='#fff'; ctx.fillRect(0,0,480,300);
+  const scale=480/CW; let i=0;
+  function nextStroke(){
+    if(i>=strokes.length) return;
+    const s=strokes[i++];
+    const pts=(s.points||[]).map(p=>[p[0]*scale,p[1]*scale]);
+    if(pts.length<2){nextStroke();return;}
+    ctx.strokeStyle=s.color||'#000'; ctx.lineWidth=Math.max(1,(s.size||4)*scale);
+    ctx.lineCap=ctx.lineJoin='round'; ctx.globalAlpha=s.opacity||1;
+    ctx.beginPath(); ctx.moveTo(pts[0][0],pts[0][1]);
+    pts.slice(1).forEach(p=>ctx.lineTo(p[0],p[1])); ctx.stroke();
+    ctx.globalAlpha=1; setTimeout(nextStroke,20);
+  }
+  nextStroke();
+}
+document.getElementById('replay-close').addEventListener('click',()=>{
+  document.getElementById('replay-overlay').classList.remove('show');
+});
+
+// ── Players & Leaderboard ─────────────────────────────────────────────────────
+function updatePlayerList(board){
+  const list=document.getElementById('player-list');
+  if(!board?.length){list.innerHTML='<div style="font-size:.76rem;color:var(--text2);padding:4px 6px">No players</div>';return;}
+  const medals=['🥇','🥈','🥉'];
+  list.innerHTML=board.map(({rank,name,score})=>`
+    <div class="player-row">
+      <div class="player-dot"></div>
+      <div class="player-name">${name}</div>
+      <div class="player-score">${score}pts</div>
+      ${rank===1?'<span>👑</span>':''}
+    </div>`).join('');
+}
+function updateLeaderboard(board){
+  const list=document.getElementById('lb-list');
+  const medals=['🥇','🥈','🥉'];
+  list.innerHTML=(board||[]).slice(0,8).map(({rank,name,score})=>`
+    <div class="lb-row">
+      <span class="lb-rank">${medals[rank-1]||rank}</span>
+      <span class="lb-name">${name}</span>
+      <span class="lb-pts">${score}pts</span>
+    </div>`).join('');
 }
 
-// ── WebSocket ──────────────────────────────────────────────────────────────────
+// ── Timer ─────────────────────────────────────────────────────────────────────
+let timerInterval=null, timerSeconds=0;
+function startTimer(seconds){
+  clearInterval(timerInterval); timerSeconds=seconds;
+  const el=document.getElementById('timer-display'); el.classList.remove('urgent');
+  function tick(){
+    el.textContent=timerSeconds>0?timerSeconds+'s':'';
+    if(timerSeconds<=10) el.classList.add('urgent');
+    if(timerSeconds<=0){clearInterval(timerInterval);return;}
+    timerSeconds--;
+  }
+  tick(); timerInterval=setInterval(tick,1000);
+}
+function stopTimer(){
+  clearInterval(timerInterval);
+  document.getElementById('timer-display').textContent='';
+  document.getElementById('timer-display').classList.remove('urgent');
+}
+
+// ── Role ──────────────────────────────────────────────────────────────────────
+let isDrawer=false;
+function setRole(role,wordOrHint,round){
+  isDrawer=role==='drawer';
+  document.getElementById('toolbar').classList.toggle('visible',isDrawer);
+  document.getElementById('chat-panel').classList.add('visible');
+  document.getElementById('guess-row').style.display=isDrawer?'none':'flex';
+  const pill=document.getElementById('role-pill');
+  pill.className='role-pill '+role;
+  pill.textContent=isDrawer?'DRAWING':'GUESSING';
+  const wd=document.getElementById('word-display');
+  if(isDrawer){
+    currentWord=wordOrHint;
+    wd.textContent=`Draw: ${wordOrHint}`;
+    showToast(`✏️ Draw: ${wordOrHint}`,'ok');
+    sfxRoundStart();
+  } else {
+    currentWord='';
+    wd.textContent=typeof wordOrHint==='number'?Array(wordOrHint).fill('_').join(' '):wordOrHint;
+  }
+  if(round) addChat('sys',`Round ${round} started!`);
+  startTimer(90);
+}
+
+// ── Sound effects ─────────────────────────────────────────────────────────────
+const AudioCtx=window.AudioContext||window.webkitAudioContext;
+let audioCtx=null;
+function getAudioCtx(){if(!audioCtx)audioCtx=new AudioCtx();if(audioCtx.state==='suspended')audioCtx.resume();return audioCtx;}
+function playTone(freq,type,duration,vol=.15){
+  if(!soundEnabled) return;
+  try{
+    const ctx=getAudioCtx(),osc=ctx.createOscillator(),gain=ctx.createGain();
+    osc.connect(gain);gain.connect(ctx.destination);
+    osc.type=type;osc.frequency.value=freq;
+    gain.gain.setValueAtTime(vol,ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(.001,ctx.currentTime+duration);
+    osc.start(ctx.currentTime);osc.stop(ctx.currentTime+duration);
+  }catch(e){}
+}
+function sfxCorrectGuess(){[523,659,784].forEach((f,i)=>setTimeout(()=>playTone(f,'sine',.4,.14),i*80));}
+function sfxRoundStart(){playTone(440,'triangle',.15,.1);setTimeout(()=>playTone(660,'triangle',.2,.12),120);}
+function sfxRoundEnd(){[392,349,294].forEach((f,i)=>setTimeout(()=>playTone(f,'sine',.35,.12),i*100));}
+function sfxHint(){playTone(880,'sine',.12,.08);}
+function sfxPlayerJoin(){playTone(600,'sine',.1,.06);}
+
+// ── Theme ─────────────────────────────────────────────────────────────────────
+function applyTheme(dark){
+  isDark=dark;
+  const r=document.documentElement.style;
+  if(dark){
+    r.setProperty('--bg','#253334');r.setProperty('--surface','#2d3f40');
+    r.setProperty('--surface2','#354849');r.setProperty('--border','#3d5355');
+    r.setProperty('--text','#eef2f2');r.setProperty('--text2','#8aabac');
+  } else {
+    r.setProperty('--bg','#f0f0f0');r.setProperty('--surface','#ffffff');
+    r.setProperty('--surface2','#f5f5f5');r.setProperty('--border','#dddddd');
+    r.setProperty('--text','#111111');r.setProperty('--text2','#666666');
+  }
+  localStorage.setItem('theme',dark?'dark':'light');
+}
+applyTheme(localStorage.getItem('theme')!=='light');
+
+// ── Gallery ───────────────────────────────────────────────────────────────────
+const GALLERY_KEY='drawguess_gallery';
+function saveToGallery(word,drawerName){
+  try{
+    const temp=document.createElement('canvas');temp.width=CW;temp.height=CH;
+    const tctx=temp.getContext('2d');tctx.fillStyle='#fff';tctx.fillRect(0,0,CW,CH);
+    layers.forEach(l=>{if(l.visible)tctx.drawImage(l.canvas,0,0);});
+    const dataUrl=temp.toDataURL('image/png');
+    const gallery=JSON.parse(localStorage.getItem(GALLERY_KEY)||'[]');
+    gallery.unshift({word,drawerName,date:new Date().toISOString(),img:dataUrl});
+    localStorage.setItem(GALLERY_KEY,JSON.stringify(gallery.slice(0,20)));
+  }catch(e){console.warn('[gallery]',e.message);}
+}
+function openGallery(){
+  const gallery=JSON.parse(localStorage.getItem(GALLERY_KEY)||'[]');
+  if(!gallery.length){showToast('Gallery is empty','warn');return;}
+  const overlay=document.createElement('div');
+  overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:600;overflow-y:auto;padding:16px;backdrop-filter:blur(8px)';
+  overlay.innerHTML=`
+    <div style="max-width:560px;margin:0 auto">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+        <h2 style="font-family:Syne,sans-serif;color:var(--btn-active);font-size:1.1rem">🖼 Gallery</h2>
+        <button id="gc" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:6px 14px;border-radius:20px;cursor:pointer">✕ Close</button>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px">
+        ${gallery.map(g=>`
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden">
+            <img src="${g.img}" style="width:100%;display:block"/>
+            <div style="padding:6px 8px">
+              <div style="font-weight:700;font-size:.8rem;color:var(--btn-active)">${g.word}</div>
+              <div style="font-size:.7rem;color:var(--text2)">${g.drawerName} · ${new Date(g.date).toLocaleDateString()}</div>
+            </div>
+          </div>`).join('')}
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  document.getElementById('gc').addEventListener('click',()=>overlay.remove());
+}
+
+// ── WebSocket ─────────────────────────────────────────────────────────────────
+let ws=null, myName='', myRoom='';
+
 function connect(){
   const proto=location.protocol==='https:'?'wss':'ws';
   ws=new WebSocket(`${proto}://${location.host}/ws?room=${encodeURIComponent(myRoom)}&name=${encodeURIComponent(myName)}`);
-
-  ws.onopen=()=>{
-    const d=document.getElementById('conn-dot');
-    d.classList.add('on');
-    document.getElementById('word-display').textContent='waiting for players…';
-  };
-
+  ws.onopen=()=>{document.getElementById('conn-dot').style.background='var(--green)';};
   ws.onmessage=({data})=>{
-    let m;try{m=JSON.parse(data);}catch{return;}
-    const chatLog=document.getElementById('chat-log');
-    const drawerChat=document.getElementById('drawer-chat');
-
+    let m; try{m=JSON.parse(data);}catch{return;}
     switch(m.type){
       case 'init':
-        [1,2,3].forEach(n=>CTX[n].clearRect(0,0,CW,CH));
-        (m.strokes||[]).forEach(s=>renderStroke(s,CTX[s.layer||3]));
-        document.getElementById('word-display').textContent=`${m.players} players connected`;
-        if(m.timeLeft)updateTimer(m.timeLeft);
-        if(m.hint){
-          document.getElementById('word-display').textContent=m.hint;
-          document.getElementById('word-display').style.color='var(--acc)';
-        }
+        clearAll();
+        (m.strokes||[]).forEach(s=>renderStroke(s,activeCtx()));
+        document.getElementById('word-display').textContent=`${m.players} player${m.players!==1?'s':''}`;
+        if(m.board){updatePlayerList(m.board);updateLeaderboard(m.board);}
         break;
-
-      case 'draw':
-        renderStroke(m.stroke,CTX[m.stroke.layer||3]);updateThumbs();break;
-
+      case 'draw': renderStroke(m.stroke,activeCtx()); break;
       case 'clear':
-        [1,2,3].forEach(n=>CTX[n].clearRect(0,0,CW,CH));
-        undoStack=[];redoStack=[];updateThumbs();break;
-
-      case 'snapshot':
-        const img=new Image();
-        img.onload=()=>{
-          [1,2,3].forEach(n=>CTX[n].clearRect(0,0,CW,CH));
-          CTX[1].drawImage(img,0,0,CW,CH);updateThumbs();
-        };
-        img.src=m.data;break;
-
-      case 'role':
-        setRole(m.role,m.role==='drawer'?m.word:m.hint,m.hintText);
-        [1,2,3].forEach(n=>CTX[n].clearRect(0,0,CW,CH));
-        undoStack=[];redoStack=[];updateThumbs();break;
-
+        clearAll();
+        getStack(activeLayer(),undoStacks).length=0;
+        getStack(activeLayer(),redoStacks).length=0;
+        break;
+      case 'snapshot':{const img=new Image();img.onload=()=>{clearAll();activeCtx().drawImage(img,0,0,CW,CH);};img.src=m.data;break;}
+      case 'role': clearAll();savedStrokes=[];setRole(m.role,m.role==='drawer'?m.word:m.hint,m.round); break;
       case 'hint':
-        // Update word display with revealed letters
         document.getElementById('word-display').textContent=m.hint;
-        showToast(`💡 Letter revealed!`,'');
-        addToLog(chatLog,'sys',`💡 Hint: ${m.hint}`);
-        break;
-
-      case 'timer':
-        updateTimer(m.timeLeft);break;
-
+        addChat('sys',`💡 Hint: ${m.hint}`);
+        showToast('💡 Hint!'); sfxHint(); break;
+      case 'word_skipped':
+        document.getElementById('word-display').textContent=m.hint;
+        addChat('sys','Word skipped!'); clearAll(); break;
       case 'guess':
-        const msgHtml=`<span class="cn">${m.name}:</span> ${m.text}${m.correct?' ✅':''}`;
-        addToLog(chatLog,m.correct?'ok':'',msgHtml);
-        addToLog(drawerChat,m.correct?'ok':'',msgHtml);
-        if(m.correct)showToast(`🎉 ${m.name} guessed it!`,'ok');
+        addChat(m.correct?'ok':'',`<span class="cn">${m.name}:</span> ${m.text}${m.correct?' ✅':''}`);
+        if(m.correct){showToast(`🎉 ${m.name} got it!`,'ok');sfxCorrectGuess();}
         break;
-
+      case 'score_update':
+        addChat('ok',`🏆 ${m.name} +${m.pts}pts${m.timeBonus?' ⚡+'+m.timeBonus:''}`);
+        if(m.board){updatePlayerList(m.board);updateLeaderboard(m.board);}
+        break;
       case 'round_end':
-        timerBox.style.display='none';
-        showResult(
-          m.guesser?'🎉':'⏰',
-          m.guesser?`${m.guesser} guessed it!`:'Time\'s up!',
-          m.word,
-          m.guesser?`Artist: ${m.drawerName}`:`The word was: ${m.word}`
-        );
+        stopTimer(); sfxRoundEnd();
+        savedStrokes=[...(m.strokes||[])];
+        showResult(m.guesser?'🎉':(m.reason==='timeout'?'⏰':'😮'),
+          m.guesser?`${m.guesser} got it!`:(m.reason==='timeout'?"Time's up!":'Round over'),
+          m.word, m.guesser?`Artist: ${m.drawerName}`:`The word was: ${m.word}`);
+        if(m.board){updatePlayerList(m.board);updateLeaderboard(m.board);}
+        if(m.word&&m.drawerName) saveToGallery(m.word,m.drawerName);
         break;
-
+      case 'leaderboard': if(m.board){updatePlayerList(m.board);updateLeaderboard(m.board);} break;
       case 'status':
         document.getElementById('word-display').textContent=m.message;
-        addToLog(chatLog,'sys',m.message);
-        break;
-
-      case 'player_joined':
-      case 'player_left':
-        addToLog(chatLog,'sys',
-          m.type==='player_joined'?`👋 ${m.name} joined`:`👋 ${m.name} left`);
-        break;
+        addChat('sys',m.message); break;
+      case 'player_joined': addChat('sys',`${m.name} joined (${m.count})`); sfxPlayerJoin(); break;
+      case 'player_left':   addChat('sys',`${m.name} left (${m.count})`); break;
     }
   };
-
-  ws.onclose=()=>{
-    document.getElementById('conn-dot').classList.remove('on');
-    setTimeout(connect,2500);
-  };
+  ws.onclose=()=>{document.getElementById('conn-dot').style.background='var(--red)';setTimeout(connect,2500);};
   ws.onerror=()=>ws.close();
 }
 
-// ── Guess ──────────────────────────────────────────────────────────────────────
-function sendGuess(){
-  const inp=document.getElementById('guess-in');
-  const t=inp.value.trim();
-  if(!t||!ws||ws.readyState!==1)return;
-  ws.send(JSON.stringify({type:'guess',text:t}));
-  inp.value='';
+// ── Auto-join ─────────────────────────────────────────────────────────────────
+function getAutoJoinData(){
+  const usp=new URLSearchParams(location.search);
+  let roomId='';
+  if(tg){const sp=tg.initDataUnsafe?.start_param;if(sp)roomId=decodeURIComponent(sp);}
+  if(!roomId) roomId=usp.get('room')||'';
+  if(!roomId) roomId=usp.get('startapp')||'';
+  if(roomId) try{roomId=decodeURIComponent(roomId);}catch{}
+  let playerName='';
+  if(tg){const u=tg.initDataUnsafe?.user;if(u)playerName=[u.first_name,u.last_name].filter(Boolean).join(' ')||u.username||'';}
+  if(!playerName) playerName=`Player${Math.floor(Math.random()*1000)}`;
+  return {roomId,playerName};
 }
-document.getElementById('guess-go').addEventListener('click',sendGuess);
-document.getElementById('guess-in').addEventListener('keydown',e=>{if(e.key==='Enter')sendGuess();});
 
-// ── Join ───────────────────────────────────────────────────────────────────────
-const joinOverlay=document.getElementById('join-overlay');
-function doJoin(){
-  myName=document.getElementById('name-in').value.trim()||`Player${Math.floor(Math.random()*1000)}`;
-  myRoom=document.getElementById('room-in').value.trim()||'default';
-  joinOverlay.style.display='none';
-  initCanvases();connect();
+function doJoin(roomId,playerName){
+  myName=playerName; myRoom=roomId;
+  document.getElementById('join-overlay').style.display='none';
+  initCanvases(); renderPalette(); updateSzOpLabel(); connect();
 }
-document.getElementById('join-btn').addEventListener('click',doJoin);
+
+(function tryAutoJoin(attempt){
+  const{roomId,playerName}=getAutoJoinData();
+  if(roomId){doJoin(roomId,playerName);return;}
+  if(attempt<10){setTimeout(()=>tryAutoJoin(attempt+1),100);return;}
+  const{playerName:name}=getAutoJoinData();
+  document.getElementById('name-in').value=name;
+})(0);
+
+document.getElementById('join-btn').addEventListener('click',()=>{
+  const name=document.getElementById('name-in').value.trim()||`Player${Math.floor(Math.random()*1000)}`;
+  const roomId=document.getElementById('room-in').value.trim()||'default';
+  doJoin(roomId,name);
+});
 document.getElementById('name-in').addEventListener('keydown',e=>{if(e.key==='Enter')document.getElementById('room-in').focus();});
-document.getElementById('room-in').addEventListener('keydown',e=>{if(e.key==='Enter')doJoin();});
+document.getElementById('room-in').addEventListener('keydown',e=>{if(e.key==='Enter')document.getElementById('join-btn').click();});
 
-// ── Auto-fill from Telegram/URL ────────────────────────────────────────────────
-const usp=new URLSearchParams(location.search);
-const ur=usp.get('room')||usp.get('startapp')||'';
-if(ur)document.getElementById('room-in').value=decodeURIComponent(ur);
-if(tg){
-  const u=tg.initDataUnsafe?.user;
-  if(u){
-    const n=[u.first_name,u.last_name].filter(Boolean).join(' ')||u.username||'';
-    if(n)document.getElementById('name-in').value=n;
-  }
-  const sp=tg.initDataUnsafe?.start_param;
-  if(sp)document.getElementById('room-in').value=decodeURIComponent(sp);
-}
-if(document.getElementById('room-in').value){
-  if(!document.getElementById('name-in').value)
-    document.getElementById('name-in').value=`Player${Math.floor(Math.random()*1000)}`;
-  setTimeout(doJoin,350);
-}
 })();
 </script>
 </body>

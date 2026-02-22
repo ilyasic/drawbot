@@ -5,330 +5,159 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
 <title>Draw & Guess</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
-<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet"/>
 <style>
-:root {
-  --bg:       #0f0f13;
-  --surface:  #18181f;
-  --surface2: #22222c;
-  --surface3: #2a2a38;
-  --border:   #33334a;
-  --accent:   #6c63ff;
-  --accent2:  #ff5fa0;
-  --green:    #3dd68c;
-  --yellow:   #ffd166;
-  --red:      #ff5757;
-  --text:     #eeeef5;
-  --text2:    #8888aa;
-  --r:        8px;
-  --sb:       env(safe-area-inset-bottom, 0px);
-  --toolbar-h: 60px;
-  --topbar-h:  48px;
+@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap');
+:root{
+  --bg:#0c0c14;--surface:#161622;--surface2:#1e1e30;--border:#2a2a42;
+  --accent:#7c6ff7;--accent2:#ff6b8a;--green:#3dd68c;
+  --text:#e2e2f0;--text2:#7777aa;--r:10px;--sb:env(safe-area-inset-bottom,0px);
 }
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
-html, body { width:100%; height:100%; overflow:hidden; background:var(--bg); color:var(--text); font-family:'DM Sans',sans-serif; touch-action:none; }
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
+html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);
+  color:var(--text);font-family:'Nunito',sans-serif;touch-action:none;}
+#app{display:flex;flex-direction:column;height:100dvh;}
 
-/* ── Layout ── */
-#app { display:flex; flex-direction:column; height:100dvh; }
+/* Topbar */
+#topbar{display:flex;align-items:center;gap:8px;padding:7px 10px;
+  background:var(--surface);border-bottom:1px solid var(--border);
+  flex-shrink:0;z-index:20;min-height:44px;}
+#word-display{flex:1;text-align:center;font-size:.88rem;font-weight:800;
+  letter-spacing:.1em;text-transform:uppercase;color:var(--accent);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+#role-pill{font-size:.68rem;font-weight:800;padding:3px 9px;border-radius:20px;
+  background:var(--surface2);color:var(--text2);text-transform:uppercase;white-space:nowrap;flex-shrink:0;}
+#role-pill.drawer{background:rgba(124,111,247,.2);color:var(--accent);}
+#role-pill.guesser{background:rgba(255,107,138,.18);color:var(--accent2);}
+#conn-dot{width:7px;height:7px;border-radius:50%;background:var(--green);flex-shrink:0;}
 
-/* ── Topbar ── */
-#topbar {
-  height: var(--topbar-h);
-  display: flex; align-items: center; gap: 8px;
-  padding: 0 10px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0; z-index: 20;
-}
-#conn-dot { width:7px; height:7px; border-radius:50%; background:var(--green); flex-shrink:0; transition:background .3s; }
-#word-display {
-  flex:1; text-align:center; font-family:'Syne',sans-serif;
-  font-size:.9rem; font-weight:700; letter-spacing:.12em;
-  text-transform:uppercase; color:var(--accent); overflow:hidden;
-  text-overflow:ellipsis; white-space:nowrap;
-}
-#role-pill {
-  font-size:.65rem; font-weight:700; padding:3px 10px; border-radius:20px;
-  background:var(--surface2); color:var(--text2); text-transform:uppercase;
-  white-space:nowrap; flex-shrink:0; letter-spacing:.05em;
-}
-#role-pill.drawer  { background:rgba(108,99,255,.2); color:var(--accent); }
-#role-pill.guesser { background:rgba(255,95,160,.15); color:var(--accent2); }
-#timer-display {
-  font-family:'Syne',sans-serif; font-size:.8rem; font-weight:700;
-  color:var(--yellow); min-width:36px; text-align:center; flex-shrink:0;
-}
-#timer-display.urgent { color:var(--red); animation:pulse .6s ease-in-out infinite; }
-@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
+/* Canvas */
+#canvas-outer{flex:1;position:relative;overflow:hidden;background:#1a1a1a;cursor:crosshair;}
+#canvas-inner{position:absolute;top:0;left:0;transform-origin:0 0;will-change:transform;}
+.cvl{position:absolute;top:0;left:0;}
+#cv-bg{background:#fff;z-index:1;}
+#cv-l1{z-index:2;}#cv-l2{z-index:3;}#cv-l3{z-index:4;}
 
-/* ── Canvas area ── */
-#canvas-area { flex:1; position:relative; overflow:hidden; background:#111; }
-#canvas-wrap { position:absolute; top:0; left:0; transform-origin:0 0; will-change:transform; }
-.cvl { position:absolute; top:0; left:0; }
-#cv-bg { background:#fff; z-index:1; }
-#cv-main { z-index:2; cursor:crosshair; }
-#cv-preview { z-index:3; pointer-events:none; }
+/* Toolbar */
+#toolbar{display:flex;align-items:center;gap:5px;
+  padding:7px 8px calc(7px + var(--sb));
+  background:var(--surface);border-top:1px solid var(--border);
+  flex-shrink:0;overflow-x:auto;z-index:20;}
+#toolbar::-webkit-scrollbar{display:none;}
+.tbtn{width:40px;height:40px;border-radius:var(--r);border:1.5px solid var(--border);
+  background:var(--surface2);color:var(--text);font-size:1rem;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;transition:all .12s;flex-shrink:0;}
+.tbtn:active{transform:scale(.9);}
+.tbtn.on{border-color:var(--accent);background:rgba(124,111,247,.18);color:var(--accent);}
+.tbtn.gbtn{border-color:var(--green);background:rgba(61,214,140,.12);color:var(--green);}
+.sep{width:1px;height:28px;background:var(--border);flex-shrink:0;}
+.cdot{width:28px;height:28px;border-radius:50%;border:2.5px solid transparent;
+  cursor:pointer;flex-shrink:0;transition:transform .12s;}
+.cdot:active{transform:scale(.85);}
+.cdot.on{border-color:#fff;transform:scale(1.18);}
+#sz-wrap{display:flex;align-items:center;gap:6px;background:var(--surface2);
+  border:1.5px solid var(--border);border-radius:var(--r);padding:0 8px;height:40px;flex-shrink:0;}
+#sz-range{-webkit-appearance:none;width:76px;height:3px;border-radius:2px;
+  background:var(--border);outline:none;}
+#sz-range::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;
+  border-radius:50%;background:var(--accent);border:2px solid #fff;cursor:pointer;}
+#sz-dot{width:18px;height:18px;display:flex;align-items:center;justify-content:center;}
+#zoom-lbl{font-size:.7rem;color:var(--text2);font-weight:800;white-space:nowrap;
+  flex-shrink:0;min-width:34px;text-align:center;}
 
-/* ── Guesser overlay (shows canvas + chat together) ── */
-#chat-panel {
-  position:absolute; bottom:0; left:0; right:0;
-  background:linear-gradient(transparent, rgba(15,15,19,.95));
-  padding:6px 10px calc(6px + var(--sb));
-  display:none; flex-direction:column; gap:6px; z-index:15;
-}
-#chat-panel.visible { display:flex; }
-#chat-log { max-height:80px; overflow-y:auto; display:flex; flex-direction:column; gap:2px; }
-#chat-log::-webkit-scrollbar { width:2px; }
-#chat-log::-webkit-scrollbar-thumb { background:var(--border); }
-.cmsg { font-size:.78rem; color:var(--text2); }
-.cmsg .cn { color:var(--text); font-weight:600; }
-.cmsg.ok  { color:var(--green); font-weight:600; }
-.cmsg.sys { color:var(--accent); font-style:italic; }
-#guess-row { display:flex; gap:6px; }
-#guess-in {
-  flex:1; background:rgba(255,255,255,.08); border:1.5px solid var(--border);
-  border-radius:var(--r); color:var(--text); padding:8px 12px; font-size:.88rem;
-  outline:none; font-family:'DM Sans',sans-serif;
-}
-#guess-in:focus { border-color:var(--accent); }
-#guess-go {
-  background:var(--accent); color:#fff; border:none; padding:8px 16px;
-  border-radius:var(--r); font-size:.85rem; font-weight:700; cursor:pointer;
-  font-family:'Syne',sans-serif; flex-shrink:0;
-}
+/* Panels */
+.panel{position:absolute;background:var(--surface);border:1px solid var(--border);
+  border-radius:var(--r);padding:8px;z-index:30;display:none;flex-direction:column;
+  gap:5px;box-shadow:0 8px 32px rgba(0,0,0,.6);}
+.panel.open{display:flex;}
+#brush-panel{left:8px;top:52px;min-width:130px;}
+#layer-panel{right:8px;top:52px;min-width:148px;}
+#settings-panel{left:50%;top:52px;transform:translateX(-50%);min-width:190px;}
+.brush-opt{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;
+  cursor:pointer;font-size:.82rem;font-weight:700;border:1.5px solid transparent;}
+.brush-opt.on{border-color:var(--accent);background:rgba(124,111,247,.12);}
+.brush-opt:hover{background:var(--surface2);}
+.bi{font-size:1rem;width:20px;text-align:center;}
+.panel-title{font-size:.72rem;color:var(--text2);font-weight:800;padding:0 2px 3px;}
+.lrow{display:flex;align-items:center;gap:6px;padding:5px 6px;border-radius:6px;
+  cursor:pointer;font-size:.82rem;font-weight:700;border:1.5px solid transparent;}
+.lrow.al{border-color:var(--accent);background:rgba(124,111,247,.1);}
+.lrow:hover{background:var(--surface2);}
+.lvis{font-size:.85rem;cursor:pointer;opacity:.35;transition:opacity .15s;}
+.lvis.sv{opacity:1;}
+.lname{flex:1;}
+.lthumb{width:28px;height:18px;border-radius:3px;border:1px solid var(--border);
+  background:#fff;overflow:hidden;flex-shrink:0;}
+.lthumb canvas{width:100%;height:100%;}
+.panel label{font-size:.78rem;color:var(--text2);font-weight:700;}
+.panel select{background:var(--surface2);border:1px solid var(--border);
+  color:var(--text);padding:6px 10px;border-radius:6px;font-size:.83rem;
+  font-family:'Nunito',sans-serif;width:100%;}
+.panel-btn{background:var(--accent);color:#fff;border:none;padding:8px;
+  border-radius:6px;font-size:.83rem;font-weight:700;cursor:pointer;
+  font-family:'Nunito',sans-serif;width:100%;}
+.panel-btn.sm{background:var(--surface2);color:var(--text2);border:1px solid var(--border);
+  font-size:.75rem;padding:5px;}
 
-/* ── Toolbar (drawer only) ── */
-#toolbar {
-  height:var(--toolbar-h); display:none; align-items:center; gap:4px;
-  padding:0 8px 0 8px; padding-bottom:calc(8px + var(--sb));
-  background:var(--surface); border-top:1px solid var(--border);
-  flex-shrink:0; overflow-x:auto; z-index:20;
-}
-#toolbar.visible { display:flex; }
-#toolbar::-webkit-scrollbar { display:none; }
+/* Chat & Guess */
+#chat-log{max-height:0;overflow:hidden;background:var(--surface);transition:max-height .25s;flex-shrink:0;}
+#chat-log.open{max-height:96px;overflow-y:auto;border-top:1px solid var(--border);}
+#chat-log::-webkit-scrollbar{width:2px;}
+#chat-log::-webkit-scrollbar-thumb{background:var(--border);}
+.cmsg{padding:3px 12px;font-size:.79rem;color:var(--text2);}
+.cmsg .cn{color:var(--text);font-weight:700;}
+.cmsg.ok{color:var(--green);}
+.cmsg.sys{color:var(--accent);font-style:italic;}
+#guess-row{display:none;align-items:center;gap:7px;
+  padding:7px 10px calc(7px + var(--sb));
+  background:var(--surface);border-top:1px solid var(--border);flex-shrink:0;z-index:20;}
+#guess-in{flex:1;background:var(--surface2);border:1.5px solid var(--border);
+  border-radius:var(--r);color:var(--text);padding:9px 13px;font-size:.9rem;
+  outline:none;font-family:'Nunito',sans-serif;}
+#guess-in:focus{border-color:var(--accent);}
+#guess-go{background:var(--accent);color:#fff;border:none;padding:9px 16px;
+  border-radius:var(--r);font-size:.88rem;font-weight:800;cursor:pointer;
+  font-family:'Nunito',sans-serif;}
 
-.tbtn {
-  width:38px; height:38px; border-radius:var(--r); border:1.5px solid var(--border);
-  background:var(--surface2); color:var(--text); font-size:.95rem; cursor:pointer;
-  display:flex; align-items:center; justify-content:center;
-  transition:all .12s; flex-shrink:0; font-family:'DM Sans',sans-serif;
-}
-.tbtn:active { transform:scale(.88); }
-.tbtn.on    { border-color:var(--accent); background:rgba(108,99,255,.18); color:var(--accent); }
-.tbtn.green { border-color:var(--green);  background:rgba(61,214,140,.12);  color:var(--green); }
-.tbtn.red   { border-color:var(--red);    background:rgba(255,87,87,.12);   color:var(--red); }
-.tsep { width:1px; height:26px; background:var(--border); flex-shrink:0; margin:0 2px; }
+/* Toast */
+#toast{position:fixed;top:54px;left:50%;transform:translateX(-50%) translateY(-10px);
+  background:var(--surface2);color:var(--text);padding:8px 18px;border-radius:30px;
+  font-size:.83rem;font-weight:700;border:1px solid var(--border);opacity:0;
+  transition:all .25s;z-index:100;pointer-events:none;white-space:nowrap;}
+#toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+#toast.ok{background:rgba(61,214,140,.2);border-color:var(--green);color:var(--green);}
 
-/* Color swatch */
-.cswatch {
-  width:26px; height:26px; border-radius:50%; border:2px solid transparent;
-  cursor:pointer; flex-shrink:0; transition:transform .1s;
-}
-.cswatch:active { transform:scale(.85); }
-.cswatch.on { border-color:#fff; transform:scale(1.2); }
-
-/* Size slider */
-#sz-wrap {
-  display:flex; align-items:center; gap:6px;
-  background:var(--surface2); border:1.5px solid var(--border);
-  border-radius:var(--r); padding:0 8px; height:38px; flex-shrink:0;
-}
-#sz-range {
-  -webkit-appearance:none; width:72px; height:3px;
-  border-radius:2px; background:var(--border); outline:none;
-}
-#sz-range::-webkit-slider-thumb {
-  -webkit-appearance:none; width:14px; height:14px;
-  border-radius:50%; background:var(--accent); border:2px solid #fff; cursor:pointer;
-}
-#sz-preview { width:16px; height:16px; display:flex; align-items:center; justify-content:center; }
-
-/* Opacity slider */
-#op-wrap {
-  display:flex; align-items:center; gap:5px;
-  background:var(--surface2); border:1.5px solid var(--border);
-  border-radius:var(--r); padding:0 8px; height:38px; flex-shrink:0;
-}
-#op-range {
-  -webkit-appearance:none; width:56px; height:3px;
-  border-radius:2px; background:var(--border); outline:none;
-}
-#op-range::-webkit-slider-thumb {
-  -webkit-appearance:none; width:14px; height:14px;
-  border-radius:50%; background:var(--accent2); border:2px solid #fff; cursor:pointer;
-}
-#op-lbl { font-size:.7rem; color:var(--text2); min-width:28px; font-weight:600; }
-
-/* ── Brush panel ── */
-#brush-panel {
-  position:absolute; bottom:calc(var(--toolbar-h) + 4px); left:6px;
-  background:var(--surface); border:1px solid var(--border); border-radius:12px;
-  padding:8px; z-index:50; display:none; flex-direction:column; gap:3px;
-  box-shadow:0 8px 32px rgba(0,0,0,.6); min-width:140px;
-}
-#brush-panel.open { display:flex; }
-.brush-opt {
-  display:flex; align-items:center; gap:8px; padding:7px 10px;
-  border-radius:6px; cursor:pointer; font-size:.82rem; font-weight:600;
-  border:1.5px solid transparent; transition:all .1s;
-}
-.brush-opt:hover { background:var(--surface2); }
-.brush-opt.on    { border-color:var(--accent); background:rgba(108,99,255,.12); color:var(--accent); }
-.brush-icon { font-size:1rem; width:20px; text-align:center; }
-
-/* ── Color panel ── */
-#color-panel {
-  position:absolute; bottom:calc(var(--toolbar-h) + 4px); left:50px;
-  background:var(--surface); border:1px solid var(--border); border-radius:12px;
-  padding:10px; z-index:50; display:none; flex-direction:column; gap:8px;
-  box-shadow:0 8px 32px rgba(0,0,0,.6);
-}
-#color-panel.open { display:flex; }
-.color-section-label { font-size:.65rem; color:var(--text2); font-weight:700; letter-spacing:.08em; text-transform:uppercase; }
-.color-row { display:flex; gap:5px; flex-wrap:wrap; max-width:180px; }
-#custom-color-wrap { display:flex; align-items:center; gap:6px; }
-#custom-color { width:28px; height:28px; border-radius:50%; border:2px solid var(--border); cursor:pointer; padding:0; background:none; }
-#custom-color-lbl { font-size:.75rem; color:var(--text2); }
-
-/* ── Layer panel ── */
-#layer-panel {
-  position:absolute; bottom:calc(var(--toolbar-h) + 4px); right:6px;
-  background:var(--surface); border:1px solid var(--border); border-radius:12px;
-  padding:8px; z-index:50; display:none; flex-direction:column; gap:4px;
-  box-shadow:0 8px 32px rgba(0,0,0,.6); min-width:160px;
-}
-#layer-panel.open { display:flex; }
-.layer-row {
-  display:flex; align-items:center; gap:6px; padding:5px 7px;
-  border-radius:6px; cursor:pointer; font-size:.8rem; font-weight:600;
-  border:1.5px solid transparent;
-}
-.layer-row:hover  { background:var(--surface2); }
-.layer-row.active { border-color:var(--accent); background:rgba(108,99,255,.1); }
-.layer-vis { font-size:.85rem; opacity:.35; transition:opacity .15s; }
-.layer-vis.on { opacity:1; }
-.layer-name { flex:1; }
-.layer-op-slider {
-  -webkit-appearance:none; width:48px; height:3px;
-  background:var(--border); border-radius:2px; outline:none;
-}
-.layer-op-slider::-webkit-slider-thumb {
-  -webkit-appearance:none; width:12px; height:12px;
-  border-radius:50%; background:var(--text2); cursor:pointer;
-}
-#layer-add { font-size:.75rem; padding:5px 8px; }
-
-/* ── Player list panel ── */
-#players-panel {
-  position:absolute; top:calc(var(--topbar-h) + 4px); right:6px;
-  background:var(--surface); border:1px solid var(--border); border-radius:12px;
-  padding:8px; z-index:50; display:none; flex-direction:column; gap:4px;
-  box-shadow:0 8px 32px rgba(0,0,0,.6); min-width:150px; max-height:300px; overflow-y:auto;
-}
-#players-panel.open { display:flex; }
-.player-row { display:flex; align-items:center; gap:6px; padding:4px 6px; font-size:.8rem; }
-.player-dot { width:8px; height:8px; border-radius:50%; background:var(--green); flex-shrink:0; }
-.player-name { flex:1; font-weight:500; }
-.player-score { color:var(--yellow); font-weight:700; font-size:.75rem; }
-.player-crown { font-size:.75rem; }
-
-/* ── Leaderboard panel ── */
-#lb-panel {
-  position:absolute; top:calc(var(--topbar-h) + 4px); left:50%; transform:translateX(-50%);
-  background:var(--surface); border:1px solid var(--border); border-radius:12px;
-  padding:12px; z-index:50; display:none; flex-direction:column; gap:5px;
-  box-shadow:0 8px 32px rgba(0,0,0,.6); min-width:200px;
-}
-#lb-panel.open { display:flex; }
-.lb-title { font-family:'Syne',sans-serif; font-size:.8rem; font-weight:700; color:var(--yellow); margin-bottom:2px; }
-.lb-row { display:flex; align-items:center; gap:8px; padding:4px 6px; font-size:.82rem; border-radius:6px; }
-.lb-row:nth-child(2) { background:rgba(255,209,102,.08); }
-.lb-rank { font-weight:700; color:var(--text2); min-width:18px; }
-.lb-name { flex:1; font-weight:500; }
-.lb-pts  { color:var(--yellow); font-weight:700; }
-
-/* ── Toast ── */
-#toast {
-  position:fixed; top:calc(var(--topbar-h) + 8px); left:50%;
-  transform:translateX(-50%) translateY(-8px);
-  background:var(--surface2); color:var(--text); padding:7px 16px;
-  border-radius:30px; font-size:.82rem; font-weight:600;
-  border:1px solid var(--border); opacity:0;
-  transition:all .22s; z-index:100; pointer-events:none; white-space:nowrap;
-}
-#toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
-#toast.ok   { background:rgba(61,214,140,.2); border-color:var(--green); color:var(--green); }
-#toast.warn { background:rgba(255,81,81,.2);  border-color:var(--red);   color:var(--red); }
-
-/* ── Round result overlay ── */
-#round-overlay {
-  position:fixed; inset:0; background:rgba(0,0,0,.82);
-  display:none; align-items:center; justify-content:center;
-  z-index:150; backdrop-filter:blur(8px);
-}
-#round-overlay.show { display:flex; }
-#round-box {
-  background:var(--surface); border:1px solid var(--border); border-radius:18px;
-  padding:28px 24px; text-align:center; width:min(300px,88vw);
-  animation:pop .3s cubic-bezier(.17,.67,.41,1.4);
-}
-@keyframes pop { from{transform:scale(.75);opacity:0} to{transform:scale(1);opacity:1} }
-.re-emoji { font-size:2.8rem; margin-bottom:8px; }
-.re-title { font-family:'Syne',sans-serif; font-size:1.15rem; font-weight:800; margin-bottom:4px; }
-.re-word  { font-size:1.4rem; font-weight:800; color:var(--accent); margin:8px 0; }
-.re-sub   { color:var(--text2); font-size:.85rem; margin-bottom:12px; }
-#re-newround {
-  background:var(--accent); color:#fff; border:none; padding:10px 24px;
-  border-radius:var(--r); font-size:.88rem; font-weight:700; cursor:pointer;
-  font-family:'Syne',sans-serif; width:100%;
-}
-
-/* ── Join overlay ── */
-#join-overlay {
-  position:fixed; inset:0; background:rgba(0,0,0,.92);
-  display:flex; align-items:center; justify-content:center;
-  z-index:200; backdrop-filter:blur(12px);
-}
-#join-box {
-  background:var(--surface); border:1px solid var(--border); border-radius:20px;
-  padding:28px 22px; width:min(320px,92vw); display:flex; flex-direction:column; gap:14px;
-}
-#join-box h2 {
-  text-align:center; font-family:'Syne',sans-serif; font-size:1.5rem; font-weight:800;
+/* Join overlay */
+#join-overlay{position:fixed;inset:0;background:rgba(0,0,0,.9);
+  display:flex;align-items:center;justify-content:center;
+  z-index:200;backdrop-filter:blur(10px);}
+#join-box{background:var(--surface);border:1px solid var(--border);
+  border-radius:18px;padding:28px 22px;width:min(310px,90vw);
+  display:flex;flex-direction:column;gap:14px;}
+#join-box h2{text-align:center;font-size:1.4rem;font-weight:800;
   background:linear-gradient(135deg,var(--accent),var(--accent2));
-  -webkit-background-clip:text; -webkit-text-fill-color:transparent;
-}
-#join-box input {
-  background:var(--surface2); border:1.5px solid var(--border);
-  border-radius:var(--r); color:var(--text); padding:11px 14px;
-  font-size:.9rem; outline:none; font-family:'DM Sans',sans-serif;
-}
-#join-box input:focus { border-color:var(--accent); }
-#join-btn {
-  background:linear-gradient(135deg,var(--accent),#9d96ff); color:#fff;
-  border:none; padding:13px; border-radius:var(--r); font-size:.95rem;
-  font-weight:700; cursor:pointer; font-family:'Syne',sans-serif;
-}
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;}
+#join-box input{background:var(--surface2);border:1.5px solid var(--border);
+  border-radius:var(--r);color:var(--text);padding:11px 14px;font-size:.95rem;
+  outline:none;font-family:'Nunito',sans-serif;}
+#join-box input:focus{border-color:var(--accent);}
+#join-btn{background:linear-gradient(135deg,var(--accent),#9d96ff);color:#fff;
+  border:none;padding:13px;border-radius:var(--r);font-size:.95rem;font-weight:800;
+  cursor:pointer;font-family:'Nunito',sans-serif;}
 
-/* ── Replay overlay ── */
-#replay-overlay {
-  position:fixed; inset:0; background:rgba(0,0,0,.85);
-  display:none; align-items:center; justify-content:center;
-  z-index:140; backdrop-filter:blur(6px);
-}
-#replay-overlay.show { display:flex; }
-#replay-canvas { border-radius:12px; max-width:90vw; max-height:60vh; background:#fff; }
-#replay-close {
-  position:absolute; top:16px; right:16px;
-  background:var(--surface2); border:1px solid var(--border); color:var(--text);
-  padding:6px 14px; border-radius:20px; cursor:pointer; font-size:.85rem;
-}
+/* Round result */
+#round-overlay{position:fixed;inset:0;background:rgba(0,0,0,.78);
+  display:none;align-items:center;justify-content:center;z-index:150;backdrop-filter:blur(6px);}
+#round-overlay.show{display:flex;}
+#round-box{background:var(--surface);border:1px solid var(--border);
+  border-radius:18px;padding:26px 22px;text-align:center;width:min(290px,86vw);}
+#round-box .re{font-size:2.6rem;margin-bottom:6px;}
+#round-box h3{font-size:1.2rem;font-weight:800;margin-bottom:4px;}
+#round-box .rw{font-size:1.5rem;font-weight:800;color:var(--accent);margin:10px 0;}
+#round-box p{color:var(--text2);font-size:.85rem;}
 </style>
 </head>
 <body>
 <div id="app">
-
-  <!-- Join overlay -->
   <div id="join-overlay">
     <div id="join-box">
       <h2>🎨 Draw & Guess</h2>
@@ -338,887 +167,565 @@ html, body { width:100%; height:100%; overflow:hidden; background:var(--bg); col
     </div>
   </div>
 
-  <!-- Round result overlay -->
   <div id="round-overlay">
     <div id="round-box">
-      <div class="re-emoji" id="re-emoji">🎉</div>
-      <div class="re-title" id="re-title"></div>
-      <div class="re-word"  id="re-word"></div>
-      <div class="re-sub"   id="re-sub"></div>
-      <button id="re-newround">▶ New Round</button>
+      <div class="re" id="re-emoji">🎉</div>
+      <h3 id="re-title"></h3>
+      <div class="rw" id="re-word"></div>
+      <p id="re-sub"></p>
     </div>
   </div>
 
-  <!-- Replay overlay -->
-  <div id="replay-overlay">
-    <canvas id="replay-canvas"></canvas>
-    <button id="replay-close">✕ Close</button>
+  <div id="brush-panel" class="panel">
+    <div class="panel-title">BRUSH TYPE</div>
+    <div class="brush-opt on" data-brush="pen">   <span class="bi">🖊</span>Pen</div>
+    <div class="brush-opt"    data-brush="pencil"><span class="bi">✏️</span>Pencil</div>
+    <div class="brush-opt"    data-brush="marker"><span class="bi">🖍</span>Marker</div>
+    <div class="brush-opt"    data-brush="eraser"><span class="bi">🧽</span>Eraser</div>
   </div>
 
-  <!-- Panels (floating) -->
-  <div id="brush-panel">
-    <div class="brush-opt on"  data-brush="pen">   <span class="brush-icon">🖊</span>Pen</div>
-    <div class="brush-opt"     data-brush="pencil"><span class="brush-icon">✏️</span>Pencil</div>
-    <div class="brush-opt"     data-brush="marker"><span class="brush-icon">🖍</span>Marker</div>
-    <div class="brush-opt"     data-brush="bristle"><span class="brush-icon">🎨</span>Bristle</div>
-    <div class="brush-opt"     data-brush="flat">  <span class="brush-icon">▬</span>Flat</div>
-    <div class="brush-opt"     data-brush="eraser"><span class="brush-icon">🧽</span>Eraser</div>
-  </div>
-
-  <div id="color-panel">
-    <div class="color-section-label">Basic</div>
-    <div class="color-row" id="colors-basic"></div>
-    <div class="color-section-label">Pastel</div>
-    <div class="color-row" id="colors-pastel"></div>
-    <div class="color-section-label">Neon</div>
-    <div class="color-row" id="colors-neon"></div>
-    <div id="custom-color-wrap">
-      <input type="color" id="custom-color" value="#6c63ff"/>
-      <span id="custom-color-lbl">Custom</span>
+  <div id="layer-panel" class="panel">
+    <div class="panel-title">LAYERS</div>
+    <div class="lrow al" data-layer="3">
+      <span class="lvis sv" data-lv="3">👁</span><span class="lname">Layer 3</span>
+      <div class="lthumb"><canvas id="lt3"></canvas></div>
     </div>
+    <div class="lrow" data-layer="2">
+      <span class="lvis sv" data-lv="2">👁</span><span class="lname">Layer 2</span>
+      <div class="lthumb"><canvas id="lt2"></canvas></div>
+    </div>
+    <div class="lrow" data-layer="1">
+      <span class="lvis sv" data-lv="1">👁</span><span class="lname">Layer 1</span>
+      <div class="lthumb"><canvas id="lt1"></canvas></div>
+    </div>
+    <button id="merge-btn" class="panel-btn sm">Merge All Layers</button>
   </div>
 
-  <div id="layer-panel">
-    <div id="layer-list"></div>
-    <button class="tbtn" id="layer-add" style="width:100%;font-size:.75rem;">+ Add Layer</button>
+  <div id="settings-panel" class="panel">
+    <div class="panel-title">CANVAS SETTINGS</div>
+    <label>Canvas Size</label>
+    <select id="canvas-size-sel">
+      <option value="640x360">640 × 360</option>
+      <option value="800x500" selected>800 × 500</option>
+      <option value="1024x640">1024 × 640</option>
+      <option value="1280x720">1280 × 720 (HD)</option>
+    </select>
+    <button id="apply-size-btn" class="panel-btn">Apply Size</button>
   </div>
 
-  <div id="players-panel" id="players-panel">
-    <div id="player-list"></div>
-  </div>
-
-  <div id="lb-panel">
-    <div class="lb-title">🏆 Leaderboard</div>
-    <div id="lb-list"></div>
-  </div>
-
-  <!-- Topbar -->
   <div id="topbar">
     <div id="conn-dot"></div>
     <div id="word-display">connecting…</div>
     <span id="role-pill">—</span>
-    <span id="timer-display"></span>
-    <button class="tbtn" id="btn-players"     style="width:32px;height:32px;font-size:.85rem;">👥</button>
-    <button class="tbtn" id="btn-leaderboard" style="width:32px;height:32px;font-size:.8rem;">🏆</button>
+    <button class="tbtn" id="btn-settings" style="width:32px;height:32px;font-size:.85rem;">⚙️</button>
   </div>
 
-  <!-- Canvas area -->
-  <div id="canvas-area">
-    <div id="canvas-wrap">
-      <canvas id="cv-bg"      class="cvl"></canvas>
-      <canvas id="cv-main"    class="cvl"></canvas>
-      <canvas id="cv-preview" class="cvl"></canvas>
-    </div>
-
-    <!-- Chat panel (always visible for guessers) -->
-    <div id="chat-panel" class="visible">
-      <div id="chat-log"></div>
-      <div id="guess-row">
-        <input id="guess-in" placeholder="Type your guess…" autocomplete="off" autocorrect="off" autocapitalize="off"/>
-        <button id="guess-go">Send</button>
-      </div>
+  <div id="canvas-outer">
+    <div id="canvas-inner">
+      <canvas id="cv-bg" class="cvl"></canvas>
+      <canvas id="cv-l1" class="cvl"></canvas>
+      <canvas id="cv-l2" class="cvl"></canvas>
+      <canvas id="cv-l3" class="cvl"></canvas>
     </div>
   </div>
 
-  <!-- Toolbar (drawer) -->
+  <div id="chat-log"></div>
+
   <div id="toolbar">
-    <!-- Brush selector -->
-    <button class="tbtn on" id="btn-brush" title="Brush type">🖊</button>
-    <div class="tsep"></div>
-    <!-- Color picker -->
-    <button class="tbtn" id="btn-color" title="Colors">🎨</button>
-    <div id="palette-quick"></div>
-    <div class="tsep"></div>
-    <!-- Size -->
-    <div id="sz-wrap">
-      <div id="sz-preview"></div>
-      <input type="range" id="sz-range" min="1" max="60" value="8"/>
-    </div>
-    <!-- Opacity -->
-    <div id="op-wrap">
-      <span style="font-size:.7rem;color:var(--text2)">α</span>
-      <input type="range" id="op-range" min="5" max="100" value="100"/>
-      <span id="op-lbl">100%</span>
-    </div>
-    <div class="tsep"></div>
-    <!-- Layers -->
+    <div id="palette" style="display:flex;gap:4px;align-items:center;"></div>
+    <div class="sep"></div>
+    <button class="tbtn on" id="btn-brush" title="Brush">🖊</button>
     <button class="tbtn" id="btn-layers" title="Layers">📋</button>
-    <div class="tsep"></div>
-    <!-- Actions -->
-    <button class="tbtn" id="btn-undo" title="Undo">↩️</button>
-    <button class="tbtn" id="btn-redo" title="Redo">↪️</button>
-    <button class="tbtn red" id="btn-clear" title="Clear">🗑</button>
-    <div class="tsep"></div>
-    <button class="tbtn" id="btn-skip" title="Skip word">⏭</button>
-    <button class="tbtn green" id="btn-done" title="Done">✅</button>
+    <div class="sep"></div>
+    <div id="sz-wrap">
+      <div id="sz-dot"></div>
+      <input type="range" id="sz-range" min="1" max="80" value="8"/>
+    </div>
+    <div class="sep"></div>
+    <button class="tbtn" id="btn-undo">↩️</button>
+    <button class="tbtn" id="btn-redo">↪️</button>
+    <button class="tbtn" id="btn-clear" style="font-size:.85rem;">🗑</button>
+    <div class="sep"></div>
+    <button class="tbtn" id="btn-zoom-out" style="font-size:1.1rem;font-weight:800;">−</button>
+    <span id="zoom-lbl">100%</span>
+    <button class="tbtn" id="btn-zoom-in"  style="font-size:1.1rem;font-weight:800;">+</button>
+    <button class="tbtn" id="btn-zoom-fit" style="font-size:.65rem;font-weight:800;">FIT</button>
+    <div class="sep"></div>
+    <button class="tbtn gbtn" id="btn-done">✅</button>
   </div>
 
+  <div id="guess-row">
+    <input id="guess-in" placeholder="Type your guess…" autocomplete="off" autocorrect="off" autocapitalize="off"/>
+    <button id="guess-go">Send</button>
+  </div>
 </div>
 <div id="toast"></div>
 
 <script>
 (function(){
 'use strict';
+const tg=window.Telegram?.WebApp;
+if(tg){tg.ready();tg.expand();}
 
-const tg = window.Telegram?.WebApp;
-if (tg) { tg.ready(); tg.expand(); }
+// ── Canvas state ──────────────────────────────────────────────────────────────
+let CW=800,CH=500;
+const LAYERS={bg:document.getElementById('cv-bg'),1:document.getElementById('cv-l1'),
+  2:document.getElementById('cv-l2'),3:document.getElementById('cv-l3')};
+const CTX={};
+const layerVis={1:true,2:true,3:true};
+let activeLayer=3;
 
-// ── Canvas setup ──────────────────────────────────────────────────────────────
-let CW = 800, CH = 500;
-const bgCanvas      = document.getElementById('cv-bg');
-const mainCanvas    = document.getElementById('cv-main');
-const previewCanvas = document.getElementById('cv-preview');
-let   bgCtx, mainCtx, previewCtx;
-
-// Layer system
-const MAX_LAYERS = 5;
-let layers = []; // [{id, name, canvas, ctx, visible, opacity}]
-let activeLayerIdx = 0;
-
-function createLayer(name) {
-  const canvas = document.createElement('canvas');
-  canvas.width  = CW; canvas.height = CH;
-  canvas.style.cssText = `position:absolute;top:0;left:0;z-index:${2+layers.length}`;
-  document.getElementById('canvas-wrap').insertBefore(canvas, previewCanvas);
-  const ctx = canvas.getContext('2d');
-  ctx.lineCap = ctx.lineJoin = 'round';
-  return { id: Date.now(), name, canvas, ctx, visible:true, opacity:1.0 };
-}
-
-function initCanvases() {
-  // Set dimensions
-  [bgCanvas, mainCanvas, previewCanvas].forEach(c => {
-    c.width = CW; c.height = CH;
-    c.style.width = CW+'px'; c.style.height = CH+'px';
+function initCanvases(){
+  Object.entries(LAYERS).forEach(([k,c])=>{
+    c.width=CW;c.height=CH;
+    c.style.width=CW+'px';c.style.height=CH+'px';
+    CTX[k]=c.getContext('2d');
   });
-  bgCtx      = bgCanvas.getContext('2d');
-  mainCtx    = mainCanvas.getContext('2d');
-  previewCtx = previewCanvas.getContext('2d');
-  bgCtx.fillStyle = '#fff'; bgCtx.fillRect(0,0,CW,CH);
-  mainCtx.lineCap = mainCtx.lineJoin = 'round';
-
-  // Create initial layer
-  layers = [];
-  document.querySelectorAll('#canvas-wrap canvas:not(#cv-bg):not(#cv-main):not(#cv-preview)').forEach(c=>c.remove());
-  const l = createLayer('Layer 1');
-  layers.push(l);
-  activeLayerIdx = 0;
-  renderLayerPanel();
+  CTX.bg.fillStyle='#fff';CTX.bg.fillRect(0,0,CW,CH);
   fitCanvas();
 }
+function actCtx(){return CTX[activeLayer];}
 
-function activeLayer() { return layers[activeLayerIdx]; }
-function activeCtx()   { return activeLayer()?.ctx || mainCtx; }
+// ── Zoom/pan ──────────────────────────────────────────────────────────────────
+let zoom=1,panX=0,panY=0;
+const inner=document.getElementById('canvas-inner');
+const outer=document.getElementById('canvas-outer');
 
-// ── Zoom / pan ────────────────────────────────────────────────────────────────
-let zoom=1, panX=0, panY=0;
-const canvasWrap = document.getElementById('canvas-wrap');
-const canvasArea = document.getElementById('canvas-area');
+function applyT(){
+  inner.style.transform=`translate(${panX}px,${panY}px) scale(${zoom})`;
+  document.getElementById('zoom-lbl').textContent=Math.round(zoom*100)+'%';
+}
+function fitCanvas(){
+  const ow=outer.clientWidth,oh=outer.clientHeight;
+  zoom=Math.min(ow/CW,oh/CH,1);
+  panX=(ow-CW*zoom)/2;panY=(oh-CH*zoom)/2;
+  applyT();
+}
+window.addEventListener('resize',fitCanvas);
 
-function applyTransform() {
-  canvasWrap.style.transform = `translate(${panX}px,${panY}px) scale(${zoom})`;
+function zoomAt(delta,cx,cy){
+  const r=outer.getBoundingClientRect();
+  const ox=cx-r.left,oy=cy-r.top;
+  const nz=Math.max(0.15,Math.min(8,zoom*delta));
+  panX=ox-(ox-panX)*(nz/zoom);
+  panY=oy-(oy-panY)*(nz/zoom);
+  zoom=nz;applyT();
 }
 
-function fitCanvas() {
-  const aw = canvasArea.clientWidth, ah = canvasArea.clientHeight;
-  zoom = Math.min(aw/CW, ah/CH, 1);
-  panX = (aw - CW*zoom)/2;
-  panY = (ah - CH*zoom)/2;
-  applyTransform();
-}
-window.addEventListener('resize', fitCanvas);
-
-function clientToCanvas(cx, cy) {
-  const rect = canvasArea.getBoundingClientRect();
-  return [(cx - rect.left - panX) / zoom, (cy - rect.top - panY) / zoom];
-}
-
-// ── Drawing tools ─────────────────────────────────────────────────────────────
-let brushType   = 'pen';
-let brushSize   = 8;
-let brushOpacity = 1.0;
-let currentColor = '#1a1a2e';
-let isDrawing   = false;
-let currentStroke = null;
-let lastX = 0, lastY = 0;
-let lastMidX = 0, lastMidY = 0;
-
-// Undo/redo stacks per layer
-const undoStacks = new WeakMap();
-const redoStacks = new WeakMap();
-
-function getStack(layer, map) {
-  if (!map.has(layer)) map.set(layer, []);
-  return map.get(layer);
-}
-
-function saveUndo() {
-  const l = activeLayer();
-  if (!l) return;
-  const stack = getStack(l, undoStacks);
-  stack.push(l.ctx.getImageData(0,0,CW,CH));
-  if (stack.length > 20) stack.shift();
-  getStack(l, redoStacks).length = 0;
-}
-
-function doUndo() {
-  const l = activeLayer();
-  if (!l) return;
-  const us = getStack(l, undoStacks);
-  const rs = getStack(l, redoStacks);
-  if (!us.length) return;
-  rs.push(l.ctx.getImageData(0,0,CW,CH));
-  const prev = us.pop();
-  l.ctx.putImageData(prev, 0, 0);
-}
-
-function doRedo() {
-  const l = activeLayer();
-  if (!l) return;
-  const us = getStack(l, undoStacks);
-  const rs = getStack(l, redoStacks);
-  if (!rs.length) return;
-  us.push(l.ctx.getImageData(0,0,CW,CH));
-  l.ctx.putImageData(rs.pop(), 0, 0);
-}
-
-function applyBrushSettings(ctx) {
-  ctx.globalAlpha      = brushOpacity;
-  ctx.globalCompositeOperation = brushType === 'eraser' ? 'destination-out' : 'source-over';
-  ctx.lineWidth        = brushSize;
-  ctx.lineCap          = 'round';
-  ctx.lineJoin         = 'round';
-  ctx.strokeStyle      = brushType === 'eraser' ? 'rgba(0,0,0,1)' : currentColor;
-}
-
-function getBristleOffset() {
-  return (Math.random()-.5) * brushSize * .6;
-}
-
-function drawSegment(ctx, x0, y0, x1, y1) {
-  applyBrushSettings(ctx);
-  switch(brushType) {
-    case 'pencil': {
-      // Slightly rough — multiple low-opacity lines
-      ctx.globalAlpha = brushOpacity * 0.55;
-      for (let i=0; i<3; i++) {
-        ctx.beginPath();
-        ctx.moveTo(x0 + (Math.random()-.5)*1.5, y0 + (Math.random()-.5)*1.5);
-        ctx.lineTo(x1 + (Math.random()-.5)*1.5, y1 + (Math.random()-.5)*1.5);
-        ctx.stroke();
-      }
-      break;
-    }
-    case 'marker': {
-      ctx.globalAlpha = brushOpacity * 0.6;
-      ctx.lineWidth   = brushSize * 1.4;
-      ctx.beginPath(); ctx.moveTo(x0,y0); ctx.lineTo(x1,y1); ctx.stroke();
-      break;
-    }
-    case 'bristle': {
-      const bristles = Math.max(3, Math.floor(brushSize/2));
-      ctx.globalAlpha = brushOpacity / bristles * 2;
-      ctx.lineWidth = Math.max(1, brushSize/bristles);
-      for (let i=0; i<bristles; i++) {
-        ctx.beginPath();
-        ctx.moveTo(x0+getBristleOffset(), y0+getBristleOffset());
-        ctx.lineTo(x1+getBristleOffset(), y1+getBristleOffset());
-        ctx.stroke();
-      }
-      break;
-    }
-    case 'flat': {
-      ctx.lineWidth = brushSize * 2.5;
-      ctx.lineCap   = 'square';
-      ctx.beginPath(); ctx.moveTo(x0,y0); ctx.lineTo(x1,y1); ctx.stroke();
-      break;
-    }
-    default: { // pen / eraser
-      ctx.beginPath(); ctx.moveTo(x0,y0); ctx.lineTo(x1,y1); ctx.stroke();
-    }
+// Ctrl+scroll
+outer.addEventListener('wheel',e=>{
+  if(e.ctrlKey||e.metaKey){
+    e.preventDefault();
+    zoomAt(e.deltaY<0?1.12:0.89,e.clientX,e.clientY);
   }
-  // Reset
-  ctx.globalAlpha = 1;
-  ctx.globalCompositeOperation = 'source-over';
-  ctx.lineCap = 'round';
-}
-
-// ── Pointer events ────────────────────────────────────────────────────────────
-let pointerId = null;
-
-function onPointerDown(e) {
-  if (!isDrawer) return;
-  if (e.pointerType === 'touch' && e.touches?.length > 1) return;
-  e.preventDefault();
-  pointerId = e.pointerId;
-  canvasArea.setPointerCapture?.(e.pointerId);
-  const [x,y] = clientToCanvas(e.clientX, e.clientY);
-  saveUndo();
-  isDrawing = true;
-  lastX = x; lastY = y; lastMidX = x; lastMidY = y;
-  currentStroke = { color:currentColor, size:brushSize, opacity:brushOpacity, brushType, points:[[x,y]] };
-  const ctx = activeCtx();
-  applyBrushSettings(ctx);
-  ctx.beginPath(); ctx.moveTo(x,y);
-}
-
-function onPointerMove(e) {
-  if (!isDrawing || !isDrawer) return;
-  if (e.pointerId !== pointerId) return;
-  e.preventDefault();
-  const [x,y] = clientToCanvas(e.clientX, e.clientY);
-  currentStroke.points.push([x,y]);
-  drawSegment(activeCtx(), lastX, lastY, x, y);
-  lastX = x; lastY = y;
-
-  // Send to server in batches
-  if (currentStroke.points.length % 4 === 0) {
-    ws?.send(JSON.stringify({ type:'draw', stroke:{ ...currentStroke } }));
-  }
-}
-
-function onPointerUp(e) {
-  if (!isDrawing || !isDrawer) return;
-  isDrawing = false;
-  pointerId = null;
-  if (currentStroke && currentStroke.points.length > 0) {
-    ws?.send(JSON.stringify({ type:'draw', stroke:currentStroke }));
-  }
-  currentStroke = null;
-}
-
-canvasArea.addEventListener('pointerdown', onPointerDown, { passive:false });
-canvasArea.addEventListener('pointermove', onPointerMove, { passive:false });
-canvasArea.addEventListener('pointerup',   onPointerUp);
-canvasArea.addEventListener('pointercancel', onPointerUp);
+},{passive:false});
 
 // Pinch zoom
-let pinchStartDist = 0, pinchStartZoom = 1;
-canvasArea.addEventListener('touchstart', e => {
-  if (e.touches.length === 2) {
-    isDrawing = false;
-    const t = e.touches;
-    pinchStartDist = Math.hypot(t[0].clientX-t[1].clientX, t[0].clientY-t[1].clientY);
-    pinchStartZoom = zoom;
+let pinching=false,lastPinchD=0,lastPinchM=null;
+outer.addEventListener('touchstart',e=>{
+  if(e.touches.length===2){
+    pinching=true;
+    lastPinchD=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,
+      e.touches[0].clientY-e.touches[1].clientY);
+    lastPinchM={x:(e.touches[0].clientX+e.touches[1].clientX)/2,
+      y:(e.touches[0].clientY+e.touches[1].clientY)/2};
     e.preventDefault();
   }
-}, { passive:false });
-canvasArea.addEventListener('touchmove', e => {
-  if (e.touches.length === 2) {
+},{passive:false});
+outer.addEventListener('touchmove',e=>{
+  if(e.touches.length===2&&pinching){
     e.preventDefault();
-    const t = e.touches;
-    const d = Math.hypot(t[0].clientX-t[1].clientX, t[0].clientY-t[1].clientY);
-    zoom = Math.max(0.2, Math.min(8, pinchStartZoom * (d/pinchStartDist)));
-    applyTransform();
+    const d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,
+      e.touches[0].clientY-e.touches[1].clientY);
+    const m={x:(e.touches[0].clientX+e.touches[1].clientX)/2,
+      y:(e.touches[0].clientY+e.touches[1].clientY)/2};
+    if(lastPinchD>0) zoomAt(d/lastPinchD,m.x,m.y);
+    panX+=m.x-lastPinchM.x;panY+=m.y-lastPinchM.y;
+    lastPinchD=d;lastPinchM=m;applyT();
   }
-}, { passive:false });
+},{passive:false});
+outer.addEventListener('touchend',e=>{if(e.touches.length<2)pinching=false;});
 
-// Ctrl+scroll zoom
-canvasArea.addEventListener('wheel', e => {
-  if (e.ctrlKey || e.metaKey) {
-    e.preventDefault();
-    const rect = canvasArea.getBoundingClientRect();
-    const ox = e.clientX-rect.left, oy = e.clientY-rect.top;
-    const nz = Math.max(0.15, Math.min(8, zoom*(e.deltaY<0?1.12:0.89)));
-    panX = ox-(ox-panX)*(nz/zoom);
-    panY = oy-(oy-panY)*(nz/zoom);
-    zoom = nz; applyTransform();
-  }
-}, { passive:false });
+document.getElementById('btn-zoom-in').addEventListener('click',()=>{
+  const r=outer.getBoundingClientRect();
+  zoomAt(1.25,r.left+r.width/2,r.top+r.height/2);
+});
+document.getElementById('btn-zoom-out').addEventListener('click',()=>{
+  const r=outer.getBoundingClientRect();
+  zoomAt(0.8,r.left+r.width/2,r.top+r.height/2);
+});
+document.getElementById('btn-zoom-fit').addEventListener('click',fitCanvas);
 
-// ── Render incoming strokes ────────────────────────────────────────────────────
-function renderStroke(s, ctx) {
-  if (!ctx) return;
-  const pts = s.points || [];
-  if (pts.length < 2) return;
-  const savedAlpha = ctx.globalAlpha;
-  const savedComp  = ctx.globalCompositeOperation;
-  ctx.globalAlpha  = s.opacity || 1;
-  ctx.globalCompositeOperation = (s.brushType==='eraser') ? 'destination-out' : 'source-over';
-  ctx.strokeStyle  = (s.brushType==='eraser') ? 'rgba(0,0,0,1)' : (s.color||'#000');
-  ctx.lineWidth    = s.size || 4;
-  ctx.lineCap = ctx.lineJoin = 'round';
-  ctx.beginPath(); ctx.moveTo(pts[0][0],pts[0][1]);
-  for (let i=1;i<pts.length;i++) ctx.lineTo(pts[i][0],pts[i][1]);
-  ctx.stroke();
-  ctx.globalAlpha = savedAlpha;
-  ctx.globalCompositeOperation = savedComp;
+// Canvas coords (zoom-aware)
+function getXY(e){
+  const r=outer.getBoundingClientRect();
+  const s=e.touches?e.touches[0]:e;
+  return[(s.clientX-r.left-panX)/zoom,(s.clientY-r.top-panY)/zoom];
 }
 
-function clearAll() {
-  layers.forEach(l => l.ctx.clearRect(0,0,CW,CH));
-  bgCtx.fillStyle='#fff'; bgCtx.fillRect(0,0,CW,CH);
+// ── Drawing ───────────────────────────────────────────────────────────────────
+let drawing=false,lx=0,ly=0;
+let brushType='pen',color='#1a1a2e',brushSize=8;
+let undoStack=[],redoStack=[];
+
+const BRUSHES={
+  pen:   {op:'source-over',alpha:1,   lw:1,   blur:0},
+  pencil:{op:'source-over',alpha:0.6, lw:0.8, blur:0.4},
+  marker:{op:'source-over',alpha:0.4, lw:2.5, blur:0},
+  eraser:{op:'destination-out',alpha:1,lw:1,  blur:0},
+};
+
+function applyBS(ctx,c,s,bt){
+  const b=BRUSHES[bt||brushType]||BRUSHES.pen;
+  ctx.globalCompositeOperation=b.op;
+  ctx.globalAlpha=b.alpha;
+  ctx.strokeStyle=b.op==='destination-out'?'rgba(0,0,0,1)':c;
+  ctx.lineWidth=s*b.lw;
+  ctx.lineCap='round';ctx.lineJoin='round';
+  ctx.filter=b.blur?`blur(${b.blur}px)`:'none';
+}
+function resetBS(ctx){ctx.globalCompositeOperation='source-over';ctx.globalAlpha=1;ctx.filter='none';}
+
+function drawSeg(ctx,x1,y1,x2,y2,c,s,bt){
+  applyBS(ctx,c,s,bt);
+  ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();
+  resetBS(ctx);
+}
+
+function renderStroke(stroke,tCtx){
+  const ctx=tCtx||CTX[stroke.layer||activeLayer]||actCtx();
+  const pts=stroke.points||[];
+  if(!pts.length)return;
+  const bt=stroke.brush||'pen';
+  applyBS(ctx,stroke.color||'#000',stroke.size||8,bt);
+  ctx.beginPath();
+  if(pts.length===1){
+    ctx.arc(pts[0][0],pts[0][1],(stroke.size||8)/2,0,Math.PI*2);
+    ctx.fill();
+  } else {
+    ctx.moveTo(pts[0][0],pts[0][1]);
+    for(let i=1;i<pts.length;i++) ctx.lineTo(pts[i][0],pts[i][1]);
+    ctx.stroke();
+  }
+  resetBS(ctx);
+}
+
+// Undo/Redo
+function saveUndo(){
+  const s={};[1,2,3].forEach(n=>s[n]=CTX[n].getImageData(0,0,CW,CH));
+  undoStack.push(s);if(undoStack.length>40)undoStack.shift();redoStack=[];
+}
+function doUndo(){
+  if(!undoStack.length)return;
+  const c={};[1,2,3].forEach(n=>c[n]=CTX[n].getImageData(0,0,CW,CH));
+  redoStack.push(c);const s=undoStack.pop();
+  [1,2,3].forEach(n=>CTX[n].putImageData(s[n],0,0));
+  sendSnap();updateThumbs();
+}
+function doRedo(){
+  if(!redoStack.length)return;
+  const c={};[1,2,3].forEach(n=>c[n]=CTX[n].getImageData(0,0,CW,CH));
+  undoStack.push(c);const s=redoStack.pop();
+  [1,2,3].forEach(n=>CTX[n].putImageData(s[n],0,0));
+  sendSnap();updateThumbs();
+}
+
+// Merge to PNG for server
+function getMerged(){
+  const t=document.createElement('canvas');t.width=CW;t.height=CH;
+  const tc=t.getContext('2d');tc.fillStyle='#fff';tc.fillRect(0,0,CW,CH);
+  [1,2,3].forEach(n=>{if(layerVis[n])tc.drawImage(LAYERS[n],0,0);});
+  return t.toDataURL('image/png');
+}
+function sendSnap(){ws?.send(JSON.stringify({type:'snapshot',data:getMerged()}));}
+
+// Layer thumbnails
+function updateThumbs(){
+  [1,2,3].forEach(n=>{
+    const th=document.getElementById(`lt${n}`);if(!th)return;
+    th.width=28;th.height=18;
+    const tc=th.getContext('2d');tc.fillStyle='#fff';tc.fillRect(0,0,28,18);
+    tc.drawImage(LAYERS[n],0,0,28,18);
+  });
+}
+
+// ── Color palette ─────────────────────────────────────────────────────────────
+const COLORS=['#1a1a2e','#ffffff','#ff3855','#ff8c42','#ffd60a',
+  '#06d6a0','#0077b6','#7b2d8b','#ff6b8a','#8b4513',
+  '#adb5bd','#4cc9f0','#7c6ff7','#f72585','#2dc653'];
+const palette=document.getElementById('palette');
+COLORS.forEach(c=>{
+  const d=document.createElement('div');
+  d.className='cdot'+(c===color?' on':'');
+  d.style.background=c;
+  if(c==='#ffffff')d.style.border='2.5px solid #555';
+  d.addEventListener('pointerdown',()=>{
+    document.querySelectorAll('.cdot').forEach(x=>x.classList.remove('on'));
+    d.classList.add('on');color=c;
+    if(brushType==='eraser'){brushType='pen';updateBrushUI();}
+    updateSzDot();
+  });
+  palette.appendChild(d);
+});
+
+function updateSzDot(){
+  const s=Math.max(3,Math.min(brushSize,22));
+  document.getElementById('sz-dot').innerHTML=
+    `<div style="width:${s}px;height:${s}px;border-radius:50%;background:${brushType==='eraser'?'#888':color};"></div>`;
+}
+document.getElementById('sz-range').addEventListener('input',e=>{brushSize=+e.target.value;updateSzDot();});
+updateSzDot();
+
+// ── Brush panel ───────────────────────────────────────────────────────────────
+const brushPanel=document.getElementById('brush-panel');
+const layerPanel=document.getElementById('layer-panel');
+const settingsPanel=document.getElementById('settings-panel');
+
+document.getElementById('btn-brush').addEventListener('click',()=>{
+  brushPanel.classList.toggle('open');
+  layerPanel.classList.remove('open');settingsPanel.classList.remove('open');
+});
+document.querySelectorAll('.brush-opt').forEach(el=>{
+  el.addEventListener('click',()=>{
+    document.querySelectorAll('.brush-opt').forEach(x=>x.classList.remove('on'));
+    el.classList.add('on');brushType=el.dataset.brush;
+    document.getElementById('btn-brush').textContent=el.querySelector('.bi').textContent;
+    updateSzDot();brushPanel.classList.remove('open');
+  });
+});
+function updateBrushUI(){
+  document.querySelectorAll('.brush-opt').forEach(x=>x.classList.remove('on'));
+  document.querySelector(`.brush-opt[data-brush="${brushType}"]`)?.classList.add('on');
+  updateSzDot();
 }
 
 // ── Layer panel ───────────────────────────────────────────────────────────────
-function renderLayerPanel() {
-  const list = document.getElementById('layer-list');
-  list.innerHTML = '';
-  layers.forEach((l, i) => {
-    const row = document.createElement('div');
-    row.className = 'layer-row' + (i===activeLayerIdx?' active':'');
-    row.innerHTML = `
-      <span class="layer-vis ${l.visible?'on':''}" data-li="${i}">👁</span>
-      <span class="layer-name">${l.name}</span>
-      <input type="range" class="layer-op-slider" min="5" max="100" value="${Math.round(l.opacity*100)}" data-li="${i}"/>
-      ${layers.length>1?`<span style="cursor:pointer;font-size:.8rem;color:var(--red)" data-del="${i}">🗑</span>`:''}
-    `;
-    row.addEventListener('click', ev => {
-      if (ev.target.dataset.del !== undefined) {
-        layers.splice(+ev.target.dataset.del,1);
-        if (activeLayerIdx>=layers.length) activeLayerIdx=layers.length-1;
-        renderLayerPanel(); return;
-      }
-      if (ev.target.dataset.li !== undefined && ev.target.classList.contains('layer-vis')) {
-        layers[+ev.target.dataset.li].visible = !layers[+ev.target.dataset.li].visible;
-        layers[+ev.target.dataset.li].canvas.style.opacity = layers[+ev.target.dataset.li].visible?layers[+ev.target.dataset.li].opacity:0;
-        renderLayerPanel(); return;
-      }
-      activeLayerIdx = i; renderLayerPanel();
-    });
-    row.querySelector('.layer-op-slider')?.addEventListener('input', ev => {
-      const li = +ev.target.dataset.li;
-      layers[li].opacity = +ev.target.value/100;
-      if (layers[li].visible) layers[li].canvas.style.opacity = layers[li].opacity;
-    });
-    list.appendChild(row);
-  });
-}
-
-document.getElementById('layer-add').addEventListener('click', () => {
-  if (layers.length >= MAX_LAYERS) { showToast('Max layers reached','warn'); return; }
-  layers.push(createLayer(`Layer ${layers.length+1}`));
-  activeLayerIdx = layers.length-1;
-  renderLayerPanel();
+document.getElementById('btn-layers').addEventListener('click',()=>{
+  layerPanel.classList.toggle('open');
+  brushPanel.classList.remove('open');settingsPanel.classList.remove('open');
+  updateThumbs();
 });
-
-// ── Color setup ───────────────────────────────────────────────────────────────
-const PALETTE = {
-  basic:  ['#1a1a2e','#e8e8e8','#ff5757','#ff9f43','#ffd166','#06d6a0','#118ab2','#7c6ff7'],
-  pastel: ['#ffb3ba','#ffdfba','#ffffba','#baffc9','#bae1ff','#e8baff','#ffd4ba','#c9ffba'],
-  neon:   ['#ff0090','#ff6600','#ffee00','#00ff41','#00cfff','#7b00ff','#ff00ff','#00ffcc'],
-};
-
-function renderPalette() {
-  ['basic','pastel','neon'].forEach(group => {
-    const row = document.getElementById('colors-'+group);
-    PALETTE[group].forEach(hex => {
-      const d = document.createElement('div');
-      d.className = 'cswatch';
-      d.style.background = hex;
-      if (hex === currentColor) d.classList.add('on');
-      d.addEventListener('click', () => setColor(hex));
-      row.appendChild(d);
-    });
-  });
-  // Quick palette in toolbar (first 6 basic)
-  const qp = document.getElementById('palette-quick');
-  PALETTE.basic.slice(0,6).forEach(hex => {
-    const d = document.createElement('div');
-    d.className = 'cswatch';
-    d.style.background = hex; d.style.width='22px'; d.style.height='22px';
-    d.addEventListener('click', () => setColor(hex));
-    qp.appendChild(d);
-  });
-}
-
-function setColor(hex) {
-  currentColor = hex;
-  // Update active swatch
-  document.querySelectorAll('.cswatch').forEach(s => s.classList.toggle('on', s.style.background===hex||s.style.background===hexToRgb(hex)));
-  document.getElementById('custom-color').value = hex;
-  if (brushType==='eraser') { brushType='pen'; document.getElementById('btn-brush').textContent='🖊'; }
-}
-
-function hexToRgb(hex) {
-  const r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16);
-  return `rgb(${r}, ${g}, ${b})`;
-}
-
-document.getElementById('custom-color').addEventListener('input', e => setColor(e.target.value));
-
-// ── Brush panel ───────────────────────────────────────────────────────────────
-const BRUSH_ICONS = { pen:'🖊', pencil:'✏️', marker:'🖍', bristle:'🎨', flat:'▬', eraser:'🧽' };
-document.querySelectorAll('.brush-opt').forEach(el => {
-  el.addEventListener('click', () => {
-    brushType = el.dataset.brush;
-    document.querySelectorAll('.brush-opt').forEach(b=>b.classList.remove('on'));
-    el.classList.add('on');
-    document.getElementById('btn-brush').textContent = BRUSH_ICONS[brushType]||'🖊';
-    closeAllPanels();
+document.querySelectorAll('.lrow').forEach(el=>{
+  el.addEventListener('click',e=>{
+    if(e.target.classList.contains('lvis'))return;
+    document.querySelectorAll('.lrow').forEach(x=>x.classList.remove('al'));
+    el.classList.add('al');activeLayer=+el.dataset.layer;
   });
 });
-
-// ── Toolbar buttons ───────────────────────────────────────────────────────────
-function closeAllPanels() {
-  ['brush-panel','color-panel','layer-panel','players-panel','lb-panel'].forEach(id => {
-    document.getElementById(id).classList.remove('open');
+document.querySelectorAll('.lvis').forEach(el=>{
+  el.addEventListener('click',e=>{
+    e.stopPropagation();const n=+el.dataset.lv;
+    layerVis[n]=!layerVis[n];
+    LAYERS[n].style.opacity=layerVis[n]?'1':'0';
+    el.classList.toggle('sv',layerVis[n]);
   });
+});
+document.getElementById('merge-btn').addEventListener('click',()=>{
+  saveUndo();
+  const t=document.createElement('canvas');t.width=CW;t.height=CH;
+  const tc=t.getContext('2d');
+  [1,2,3].forEach(n=>tc.drawImage(LAYERS[n],0,0));
+  CTX[1].clearRect(0,0,CW,CH);CTX[1].drawImage(t,0,0);
+  [2,3].forEach(n=>CTX[n].clearRect(0,0,CW,CH));
+  activeLayer=1;
+  document.querySelectorAll('.lrow').forEach(x=>x.classList.remove('al'));
+  document.querySelector('.lrow[data-layer="1"]')?.classList.add('al');
+  showToast('Layers merged');updateThumbs();layerPanel.classList.remove('open');
+});
+
+// ── Settings panel ────────────────────────────────────────────────────────────
+document.getElementById('btn-settings').addEventListener('click',()=>{
+  settingsPanel.classList.toggle('open');
+  brushPanel.classList.remove('open');layerPanel.classList.remove('open');
+});
+document.getElementById('apply-size-btn').addEventListener('click',()=>{
+  const[w,h]=document.getElementById('canvas-size-sel').value.split('x').map(Number);
+  const saved={};[1,2,3].forEach(n=>saved[n]=LAYERS[n].toDataURL());
+  CW=w;CH=h;initCanvases();
+  [1,2,3].forEach(n=>{const img=new Image();img.src=saved[n];
+    img.onload=()=>CTX[n].drawImage(img,0,0,CW,CH);});
+  settingsPanel.classList.remove('open');showToast(`Canvas: ${w}×${h}`);
+});
+
+// Close panels on outside click
+document.addEventListener('pointerdown',e=>{
+  if(!e.target.closest('#brush-panel,#btn-brush'))brushPanel.classList.remove('open');
+  if(!e.target.closest('#layer-panel,#btn-layers'))layerPanel.classList.remove('open');
+  if(!e.target.closest('#settings-panel,#btn-settings'))settingsPanel.classList.remove('open');
+});
+
+// ── Drawing events ────────────────────────────────────────────────────────────
+let curStroke=null;
+function onStart(e){
+  if(!isDrawer||pinching)return;
+  if(e.touches?.length>1)return;
+  e.preventDefault();
+  drawing=true;saveUndo();[lx,ly]=getXY(e);
+  curStroke={brush:brushType,color:brushType==='eraser'?null:color,
+    size:brushSize,layer:activeLayer,points:[[lx,ly]]};
 }
-
-function togglePanel(id) {
-  const el = document.getElementById(id);
-  const wasOpen = el.classList.contains('open');
-  closeAllPanels();
-  if (!wasOpen) el.classList.add('open');
+function onMove(e){
+  if(!drawing||!isDrawer||pinching)return;
+  if(e.touches?.length>1)return;
+  e.preventDefault();
+  const[x,y]=getXY(e);
+  drawSeg(actCtx(),lx,ly,x,y,color,brushSize);
+  curStroke.points.push([x,y]);lx=x;ly=y;
 }
+function onEnd(){
+  if(!drawing)return;drawing=false;
+  if(curStroke&&ws?.readyState===1)ws.send(JSON.stringify({type:'draw',stroke:curStroke}));
+  curStroke=null;updateThumbs();
+}
+outer.addEventListener('pointerdown',onStart,{passive:false});
+outer.addEventListener('pointermove',onMove,{passive:false});
+outer.addEventListener('pointerup',onEnd);
+outer.addEventListener('pointercancel',onEnd);
 
-document.getElementById('btn-brush').addEventListener('click', () => togglePanel('brush-panel'));
-document.getElementById('btn-color').addEventListener('click', () => togglePanel('color-panel'));
-document.getElementById('btn-layers').addEventListener('click', () => togglePanel('layer-panel'));
-document.getElementById('btn-players').addEventListener('click', () => togglePanel('players-panel'));
-document.getElementById('btn-leaderboard').addEventListener('click', () => togglePanel('lb-panel'));
-
-document.addEventListener('pointerdown', e => {
-  if (!e.target.closest('.tbtn') && !e.target.closest('[id$="-panel"]')) closeAllPanels();
+// Toolbar
+document.getElementById('btn-undo').addEventListener('click',()=>{if(isDrawer)doUndo();});
+document.getElementById('btn-redo').addEventListener('click',()=>{if(isDrawer)doRedo();});
+document.getElementById('btn-clear').addEventListener('click',()=>{
+  if(!isDrawer)return;saveUndo();
+  [1,2,3].forEach(n=>CTX[n].clearRect(0,0,CW,CH));
+  redoStack=[];ws?.send(JSON.stringify({type:'clear'}));updateThumbs();
 });
-
-document.getElementById('btn-undo').addEventListener('click', doUndo);
-document.getElementById('btn-redo').addEventListener('click', doRedo);
-document.getElementById('btn-clear').addEventListener('click', () => {
-  if (!isDrawer) return;
-  saveUndo(); clearAll();
-  ws?.send(JSON.stringify({ type:'clear' }));
-});
-document.getElementById('btn-skip').addEventListener('click', () => {
-  if (!isDrawer) return;
-  if (confirm('Skip this word?')) ws?.send(JSON.stringify({ type:'skip_word' }));
-});
-document.getElementById('btn-done').addEventListener('click', () => {
-  if (!isDrawer) return;
-  if (confirm('Finish drawing?')) ws?.send(JSON.stringify({ type:'done_drawing' }));
-});
-
-document.getElementById('sz-range').addEventListener('input', e => {
-  brushSize = +e.target.value;
-  const sz = Math.max(4, Math.min(20, brushSize));
-  const dot = document.getElementById('sz-preview');
-  dot.innerHTML = `<div style="width:${sz}px;height:${sz}px;border-radius:50%;background:${currentColor};transition:all .1s"></div>`;
-});
-
-document.getElementById('op-range').addEventListener('input', e => {
-  brushOpacity = +e.target.value / 100;
-  document.getElementById('op-lbl').textContent = e.target.value+'%';
+document.getElementById('btn-done').addEventListener('click',()=>{
+  if(!isDrawer)return;
+  if(confirm('Finish drawing?'))ws?.send(JSON.stringify({type:'done_drawing'}));
 });
 
 // ── Toast ─────────────────────────────────────────────────────────────────────
-let toastTimer = null;
-const toastEl  = document.getElementById('toast');
-function showToast(msg, cls='') {
-  toastEl.textContent = msg;
-  toastEl.className   = 'show ' + cls;
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => toastEl.className='', 3000);
+let toastT=null;const toastEl=document.getElementById('toast');
+function showToast(msg,cls=''){
+  toastEl.textContent=msg;toastEl.className='show '+cls;
+  clearTimeout(toastT);toastT=setTimeout(()=>{toastEl.className='';},3000);
 }
 
-// ── Chat / Guess ──────────────────────────────────────────────────────────────
-const chatLog = document.getElementById('chat-log');
-function addChat(cls, html) {
-  const d = document.createElement('div');
-  d.className = 'cmsg ' + cls; d.innerHTML = html;
-  chatLog.appendChild(d);
-  chatLog.scrollTop = chatLog.scrollHeight;
+// ── Chat ──────────────────────────────────────────────────────────────────────
+const chatLog=document.getElementById('chat-log');
+function addChat(cls,html){
+  const d=document.createElement('div');d.className='cmsg '+cls;d.innerHTML=html;
+  chatLog.appendChild(d);chatLog.scrollTop=chatLog.scrollHeight;chatLog.classList.add('open');
 }
 
-function sendGuess() {
-  const t = document.getElementById('guess-in').value.trim();
-  if (!t || !ws || ws.readyState!==1) return;
-  ws.send(JSON.stringify({ type:'guess', text:t }));
-  document.getElementById('guess-in').value = '';
-}
-document.getElementById('guess-go').addEventListener('click', sendGuess);
-document.getElementById('guess-in').addEventListener('keydown', e => { if(e.key==='Enter') sendGuess(); });
-
-// ── Round overlay ──────────────────────────────────────────────────────────────
-const roundOverlay = document.getElementById('round-overlay');
-let savedStrokes = [];
-
-function showResult(emoji, title, word, sub) {
-  document.getElementById('re-emoji').textContent = emoji;
-  document.getElementById('re-title').textContent = title;
-  document.getElementById('re-word').textContent  = word;
-  document.getElementById('re-sub').textContent   = sub;
+// ── Round result ──────────────────────────────────────────────────────────────
+const roundOverlay=document.getElementById('round-overlay');
+function showResult(emoji,title,word,sub){
+  document.getElementById('re-emoji').textContent=emoji;
+  document.getElementById('re-title').textContent=title;
+  document.getElementById('re-word').textContent=word;
+  document.getElementById('re-sub').textContent=sub;
   roundOverlay.classList.add('show');
-  setTimeout(() => roundOverlay.classList.remove('show'), 6000);
+  setTimeout(()=>roundOverlay.classList.remove('show'),4500);
 }
 
-document.getElementById('re-newround').addEventListener('click', () => {
-  roundOverlay.classList.remove('show');
-  ws?.send(JSON.stringify({ type:'new_round' }));
-});
-
-// ── Replay ────────────────────────────────────────────────────────────────────
-function playReplay(strokes) {
-  const overlay = document.getElementById('replay-overlay');
-  const rc      = document.getElementById('replay-canvas');
-  overlay.classList.add('show');
-  rc.width = 480; rc.height = 300;
-  const ctx = rc.getContext('2d');
-  ctx.fillStyle='#fff'; ctx.fillRect(0,0,480,300);
-  const scale = 480/CW;
-  let i=0;
-  function nextStroke() {
-    if (i >= strokes.length) return;
-    const s = strokes[i++];
-    const pts = (s.points||[]).map(p=>[p[0]*scale,p[1]*scale]);
-    if (pts.length<2) { nextStroke(); return; }
-    ctx.strokeStyle = s.color||'#000';
-    ctx.lineWidth   = Math.max(1,(s.size||4)*scale);
-    ctx.lineCap = ctx.lineJoin = 'round';
-    ctx.globalAlpha = s.opacity||1;
-    ctx.beginPath(); ctx.moveTo(pts[0][0],pts[0][1]);
-    pts.slice(1).forEach(p=>ctx.lineTo(p[0],p[1]));
-    ctx.stroke();
-    ctx.globalAlpha=1;
-    setTimeout(nextStroke, 20);
-  }
-  nextStroke();
-}
-
-document.getElementById('replay-close').addEventListener('click', () => {
-  document.getElementById('replay-overlay').classList.remove('show');
-});
-
-// ── Player list ───────────────────────────────────────────────────────────────
-let playerScores = {};
-function updatePlayerList(board) {
-  playerScores = {};
-  (board||[]).forEach(({name,score}) => playerScores[name]=score);
-  const list = document.getElementById('player-list');
-  if (!board?.length) { list.innerHTML='<div style="font-size:.75rem;color:var(--text2);padding:4px 6px">No players</div>'; return; }
-  list.innerHTML = board.map(({rank,name,score}) => `
-    <div class="player-row">
-      <div class="player-dot"></div>
-      <div class="player-name">${name}</div>
-      <div class="player-score">${score}</div>
-      ${rank===1?'<div class="player-crown">👑</div>':''}
-    </div>`).join('');
-}
-
-function updateLeaderboard(board) {
-  const list = document.getElementById('lb-list');
-  const medals = ['🥇','🥈','🥉'];
-  list.innerHTML = (board||[]).slice(0,8).map(({rank,name,score}) => `
-    <div class="lb-row">
-      <span class="lb-rank">${medals[rank-1]||rank}</span>
-      <span class="lb-name">${name}</span>
-      <span class="lb-pts">${score}pts</span>
-    </div>`).join('');
-}
-
-// ── Timer ─────────────────────────────────────────────────────────────────────
-let timerInterval = null;
-let timerSeconds  = 0;
-
-function startTimer(seconds) {
-  clearInterval(timerInterval);
-  timerSeconds = seconds;
-  const el = document.getElementById('timer-display');
-  el.classList.remove('urgent');
-  function tick() {
-    el.textContent = timerSeconds>0 ? timerSeconds+'s' : '';
-    if (timerSeconds <= 10) el.classList.add('urgent');
-    if (timerSeconds <= 0) { clearInterval(timerInterval); return; }
-    timerSeconds--;
-  }
-  tick();
-  timerInterval = setInterval(tick, 1000);
-}
-
-function stopTimer() {
-  clearInterval(timerInterval);
-  document.getElementById('timer-display').textContent = '';
-  document.getElementById('timer-display').classList.remove('urgent');
-}
-
-// ── Role management ────────────────────────────────────────────────────────────
-let isDrawer = false;
-
-function setRole(role, wordOrHint, round) {
-  isDrawer = role === 'drawer';
-  const toolbar  = document.getElementById('toolbar');
-  const chatP    = document.getElementById('chat-panel');
-  const guessRow = document.getElementById('guess-row');
-  const pill     = document.getElementById('role-pill');
-  const wd       = document.getElementById('word-display');
-
-  toolbar.classList.toggle('visible', isDrawer);
-  chatP.classList.toggle('visible', true); // always show chat
-
-  guessRow.style.display = isDrawer ? 'none' : 'flex';
-
-  pill.className = 'role-pill ' + role;
-  pill.textContent = isDrawer ? 'DRAWING' : 'GUESSING';
-
-  if (isDrawer) {
-    wd.textContent  = `Draw: ${wordOrHint}`;
-    wd.style.color  = 'var(--green)';
-    showToast(`✏️ Draw: ${wordOrHint}`, 'ok');
+// ── Role ──────────────────────────────────────────────────────────────────────
+let isDrawer=true;
+function setRole(role,wordOrLen){
+  isDrawer=role==='drawer';
+  document.getElementById('toolbar').style.display=isDrawer?'flex':'none';
+  document.getElementById('guess-row').style.display=isDrawer?'none':'flex';
+  const pill=document.getElementById('role-pill');
+  pill.className='role-pill '+(isDrawer?'drawer':'guesser');
+  pill.textContent=isDrawer?'DRAWING':'GUESSING';
+  if(isDrawer){
+    document.getElementById('word-display').textContent=`Draw: ${wordOrLen}`;
+    document.getElementById('word-display').style.color='var(--green)';
+    showToast(`🖌 Draw: ${wordOrLen}`);undoStack=[];redoStack=[];
   } else {
-    const hint = typeof wordOrHint === 'number'
-      ? Array(wordOrHint).fill('_').join(' ')
-      : wordOrHint;
-    wd.textContent = hint;
-    wd.style.color = 'var(--accent)';
-    showToast(`🤔 Guess — ${typeof wordOrHint==='number'?wordOrHint:'?'} letters`);
+    const hint=Array(+wordOrLen).fill('_').join(' ');
+    document.getElementById('word-display').textContent=hint;
+    document.getElementById('word-display').style.color='var(--accent)';
+    showToast(`🤔 Guess! ${wordOrLen} letters`);
   }
-
-  if (round) addChat('sys', `Round ${round} started!`);
-  startTimer(90);
 }
 
 // ── WebSocket ─────────────────────────────────────────────────────────────────
-let ws = null, myName = '', myRoom = '';
-
-function connect() {
-  const proto = location.protocol==='https:' ? 'wss' : 'ws';
-  ws = new WebSocket(`${proto}://${location.host}/ws?room=${encodeURIComponent(myRoom)}&name=${encodeURIComponent(myName)}`);
-
-  ws.onopen = () => {
-    document.getElementById('conn-dot').style.background = 'var(--green)';
-    console.log('[ws] connected');
-  };
-
-  ws.onmessage = ({ data }) => {
-    let m; try { m=JSON.parse(data); } catch { return; }
-
-    switch(m.type) {
+let ws=null,myName='',myRoom='';
+function connect(){
+  const proto=location.protocol==='https:'?'wss':'ws';
+  ws=new WebSocket(`${proto}://${location.host}/ws?room=${encodeURIComponent(myRoom)}&name=${encodeURIComponent(myName)}`);
+  ws.onopen=()=>document.getElementById('conn-dot').style.background='var(--green)';
+  ws.onmessage=({data})=>{
+    let m;try{m=JSON.parse(data);}catch{return;}
+    switch(m.type){
       case 'init':
-        clearAll();
-        (m.strokes||[]).forEach(s => renderStroke(s, activeCtx()));
-        document.getElementById('word-display').textContent = `${m.players} player${m.players!==1?'s':''}`;
-        if (m.board) { updatePlayerList(m.board); updateLeaderboard(m.board); }
+        [1,2,3].forEach(n=>CTX[n].clearRect(0,0,CW,CH));
+        (m.strokes||[]).forEach(s=>renderStroke(s,CTX[s.layer||3]));
+        document.getElementById('word-display').textContent=`${m.players} players`;
         break;
-
       case 'draw':
-        renderStroke(m.stroke, activeCtx());
-        break;
-
+        renderStroke(m.stroke,CTX[m.stroke.layer||activeLayer]);updateThumbs();break;
       case 'clear':
-        clearAll();
-        getStack(activeLayer(), undoStacks).length = 0;
-        getStack(activeLayer(), redoStacks).length = 0;
-        break;
-
-      case 'snapshot': {
-        const img = new Image();
-        img.onload = () => { clearAll(); activeCtx().drawImage(img,0,0,CW,CH); };
-        img.src = m.data;
-        break;
-      }
-
+        [1,2,3].forEach(n=>CTX[n].clearRect(0,0,CW,CH));
+        undoStack=[];redoStack=[];updateThumbs();break;
+      case 'snapshot':
+        const img=new Image();img.onload=()=>{
+          [1,2,3].forEach(n=>CTX[n].clearRect(0,0,CW,CH));
+          CTX[1].drawImage(img,0,0,CW,CH);updateThumbs();};img.src=m.data;break;
       case 'role':
-        clearAll();
-        savedStrokes = [];
-        setRole(m.role, m.role==='drawer' ? m.word : m.hint, m.round);
-        break;
-
-      case 'hint':
-        document.getElementById('word-display').textContent = m.hint;
-        addChat('sys', `💡 Hint: ${m.hint}`);
-        showToast('💡 Hint revealed!');
-        break;
-
-      case 'word_skipped':
-        document.getElementById('word-display').textContent = m.hint;
-        addChat('sys', 'Word skipped!');
-        clearAll();
-        break;
-
+        setRole(m.role,m.role==='drawer'?m.word:m.hint);
+        [1,2,3].forEach(n=>CTX[n].clearRect(0,0,CW,CH));
+        undoStack=[];redoStack=[];updateThumbs();break;
       case 'guess':
-        addChat(m.correct?'ok':'', `<span class="cn">${m.name}:</span> ${m.text}${m.correct?' ✅':''}`);
-        if (m.correct) showToast(`🎉 ${m.name} guessed it!`, 'ok');
-        break;
-
-      case 'score_update':
-        addChat('ok', `🏆 ${m.name} +${m.pts}pts`);
-        if (m.board) { updatePlayerList(m.board); updateLeaderboard(m.board); }
-        break;
-
+        addChat(m.correct?'ok':'',`<span class="cn">${m.name}:</span> ${m.text}${m.correct?' ✅':''}`);
+        if(m.correct)showToast(`🎉 ${m.name} got it!`,'ok');break;
       case 'round_end':
-        stopTimer();
-        savedStrokes = [...(m.strokes||[])];
-        showResult(
-          m.guesser ? '🎉' : (m.reason==='timeout'?'⏰':'😮'),
-          m.guesser ? `${m.guesser} got it!` : (m.reason==='timeout'?'Time\'s up!':'Round over'),
-          m.word,
-          m.guesser ? `Artist: ${m.drawerName}` : `The word was: ${m.word}`
-        );
-        if (m.board) { updatePlayerList(m.board); updateLeaderboard(m.board); }
-        break;
-
-      case 'leaderboard':
-        if (m.board) { updatePlayerList(m.board); updateLeaderboard(m.board); }
-        break;
-
+        showResult(m.guesser?'🎉':'⏰',
+          m.guesser?`${m.guesser} guessed it!`:'Round Over',
+          m.word,m.guesser?`Artist: ${m.drawerName}`:`Word was: ${m.word}`);break;
       case 'status':
-        document.getElementById('word-display').textContent = m.message;
-        addChat('sys', m.message);
-        break;
-
-      case 'player_joined':
-        addChat('sys', `${m.name} joined (${m.count} players)`);
-        break;
-      case 'player_left':
-        addChat('sys', `${m.name} left (${m.count} players)`);
-        break;
+        document.getElementById('word-display').textContent=m.message;
+        addChat('sys',m.message);break;
+      case 'player_joined':case 'player_left':
+        addChat('sys',m.type==='player_joined'?`${m.name} joined`:`${m.name} left`);break;
     }
   };
-
-  ws.onclose = () => {
-    document.getElementById('conn-dot').style.background = 'var(--red)';
-    setTimeout(connect, 2500);
-  };
-  ws.onerror = () => ws.close();
+  ws.onclose=()=>{document.getElementById('conn-dot').style.background='#ff3855';setTimeout(connect,2500);};
+  ws.onerror=()=>ws.close();
 }
 
-// ── Auto-join (Telegram Mini App) ─────────────────────────────────────────────
-function getAutoJoinData() {
-  const usp = new URLSearchParams(location.search);
-  let roomId = '';
-  if (tg) {
-    const sp = tg.initDataUnsafe?.start_param;
-    if (sp) roomId = decodeURIComponent(sp);
+// ── Guess ─────────────────────────────────────────────────────────────────────
+function sendGuess(){
+  const t=document.getElementById('guess-in').value.trim();
+  if(!t||!ws||ws.readyState!==1)return;
+  ws.send(JSON.stringify({type:'guess',text:t}));
+  document.getElementById('guess-in').value='';
+}
+document.getElementById('guess-go').addEventListener('click',sendGuess);
+document.getElementById('guess-in').addEventListener('keydown',e=>{if(e.key==='Enter')sendGuess();});
+
+// ── Join ──────────────────────────────────────────────────────────────────────
+const joinOverlay=document.getElementById('join-overlay');
+function doJoin(){
+  myName=document.getElementById('name-in').value.trim()||`Player${Math.floor(Math.random()*1000)}`;
+  myRoom=document.getElementById('room-in').value.trim()||'default';
+  joinOverlay.style.display='none';
+  initCanvases();connect();
+}
+document.getElementById('join-btn').addEventListener('click',doJoin);
+document.getElementById('name-in').addEventListener('keydown',e=>{if(e.key==='Enter')document.getElementById('room-in').focus();});
+document.getElementById('room-in').addEventListener('keydown',e=>{if(e.key==='Enter')doJoin();});
+
+// Auto-fill from Telegram/URL
+const usp=new URLSearchParams(location.search);
+const ur=usp.get('room')||usp.get('startapp')||'';
+if(ur)document.getElementById('room-in').value=decodeURIComponent(ur);
+if(tg){
+  const u=tg.initDataUnsafe?.user;
+  if(u){
+    const n=[u.first_name,u.last_name].filter(Boolean).join(' ')||u.username||'';
+    document.getElementById('name-in').value=n;
   }
-  if (!roomId) roomId = usp.get('room') || '';
-  if (!roomId) roomId = usp.get('startapp') || '';
-  if (roomId) try { roomId = decodeURIComponent(roomId); } catch {}
-
-  let playerName = '';
-  if (tg) {
-    const u = tg.initDataUnsafe?.user;
-    if (u) playerName = [u.first_name,u.last_name].filter(Boolean).join(' ')||u.username||'';
-  }
-  if (!playerName) playerName = `Player${Math.floor(Math.random()*1000)}`;
-  return { roomId, playerName };
+  const sp=tg.initDataUnsafe?.start_param;
+  if(sp)document.getElementById('room-in').value=decodeURIComponent(sp);
 }
-
-function doJoin(roomId, playerName) {
-  myName = playerName; myRoom = roomId;
-  document.getElementById('join-overlay').style.display = 'none';
-  initCanvases();
-  renderPalette();
-  connect();
+if(document.getElementById('room-in').value){
+  if(!document.getElementById('name-in').value)
+    document.getElementById('name-in').value=`Player${Math.floor(Math.random()*1000)}`;
+  setTimeout(doJoin,350);
 }
-
-(function tryAutoJoin(attempt) {
-  const { roomId, playerName } = getAutoJoinData();
-  if (roomId) { doJoin(roomId, playerName); return; }
-  if (attempt < 10) { setTimeout(()=>tryAutoJoin(attempt+1), 100); return; }
-  // Show manual join
-  const { playerName:name } = getAutoJoinData();
-  document.getElementById('name-in').value = name;
-})(0);
-
-// Manual join
-document.getElementById('join-btn').addEventListener('click', () => {
-  const name   = document.getElementById('name-in').value.trim() || `Player${Math.floor(Math.random()*1000)}`;
-  const roomId = document.getElementById('room-in').value.trim() || 'default';
-  doJoin(roomId, name);
-});
-document.getElementById('name-in').addEventListener('keydown', e => { if(e.key==='Enter') document.getElementById('room-in').focus(); });
-document.getElementById('room-in').addEventListener('keydown', e => { if(e.key==='Enter') document.getElementById('join-btn').click(); });
-
 })();
 </script>
 </body>

@@ -28,6 +28,9 @@ const wss    = new WebSocket.Server({ server, path: '/ws' });
 const bot    = new Telegraf(BOT_TOKEN);
 let   botUsername = '';
 
+// ── Initialize rooms map ─────────────────────────────────────────────────────
+const rooms = new Map();
+
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '../../client')));
 
@@ -103,6 +106,28 @@ wss.on('connection', (ws, req) => {
   const roomId   = url.searchParams.get('room') || 'default';
   const name     = url.searchParams.get('name') || `Player${Math.floor(Math.random()*1000)}`;
   const userId   = url.searchParams.get('userId') || clientId;
+
+  // Make sure the room exists
+  if (!rooms.has(roomId)) {
+    rooms.set(roomId, { 
+      id: roomId,
+      clients: new Map(),
+      strokes: [],
+      currentDrawer: null,
+      drawerName: '',
+      word: null,
+      hintRevealed: [],
+      guesses: new Set(),
+      roundActive: false,
+      roundTimer: null,
+      hintTimer: null,
+      updateTimer: null,
+      liveMessageId: null,
+      scores: new Map(),
+      roundNumber: 0,
+      drawerQueue: [],
+    });
+  }
 
   const room = rooms.get(roomId);
   room.clients.set(clientId, { ws, name, userId, score: 0 });

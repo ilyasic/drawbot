@@ -7,12 +7,17 @@ const { v4: uuidv4 } = require('uuid');
 const { Telegraf, Markup } = require('telegraf');
 const Jimp = require('jimp');
 
-const BOT_TOKEN  = process.env.BOT_TOKEN;
-const PUBLIC_URL = (process.env.PUBLIC_URL || '').replace(/\/$/, '');
-const PORT       = process.env.PORT || 3000;
+const BOT_TOKEN          = process.env.BOT_TOKEN;
+const PUBLIC_URL         = (process.env.PUBLIC_URL || '').replace(/\/$/, '');
+const PORT               = process.env.PORT || 3000;
+// FUTURE OPTION: set ALLOW_EXTERNAL_URL=true in Railway env vars to let
+// players open the canvas in an external browser (outside Telegram).
+// Currently false — canvas only opens inside Telegram as a Mini App.
+const ALLOW_EXTERNAL_URL = process.env.ALLOW_EXTERNAL_URL === 'true';
 
 if (!BOT_TOKEN)  { console.error('BOT_TOKEN missing'); process.exit(1); }
 if (!PUBLIC_URL) { console.error('PUBLIC_URL missing'); process.exit(1); }
+console.log(`[config] ALLOW_EXTERNAL_URL=${ALLOW_EXTERNAL_URL}`);
 
 const app    = express();
 const server = http.createServer(app);
@@ -26,7 +31,15 @@ app.use(express.static(path.join(__dirname, '../../client')));
 // ─────────────────────────────────────────────────────────────────────────────
 // Health-check endpoint (used by railway.json healthcheckPath)
 // ─────────────────────────────────────────────────────────────────────────────
-app.get('/', (req, res) => res.send('OK'));
+app.get('/', (req, res) => {
+  const ua = req.headers['user-agent'] || '';
+  const isTelegram = ua.includes('TelegramBot') || ua.includes('Telegram');
+  // If external access is disabled and this is a regular browser, block it
+  if (!ALLOW_EXTERNAL_URL && !isTelegram && req.headers['accept']?.includes('text/html')) {
+    return res.status(403).send('<h2>Open this inside Telegram only.</h2>');
+  }
+  res.send('OK');
+});
 
 // ── Render canvas PNG ─────────────────────────────────────────────────────────
 const CW = 1600, CH = 1000;
@@ -240,8 +253,9 @@ function startRound(room) {
     ).catch(e => console.error('[bot] sendMessage error:', e.message));
   }
 
-  // Push first canvas snapshot after a short delay
-  setTimeout(() => pushCanvas(room), 800);
+  // Push first canvas snapshot — called after roles are assigned
+  // Small delay only to let the client render the role UI first
+  setTimeout(() => pushCanvas(room), 300);
 }
 
 async function endRound(room, guesserName) {
@@ -301,25 +315,36 @@ async function endRound(room, guesserName) {
 // ALSO: /startgame still sends a message telling users HOW to open it (tap ☰).
 // ─────────────────────────────────────────────────────────────────────────────
 
-// GROUP: /startgame → sets Menu Button for this group → no private chat needed
+// GROUP: /startgame
+// ─────────────────────────────────────────────────────────────────────────────
+// HOW THE MINI APP OPENS IN-GROUP WITHOUT PRIVATE CHAT
+//
+// Telegram's setChatMenuButton() replaces the ☰ menu icon (next to the text
+// input) with a branded Mini App button FOR THIS SPECIFIC GROUP CHAT.
+// When a user taps it, the Mini App opens as a native Telegram overlay —
+// fully trusted, no external browser, no private chat.
+//
+// The URL passed to setChatMenuButton must include ?room=CHATID so the client
+// knows which room to connect to. The client reads this from location.search
+// and auto-joins, skipping the manual join screen entirely.
+// ─────────────────────────────────────────────────────────────────────────────
 bot.command('startgame', async (ctx) => {
+  // ── Private chat ────────────────────────────────────────────────────────────
   if (ctx.chat.type === 'private') {
-    // In private, we CAN use a webApp button directly
-    const canvasUrl = `${PUBLIC_URL}/?room=solo_${ctx.from.id}`;
-    try {
-      await bot.telegram.setChatMenuButton({
-        chatId: ctx.chat.id,
-        menuButton: { type: 'web_app', text: '🖌 Canvas', web_app: { url: canvasUrl } },
-      });
-    } catch (e) {
-      console.warn('[bot] setChatMenuButton (private) failed:', e.message);
-    }
-    return ctx.reply(
-      `🎨 *Draw & Guess* is better in a group!\n\nAdd me to a group and use /startgame.\n\n_Solo mode: tap the *🖌 Canvas* button next to the text box below!_`,
-      { parse_mode: 'Markdown' }
+    const roomId    = `solo_${ctx.from.id}`;
+    const canvasUrl = `${PUBLIC_URL}/?room=${encodeURIComponent(roomId)}`;
+    // webApp button works fine in private chat replies
+    await ctx.reply(
+      `🎨 *Draw & Guess*\n\nThis works best in a group — add me and use /startgame there.\n\n_Solo practice: tap below 👇_`,
+      {
+        parse_mode: 'Markdown',
+        ...Markup.inlineKeyboard([[Markup.button.webApp('🖌 Open Canvas', canvasUrl)]]),
+      }
     );
+    return;
   }
 
+  // ── Group chat ──────────────────────────────────────────────────────────────
   const roomId = String(ctx.chat.id);
   if (!rooms.has(roomId)) {
     rooms.set(roomId, makeRoom(roomId, ctx.chat.id));
@@ -327,37 +352,48 @@ bot.command('startgame', async (ctx) => {
     rooms.get(roomId).chatId = ctx.chat.id;
   }
 
-  const canvasUrl = `${PUBLIC_URL}/?room=${encodeURIComponent(roomId)}`;
-  console.log(`[bot] /startgame room=${roomId} canvasUrl=${canvasUrl}`);
+  const canvasUrl     = `${PUBLIC_URL}/?room=${encodeURIComponent(roomId)}`;
+  // ?startapp= deep link: opens private chat and launches Mini App INSTANTLY
+  // This is fully inside Telegram — NOT an external browser link
+  const startappLink  = `https://t.me/${botUsername}?startapp=${encodeURIComponent(roomId)}`;
 
-  // Set the Menu Button (☰) for THIS specific group chat to open the Mini App
+  console.log(`[bot] /startgame room=${roomId} type=${ctx.chat.type}`);
+
+  // ── Attempt 1: setChatMenuButton (true in-group, no private chat at all) ───
+  // Requires bot to be admin WITH "Change Group Info" permission
+  let menuButtonSet = false;
   try {
     await bot.telegram.setChatMenuButton({
       chatId: ctx.chat.id,
       menuButton: { type: 'web_app', text: '🖌 Draw!', web_app: { url: canvasUrl } },
     });
-    console.log(`[bot] Menu button set for chat ${ctx.chat.id}`);
+    menuButtonSet = true;
+    console.log(`[bot] ✅ setChatMenuButton OK — chat ${ctx.chat.id}`);
   } catch (e) {
-    console.error('[bot] setChatMenuButton failed:', e.message);
-    // Fallback: send a deep-link to private chat if Menu Button fails
-    const deepLink = `https://t.me/${botUsername}?start=${encodeURIComponent(roomId)}`;
-    await ctx.reply(
-      `🎨 *Draw & Guess Started!*\n\n⚠️ Couldn't set menu button — tap below to open canvas via private chat:`,
-      {
-        parse_mode: 'Markdown',
-        ...Markup.inlineKeyboard([[Markup.button.url('▶️ Open Canvas', deepLink)]]),
-      }
-    );
-    return;
+    console.warn(`[bot] ⚠️ setChatMenuButton failed (${e.response?.error_code}): ${e.response?.description || e.message}`);
+    console.warn(`[bot] Tip: make sure bot is admin with "Change Group Info" permission`);
   }
 
-  await ctx.reply(
-    `🎨 *Draw & Guess is ready!*\n\n👇 Tap the *🖌 Draw!* button next to the message box to open the canvas!\n\nEveryone else: type your guesses here in the chat.`,
-    { parse_mode: 'Markdown' }
-  );
+  // ── Reply based on result ───────────────────────────────────────────────────
+  if (menuButtonSet) {
+    // Best case: Mini App button appears right next to the message input in-group
+    await ctx.reply(
+      `🎨 *Draw & Guess is ready!*\n\n👇 Tap *🖌 Draw!* next to the message box to open the canvas.\nEveryone else: type your guesses here!`,
+      { parse_mode: 'Markdown' }
+    );
+  } else {
+    // Fallback: ?startapp= button — still fully inside Telegram (not external)
+    // Opens private chat → Mini App launches immediately with no extra taps
+    await ctx.reply(
+      `🎨 *Draw & Guess is ready!*\n\n👇 Tap *🖌 Open Canvas* — opens inside Telegram!\nEveryone else: type your guesses here!`,
+      {
+        parse_mode: 'Markdown',
+        ...Markup.inlineKeyboard([[Markup.button.url('🖌 Open Canvas', startappLink)]]),
+      }
+    );
+  }
 });
-
-// PRIVATE: /start — handles deep-link fallback & direct private use
+// PRIVATE: /start — deep-link fallback (still works from old links)
 bot.command('start', async (ctx) => {
   if (ctx.chat.type !== 'private') return;
   const parts  = ctx.message.text.split(' ');
@@ -373,10 +409,9 @@ bot.command('start', async (ctx) => {
   }
 
   const canvasUrl = `${PUBLIC_URL}/?room=${encodeURIComponent(roomId)}`;
-
-  // In private chat we can use a real webApp button
+  // webApp button is allowed in private chat replies
   await ctx.reply(
-    `🎨 *Draw & Guess* — tap to open the canvas:`,
+    `🎨 *Draw & Guess* — tap to open:`,
     {
       parse_mode: 'Markdown',
       ...Markup.inlineKeyboard([[Markup.button.webApp('🖌 Open Canvas', canvasUrl)]]),
@@ -387,10 +422,18 @@ bot.command('stopgame', async (ctx) => {
   const roomId = String(ctx.chat.id);
   if (rooms.has(roomId)) {
     const room = rooms.get(roomId);
-    // FIX: cancel pending timers before deleting the room
     if (room.updateTimer) clearTimeout(room.updateTimer);
     rooms.delete(roomId);
-    ctx.reply('🛑 Game stopped.');
+    // Reset the Menu Button back to default (remove the Mini App button)
+    try {
+      await bot.telegram.setChatMenuButton({
+        chatId: ctx.chat.id,
+        menuButton: { type: 'default' },
+      });
+    } catch (e) {
+      console.warn('[bot] Failed to reset menu button:', e.message);
+    }
+    ctx.reply('🛑 Game stopped. Menu button reset.');
   } else {
     ctx.reply('No active game.');
   }
@@ -449,27 +492,33 @@ wss.on('connection', (ws, req) => {
   ws.send(JSON.stringify({ type: 'init', strokes: room.strokes, players: room.clients.size }));
   bcast(room, { type: 'player_joined', name, count: room.clients.size }, clientId);
 
-  // FIX: Only auto-start a round if one isn't already active
+  // Start a new round OR assign drawer if round is pending
   if (!room.roundActive && !room.currentDrawer) {
     if (room.clients.size >= MIN_PLAYERS) {
-      console.log(`[ws] Enough players — starting round in room=${roomId}`);
-      setTimeout(() => startRound(room), 800);
+      console.log(`[ws] Starting round for room=${roomId}`);
+      // No delay — start immediately now that client is connected
+      startRound(room);
     } else {
-      // Inform the new client that we're waiting
       ws.send(JSON.stringify({
         type: 'status',
         message: `Waiting for players… (${room.clients.size}/${MIN_PLAYERS} needed)`,
       }));
     }
   } else if (room.roundActive) {
-    // FIX: Catch up late-joiner — send them the correct role
-    const isDrawer = clientId === room.currentDrawer; // always false for a new client
-    ws.send(JSON.stringify({
-      type: 'role',
-      role: 'guesser',
-      hint: room.word ? room.word.length : 0,
-    }));
+    // Late-joiner catch-up: send current game state
+    const isThisClientTheDrawer = clientId === room.currentDrawer;
+    if (isThisClientTheDrawer) {
+      // The drawer reconnected — re-send their role with the word
+      ws.send(JSON.stringify({ type: 'role', role: 'drawer', word: room.word }));
+      console.log(`[ws] Drawer ${name} reconnected to room=${roomId}`);
+    } else {
+      ws.send(JSON.stringify({ type: 'role', role: 'guesser', hint: room.word ? room.word.length : 0 }));
+    }
     ws.send(JSON.stringify({ type: 'status', message: `${room.drawerName} is drawing!` }));
+    // Replay existing strokes so late-joiner sees current canvas
+    if (room.strokes.length > 0) {
+      ws.send(JSON.stringify({ type: 'init', strokes: room.strokes, players: room.clients.size }));
+    }
   }
 
   ws.on('message', data => {

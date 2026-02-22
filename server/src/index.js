@@ -476,19 +476,51 @@ wss.on('connection', (ws, req) => {
 });
 
 // ── Start ─────────────────────────────────────────────────────────────────────
-server.listen(PORT, async () => {
-  console.log(`✅ http://localhost:${PORT}  |  📡 ${PUBLIC_URL}`);
+
+// FIX 409: On Railway (and any cloud platform), a previous instance may still
+// be polling when the new one starts, causing a Telegram 409 Conflict.
+// Strategy:
+//   1. Call deleteWebhook({ drop_pending_updates: true }) first — this forces
+//      Telegram to close any open long-poll connection from the old instance.
+//   2. Wait a short grace period so Telegram registers the termination.
+//   3. Then launch the bot with allowedUpdates set explicitly.
+//   4. Attach an error handler to bot.launch() so a stray 409 is caught and
+//      retried once instead of crashing the process.
+
+async function launchBot(retryCount = 0) {
   try {
+    // Force-close any lingering getUpdates connection on Telegram's side
+    await bot.telegram.deleteWebhook({ drop_pending_updates: true });
+    console.log('[bot] Webhook cleared / pending updates dropped');
+
     const me = await bot.telegram.getMe();
     botUsername = me.username;
+
     await bot.telegram.setMyCommands([
       { command: 'startgame', description: 'Start Draw & Guess in this group' },
       { command: 'stopgame',  description: 'Stop the game' },
       { command: 'newround',  description: 'Skip to next round' },
     ]);
-    bot.launch();
+
+    // allowedUpdates limits what Telegram sends — reduces noise and avoids
+    // accidentally processing stale updates from the previous instance.
+    await bot.launch({ allowedUpdates: ['message', 'callback_query'] });
     console.log(`🤖 @${botUsername} running`);
-  } catch (e) { console.error('Bot init error:', e.message); }
+  } catch (e) {
+    if (e.response?.error_code === 409 && retryCount < 3) {
+      const delay = (retryCount + 1) * 3000; // 3s, 6s, 9s back-off
+      console.warn(`[bot] 409 Conflict — retrying in ${delay / 1000}s (attempt ${retryCount + 1}/3)`);
+      setTimeout(() => launchBot(retryCount + 1), delay);
+    } else {
+      console.error('[bot] Fatal launch error:', e.message);
+    }
+  }
+}
+
+server.listen(PORT, async () => {
+  console.log(`✅ http://localhost:${PORT}  |  📡 ${PUBLIC_URL}`);
+  // Small delay so the OS has bound the port before we hit the Telegram API
+  setTimeout(() => launchBot(), 500);
 });
 
 process.once('SIGINT',  () => { bot.stop('SIGINT');  server.close(); });

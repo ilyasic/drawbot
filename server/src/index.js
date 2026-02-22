@@ -192,28 +192,37 @@ async function endRound(room, guesserName) {
 
 // ── Bot ───────────────────────────────────────────────────────────────────────
 
-// GROUP: /startgame → URL button (works in groups)
+// GROUP: /startgame → deep-link button → private chat → webApp button
 bot.command('startgame', async (ctx)=>{
   if (ctx.chat.type==='private') return ctx.reply('Add me to a group and use /startgame there!');
   const roomId=String(ctx.chat.id);
   if (!rooms.has(roomId)) rooms.set(roomId,makeRoom(roomId,ctx.chat.id));
-  const canvasUrl=`${PUBLIC_URL}/?room=${encodeURIComponent(roomId)}`;
+  // Deep link: t.me/BOT?start=ROOMID  → opens private chat → bot sends webApp button
+  const deepLink=`https://t.me/${botUsername}?start=${encodeURIComponent(roomId)}`;
   await ctx.reply(
-    `🎨 *Draw & Guess*\n\n1️⃣ Tap *Open Canvas* to draw\n2️⃣ Everyone else: type guesses here\n3️⃣ First to guess wins!`,
-    {parse_mode:'Markdown',...Markup.inlineKeyboard([Markup.button.url('🖌 Open Canvas',canvasUrl)])}
+    `🎨 *Draw & Guess Started!*\n\n1️⃣ Tap *▶️ Play* below\n2️⃣ Bot opens in private — tap the canvas button\n3️⃣ Draw! Everyone else guesses here in chat`,
+    {parse_mode:'Markdown',...Markup.inlineKeyboard([
+      [Markup.button.url('▶️ Play', deepLink)],
+    ])}
   );
 });
 
-// PRIVATE: /play → webApp button (works in private chat only)
-bot.command('play', async (ctx)=>{
-  if (ctx.chat.type!=='private') return ctx.reply('Send /play in a private message to me!');
+// PRIVATE: /start with roomId → send webApp button (true Mini App!)
+bot.command('start', async (ctx)=>{
+  if (ctx.chat.type!=='private') return;
   const parts=ctx.message.text.split(' ');
-  const roomId=parts[1];
-  if (!roomId) return ctx.reply('Usage: /play <roomId>\nCopy the room ID from your group game.');
+  const roomId=parts[1] ? decodeURIComponent(parts[1]) : null;
+  if (!roomId) {
+    return ctx.reply(
+      `👋 Hi! Use /startgame in a group to start a game, then tap the Play button.`,
+    );
+  }
   const canvasUrl=`${PUBLIC_URL}/?room=${encodeURIComponent(roomId)}`;
   await ctx.reply(
-    `🎨 Tap below to open the canvas inside Telegram!`,
-    {parse_mode:'Markdown',...Markup.inlineKeyboard([Markup.button.webApp('🖌 Open Canvas',canvasUrl)])}
+    `🎨 *Draw & Guess*\n\nTap the button below to open the canvas inside Telegram!\n\n_Draw and the drawing will appear live in your group chat._`,
+    {parse_mode:'Markdown',...Markup.inlineKeyboard([
+      [Markup.button.webApp('🖌 Open Canvas', canvasUrl)]
+    ])}
   );
 });
 
@@ -317,7 +326,6 @@ server.listen(PORT,async()=>{
       {command:'startgame',description:'Start Draw & Guess in this group'},
       {command:'stopgame', description:'Stop the game'},
       {command:'newround', description:'Skip to next round'},
-      {command:'play',     description:'Open canvas inside Telegram (DM me!)'},
     ]);
     bot.launch();
     console.log(`🤖 @${botUsername} running`);

@@ -267,55 +267,78 @@ async function endRound(room, guesserName) {
 
 // ── Bot commands ──────────────────────────────────────────────────────────────
 
-// GROUP: /startgame
+// ── Bot commands ─────────────────────────────────────────────────────────────
+//
+// HOW THE MINI APP OPENS IN-GROUP (no private chat redirect)
+//
+// Telegram allows webApp buttons on inline keyboards attached to group messages
+// sent by the bot. When the user taps, the Mini App opens as an overlay right
+// inside the group chat — no private chat needed.
+//
+// REQUIREMENT: In @BotFather you must set the Menu Button URL to PUBLIC_URL so
+// Telegram trusts the domain for in-group Mini App launches:
+//   /mybots → your bot → Bot Settings → Menu Button → Set URL → <PUBLIC_URL>
+// ─────────────────────────────────────────────────────────────────────────────
+
+// GROUP: /startgame → opens canvas directly in-group via webApp button
 bot.command('startgame', async (ctx) => {
   if (ctx.chat.type === 'private') {
-    return ctx.reply('Add me to a group and use /startgame there!');
+    // Solo preview mode
+    const canvasUrl = `${PUBLIC_URL}/?room=solo_${ctx.from.id}`;
+    return ctx.reply(
+      `👋 *Draw & Guess* is designed for groups!\n\nAdd me to a group and use /startgame there.\n\n_Or tap below to try the canvas solo:_`,
+      {
+        parse_mode: 'Markdown',
+        ...Markup.inlineKeyboard([[Markup.button.webApp('🖌 Try Canvas (solo)', canvasUrl)]]),
+      }
+    );
   }
-  const roomId = String(ctx.chat.id);
-  if (!rooms.has(roomId)) rooms.set(roomId, makeRoom(roomId, ctx.chat.id));
 
-  const deepLink = `https://t.me/${botUsername}?start=${encodeURIComponent(roomId)}`;
+  const roomId = String(ctx.chat.id);
+  if (!rooms.has(roomId)) {
+    rooms.set(roomId, makeRoom(roomId, ctx.chat.id));
+  } else {
+    rooms.get(roomId).chatId = ctx.chat.id; // re-link after bot restart
+  }
+
+  const canvasUrl = `${PUBLIC_URL}/?room=${encodeURIComponent(roomId)}`;
+  console.log(`[bot] /startgame room=${roomId} canvasUrl=${canvasUrl}`);
+
   await ctx.reply(
-    `🎨 *Draw & Guess Started!*\n\n1️⃣ Tap *▶️ Play* below\n2️⃣ Bot opens in private — tap the canvas button\n3️⃣ Draw! Everyone else guesses here in chat`,
+    `🎨 *Draw & Guess!*\n\nTap *🖌 Open Canvas* — the drawing board opens right here!\n\nEveryone else: type your guesses in this chat.`,
     {
       parse_mode: 'Markdown',
-      ...Markup.inlineKeyboard([[Markup.button.url('▶️ Play', deepLink)]]),
+      ...Markup.inlineKeyboard([
+        [Markup.button.webApp('🖌 Open Canvas', canvasUrl)],
+      ]),
     }
   );
 });
 
-// PRIVATE: /start with roomId → send Mini App button
+// PRIVATE: /start — backwards compatibility with any old deep links
 bot.command('start', async (ctx) => {
   if (ctx.chat.type !== 'private') return;
   const parts  = ctx.message.text.split(' ');
-
-  // FIX: decode the roomId correctly whether it's URL-encoded or not
   const roomId = parts[1] ? decodeURIComponent(parts[1]) : null;
 
   if (!roomId) {
-    return ctx.reply('👋 Hi! Use /startgame in a group to start a game, then tap the Play button.');
+    return ctx.reply('👋 Add me to a group and use /startgame there to play!');
   }
 
-  // FIX: ensure the room exists in memory (bot may have restarted)
   if (!rooms.has(roomId)) {
-    // We don't know the chatId here, but we can still create a stub so the
-    // canvas WebSocket works. The room will be properly linked when the group
-    // sends the next /startgame.
     rooms.set(roomId, makeRoom(roomId, null));
-    console.log(`[bot] /start created stub room for roomId=${roomId}`);
+    console.log(`[bot] /start stub room roomId=${roomId}`);
   }
 
   const canvasUrl = `${PUBLIC_URL}/?room=${encodeURIComponent(roomId)}`;
   await ctx.reply(
-    `🎨 *Draw & Guess*\n\nTap the button below to open the canvas inside Telegram!\n\n_Draw and the drawing will appear live in your group chat._`,
+    `🎨 *Draw & Guess* — tap to open the canvas:`,
     {
       parse_mode: 'Markdown',
       ...Markup.inlineKeyboard([[Markup.button.webApp('🖌 Open Canvas', canvasUrl)]]),
     }
   );
 });
-
 bot.command('stopgame', async (ctx) => {
   const roomId = String(ctx.chat.id);
   if (rooms.has(roomId)) {
@@ -477,21 +500,26 @@ wss.on('connection', (ws, req) => {
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 
-// FIX 409: On Railway (and any cloud platform), a previous instance may still
-// be polling when the new one starts, causing a Telegram 409 Conflict.
+// FIX 409: Telegraf's bot.launch() runs the polling loop in the background.
+// When a 409 occurs it throws *inside* the async polling loop — outside any
+// try/catch we wrap around bot.launch(). The only reliable intercept point is
+// process.on('uncaughtException') / process.on('unhandledRejection').
+//
 // Strategy:
-//   1. Call deleteWebhook({ drop_pending_updates: true }) first — this forces
-//      Telegram to close any open long-poll connection from the old instance.
-//   2. Wait a short grace period so Telegram registers the termination.
-//   3. Then launch the bot with allowedUpdates set explicitly.
-//   4. Attach an error handler to bot.launch() so a stray 409 is caught and
-//      retried once instead of crashing the process.
+//   1. deleteWebhook before every launch to evict the old instance's session.
+//   2. Catch 409 at the process level, stop the current bot instance cleanly,
+//      wait, then restart — without crashing the HTTP/WS server.
+
+let botRestartTimer = null;
+
+function stopBot() {
+  try { bot.stop(); } catch { /* already stopped */ }
+}
 
 async function launchBot(retryCount = 0) {
   try {
-    // Force-close any lingering getUpdates connection on Telegram's side
     await bot.telegram.deleteWebhook({ drop_pending_updates: true });
-    console.log('[bot] Webhook cleared / pending updates dropped');
+    console.log('[bot] Webhook cleared');
 
     const me = await bot.telegram.getMe();
     botUsername = me.username;
@@ -502,26 +530,77 @@ async function launchBot(retryCount = 0) {
       { command: 'newround',  description: 'Skip to next round' },
     ]);
 
-    // allowedUpdates limits what Telegram sends — reduces noise and avoids
-    // accidentally processing stale updates from the previous instance.
-    await bot.launch({ allowedUpdates: ['message', 'callback_query'] });
+    // bot.launch() returns a Promise that resolves when the bot is stopped.
+    // We do NOT await it — we let it run in the background.
+    // Errors from the polling loop are caught via unhandledRejection below.
+    bot.launch({ allowedUpdates: ['message', 'callback_query'] })
+      .catch(e => {
+        // This catches errors from the *polling loop* (including 409)
+        if (e.response?.error_code === 409) {
+          console.warn('[bot] 409 Conflict caught from polling loop');
+          handle409(retryCount);
+        } else {
+          console.error('[bot] Polling loop error:', e.message);
+        }
+      });
+
     console.log(`🤖 @${botUsername} running`);
   } catch (e) {
-    if (e.response?.error_code === 409 && retryCount < 3) {
-      const delay = (retryCount + 1) * 3000; // 3s, 6s, 9s back-off
-      console.warn(`[bot] 409 Conflict — retrying in ${delay / 1000}s (attempt ${retryCount + 1}/3)`);
-      setTimeout(() => launchBot(retryCount + 1), delay);
+    // Errors from deleteWebhook / getMe / setMyCommands
+    if (e.response?.error_code === 409) {
+      handle409(retryCount);
     } else {
-      console.error('[bot] Fatal launch error:', e.message);
+      console.error('[bot] Launch setup error:', e.message);
     }
   }
 }
 
-server.listen(PORT, async () => {
-  console.log(`✅ http://localhost:${PORT}  |  📡 ${PUBLIC_URL}`);
-  // Small delay so the OS has bound the port before we hit the Telegram API
-  setTimeout(() => launchBot(), 500);
+function handle409(retryCount) {
+  if (botRestartTimer) return; // already scheduled
+  const maxRetries = 5;
+  if (retryCount >= maxRetries) {
+    console.error(`[bot] Giving up after ${maxRetries} retries. Restart the service manually.`);
+    return;
+  }
+  const delay = Math.min(3000 * Math.pow(2, retryCount), 30000); // exp back-off, max 30s
+  console.warn(`[bot] Scheduling restart in ${delay / 1000}s (attempt ${retryCount + 1}/${maxRetries})`);
+  stopBot();
+  botRestartTimer = setTimeout(() => {
+    botRestartTimer = null;
+    launchBot(retryCount + 1);
+  }, delay);
+}
+
+// Safety net: catch any 409 that escapes via unhandledRejection
+process.on('unhandledRejection', (reason) => {
+  const code = reason?.response?.error_code;
+  if (code === 409) {
+    console.warn('[bot] 409 caught via unhandledRejection');
+    handle409(0);
+  } else {
+    // Log but don't crash the process for other unhandled rejections
+    console.error('[process] Unhandled rejection:', reason?.message || reason);
+  }
 });
 
-process.once('SIGINT',  () => { bot.stop('SIGINT');  server.close(); });
-process.once('SIGTERM', () => { bot.stop('SIGTERM'); server.close(); });
+process.on('uncaughtException', (err) => {
+  const code = err?.response?.error_code;
+  if (code === 409) {
+    console.warn('[bot] 409 caught via uncaughtException');
+    handle409(0);
+  } else {
+    // For non-409 uncaught exceptions, log and exit (standard behavior)
+    console.error('[process] Uncaught exception:', err.message);
+    process.exit(1);
+  }
+});
+
+server.listen(PORT, () => {
+  console.log(`✅ http://localhost:${PORT}  |  📡 ${PUBLIC_URL}`);
+  // 1s delay gives Railway time to kill the old container's network connections
+  // before we hit the Telegram API, reducing (but not eliminating) 409 chances.
+  setTimeout(() => launchBot(), 1000);
+});
+
+process.once('SIGINT',  () => { stopBot(); server.close(); });
+process.once('SIGTERM', () => { stopBot(); server.close(); });

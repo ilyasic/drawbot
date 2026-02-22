@@ -42,6 +42,31 @@ app.get('/', (req, res) => {
   res.send('OK');
 });
 
+// ── Webhook secret and route (must be defined before server.listen) ──────────
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET ||
+  require('crypto').createHash('sha256').update(BOT_TOKEN).digest('hex').slice(0,32);
+const WEBHOOK_PATH   = `/webhook/${WEBHOOK_SECRET}`;
+const WEBHOOK_URL    = `${PUBLIC_URL}${WEBHOOK_PATH}`;
+
+// Telegram POSTs updates to this endpoint
+app.post(WEBHOOK_PATH, async (req, res) => {
+  try {
+    if (!req.body || !req.body.update_id) {
+      console.warn('[webhook] Invalid body:', JSON.stringify(req.body).slice(0,100));
+      return res.sendStatus(400);
+    }
+    await bot.handleUpdate(req.body);
+    res.sendStatus(200);
+  } catch(e) {
+    console.error('[webhook] handleUpdate error:', e.message);
+    res.sendStatus(500);
+  }
+});
+
+// Quick test endpoint to confirm webhook path is reachable
+app.get(WEBHOOK_PATH, (req, res) => res.send('Webhook endpoint active ✅'));
+
+
 // ── Canvas render (PNG for Telegram) ─────────────────────────────────────────
 const RENDER_W = 1600, RENDER_H = 1000;
 
@@ -574,26 +599,7 @@ wss.on('connection', (ws, req) => {
 //   If not set, we derive one from BOT_TOKEN automatically.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET ||
-  require('crypto').createHash('sha256').update(BOT_TOKEN).digest('hex').slice(0,32);
-const WEBHOOK_PATH   = `/webhook/${WEBHOOK_SECRET}`;
-const WEBHOOK_URL    = `${PUBLIC_URL}${WEBHOOK_PATH}`;
-
-// Webhook endpoint — Telegram POSTs updates here
-// The path itself contains a secret token, so no additional header auth needed.
-app.post(WEBHOOK_PATH, async (req, res) => {
-  try {
-    if (!req.body || !req.body.update_id) {
-      console.warn('[webhook] Invalid body received');
-      return res.sendStatus(400);
-    }
-    await bot.handleUpdate(req.body);
-    res.sendStatus(200);
-  } catch(e) {
-    console.error('[webhook] handleUpdate error:', e.message);
-    res.sendStatus(500);
-  }
-});
+// (webhook route moved to top — see route definitions above)
 
 // Call Telegram API directly with raw HTTPS — bypasses any Telegraf wrapper bugs
 function telegramPost(method, body) {

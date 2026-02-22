@@ -554,16 +554,39 @@ wss.on('connection', (ws, req) => {
   ws.on('error', err => { console.error(`[ws] ${name}:`, err.message); ws.close(); });
 });
 
-// ── Bot launch ────────────────────────────────────────────────────────────────
-let botRestartTimer = null;
-function stopBot() { try { bot.stop(); } catch {} }
+// ── Bot launch — WEBHOOK mode (no polling, no 409 ever) ─────────────────────
+//
+// WHY WEBHOOK instead of polling:
+//   Polling (bot.launch()) causes 409 Conflict on every redeploy because the
+//   new container starts before Railway fully kills the old one. Telegram sees
+//   two getUpdates requests simultaneously and rejects one with 409.
+//
+//   Webhook = Telegram PUSHES updates to our URL. No competing connections,
+//   no 409, works perfectly with Railway's rolling deploys.
+//
+// HOW IT WORKS:
+//   1. On startup we call setWebhook(PUBLIC_URL/webhook/SECRET)
+//   2. Express handles POST /webhook/:secret → bot.handleUpdate()
+//   3. On SIGTERM we delete the webhook so the next deploy starts clean
+//
+// SECRET_TOKEN: random string to prevent unauthorized posts to our webhook URL.
+//   Set WEBHOOK_SECRET in Railway env vars (any random string ≥ 16 chars).
+//   If not set, we derive one from BOT_TOKEN automatically.
+// ─────────────────────────────────────────────────────────────────────────────
 
-async function launchBot(retryCount=0) {
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET ||
+  require('crypto').createHash('sha256').update(BOT_TOKEN).digest('hex').slice(0,32);
+const WEBHOOK_PATH   = `/webhook/${WEBHOOK_SECRET}`;
+const WEBHOOK_URL    = `${PUBLIC_URL}${WEBHOOK_PATH}`;
+
+// Webhook endpoint — Telegram posts updates here
+app.post(WEBHOOK_PATH, (req, res) => {
+  bot.handleUpdate(req.body, res);
+});
+
+async function launchBot() {
   try {
-    await bot.telegram.deleteWebhook({ drop_pending_updates:true });
-    console.log('[bot] Webhook cleared');
-    const me = await bot.telegram.getMe();
-    botUsername = me.username;
+    // Register commands
     await bot.telegram.setMyCommands([
       { command:'startgame',   description:'Start Draw & Guess' },
       { command:'stopgame',    description:'Stop the game' },
@@ -571,52 +594,25 @@ async function launchBot(retryCount=0) {
       { command:'skipword',    description:'Skip current word' },
       { command:'leaderboard', description:'Show scores' },
     ]);
-    bot.launch({ allowedUpdates:['message','callback_query'] })
-      .catch(e => {
-        if (e.response?.error_code===409) { console.warn('[bot] 409 from loop'); handle409(retryCount); }
-        else console.error('[bot] polling error:', e.message);
-      });
-    console.log(`🤖 @${botUsername} running`);
 
-  // Watchdog: restart bot if it goes silent for 5 minutes
-  let lastActivity = Date.now();
-  const origOn = bot.on.bind(bot);
-  // Touch lastActivity on any update
-  bot.use((ctx, next) => { lastActivity = Date.now(); return next(); });
+    // Set the webhook — Telegram will now POST updates to our URL
+    await bot.telegram.setWebhook(WEBHOOK_URL, {
+      drop_pending_updates: true,   // ignore queued updates from previous instance
+      allowed_updates: ['message', 'callback_query'],
+      secret_token: WEBHOOK_SECRET, // Telegram sends this header; express verifies it
+    });
 
-  setInterval(() => {
-    const silent = Date.now() - lastActivity;
-    if (silent > 5 * 60 * 1000 && !botRestartTimer) {
-      console.warn(`[bot] No activity for ${Math.round(silent/1000)}s — restarting bot`);
-      lastActivity = Date.now(); // reset so we don't spam
-      handle409(0);
-    }
-  }, 60 * 1000); // check every minute
+    const info = await bot.telegram.getWebhookInfo();
+    botUsername = (await bot.telegram.getMe()).username;
 
+    console.log(`🤖 @${botUsername} webhook active → ${WEBHOOK_URL}`);
+    console.log(`[bot] pending_update_count=${info.pending_update_count} last_error=${info.last_error_message||'none'}`);
   } catch(e) {
-    if (e.response?.error_code===409) handle409(retryCount);
-    else console.error('[bot] launch error:', e.message);
+    console.error('[bot] launchBot error:', e.message);
+    // Retry after 5s — non-fatal, server still handles WebSocket game
+    setTimeout(launchBot, 5000);
   }
 }
-
-function handle409(retryCount) {
-  if (botRestartTimer) return;
-  if (retryCount >= 10) { console.error('[bot] giving up after 10 retries'); return; }
-  const delay = Math.min(3000 * Math.pow(2, retryCount), 30000);
-  console.warn(`[bot] retry in ${delay/1000}s (${retryCount+1}/5)`);
-  stopBot();
-  botRestartTimer = setTimeout(() => { botRestartTimer=null; launchBot(retryCount+1); }, delay);
-}
-
-process.on('unhandledRejection', reason => {
-  if (reason?.response?.error_code===409) handle409(0);
-  else console.error('[process] unhandledRejection:', reason?.message||reason);
-});
-process.on('uncaughtException', err => {
-  if (err?.response?.error_code===409) handle409(0);
-  else { console.error('[process] uncaughtException:', err.message); process.exit(1); }
-});
-
 server.listen(PORT, () => {
   console.log(`✅ http://localhost:${PORT}  |  📡 ${PUBLIC_URL}`);
   setTimeout(() => launchBot(), 1000);
@@ -638,5 +634,21 @@ server.listen(PORT, () => {
   }
 });
 
-process.once('SIGINT',  () => { stopBot(); server.close(); });
-process.once('SIGTERM', () => { stopBot(); server.close(); });
+async function gracefulShutdown(signal) {
+  console.log(`[shutdown] ${signal} received — deleting webhook`);
+  try { await bot.telegram.deleteWebhook(); console.log('[shutdown] Webhook deleted'); }
+  catch(e) { console.warn('[shutdown] deleteWebhook failed:', e.message); }
+  server.close(() => { console.log('[shutdown] Server closed'); process.exit(0); });
+  setTimeout(() => process.exit(1), 5000); // force-exit after 5s if not clean
+}
+
+process.on('unhandledRejection', reason => {
+  console.error('[process] unhandledRejection:', reason?.message || reason);
+});
+process.on('uncaughtException', err => {
+  console.error('[process] uncaughtException:', err.message);
+  // Don't exit — Railway will restart if needed
+});
+
+process.once('SIGINT',  () => gracefulShutdown('SIGINT'));
+process.once('SIGTERM', () => gracefulShutdown('SIGTERM'));

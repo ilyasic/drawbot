@@ -31,6 +31,14 @@ let   botUsername = '';
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '../../client')));
 
+// Log every incoming request so we can see if Telegram is hitting us at all
+app.use((req, res, next) => {
+  if (req.path !== '/ping') { // skip keepalive noise
+    console.log(`[http] ${req.method} ${req.path} ua=${(req.headers['user-agent']||'').slice(0,40)}`);
+  }
+  next();
+});
+
 app.get('/ping', (req, res) => res.send('pong'));
 
 app.get('/', (req, res) => {
@@ -50,15 +58,17 @@ const WEBHOOK_URL    = `${PUBLIC_URL}${WEBHOOK_PATH}`;
 
 // Telegram POSTs updates to this endpoint
 app.post(WEBHOOK_PATH, async (req, res) => {
+  console.log('[webhook] ← received update:', JSON.stringify(req.body).slice(0, 120));
   try {
     if (!req.body || !req.body.update_id) {
-      console.warn('[webhook] Invalid body:', JSON.stringify(req.body).slice(0,100));
+      console.warn('[webhook] Invalid body — missing update_id');
       return res.sendStatus(400);
     }
     await bot.handleUpdate(req.body);
+    console.log('[webhook] ✅ handled update_id:', req.body.update_id);
     res.sendStatus(200);
   } catch(e) {
-    console.error('[webhook] handleUpdate error:', e.message);
+    console.error('[webhook] handleUpdate error:', e.message, e.stack?.split('\n')[1]);
     res.sendStatus(500);
   }
 });

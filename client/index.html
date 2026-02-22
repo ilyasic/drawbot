@@ -1,673 +1,776 @@
-require('dotenv').config();
-const express = require('express');
-const http = require('http');
-const WebSocket = require('ws');
-const path = require('path');
-const { v4: uuidv4 } = require('uuid');
-const { Telegraf, Markup } = require('telegraf');
-const Jimp = require('jimp');
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+<title>Draw & Guess</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap');
+:root{
+  --bg:#0c0c14;--surface:#161622;--surface2:#1e1e30;--border:#2a2a42;
+  --accent:#7c6ff7;--accent2:#ff6b8a;--green:#3dd68c;
+  --text:#e2e2f0;--text2:#7777aa;--r:10px;--sb:env(safe-area-inset-bottom,0px);
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
+html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);
+  color:var(--text);font-family:'Nunito',sans-serif;touch-action:none;}
+#app{display:flex;flex-direction:column;height:100dvh;}
 
-const BOT_TOKEN  = process.env.BOT_TOKEN;
-const PUBLIC_URL = (process.env.PUBLIC_URL || '').replace(/\/$/, '');
-const PORT       = process.env.PORT || 3000;
+/* Topbar */
+#topbar{display:flex;align-items:center;gap:8px;padding:7px 10px;
+  background:var(--surface);border-bottom:1px solid var(--border);
+  flex-shrink:0;z-index:20;min-height:44px;}
+#word-display{flex:1;text-align:center;font-size:.88rem;font-weight:800;
+  letter-spacing:.1em;text-transform:uppercase;color:var(--accent);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+#role-pill{font-size:.68rem;font-weight:800;padding:3px 9px;border-radius:20px;
+  background:var(--surface2);color:var(--text2);text-transform:uppercase;white-space:nowrap;flex-shrink:0;}
+#role-pill.drawer{background:rgba(124,111,247,.2);color:var(--accent);}
+#role-pill.guesser{background:rgba(255,107,138,.18);color:var(--accent2);}
+#conn-dot{width:7px;height:7px;border-radius:50%;background:var(--green);flex-shrink:0;}
 
-if (!BOT_TOKEN)  { console.error('BOT_TOKEN missing'); process.exit(1); }
-if (!PUBLIC_URL) { console.error('PUBLIC_URL missing'); process.exit(1); }
+/* Canvas */
+#canvas-outer{flex:1;position:relative;overflow:hidden;background:#1a1a1a;cursor:crosshair;}
+#canvas-inner{position:absolute;top:0;left:0;transform-origin:0 0;will-change:transform;}
+.cvl{position:absolute;top:0;left:0;}
+#cv-bg{background:#fff;z-index:1;}
+#cv-l1{z-index:2;}#cv-l2{z-index:3;}#cv-l3{z-index:4;}
 
-const app    = express();
-const server = http.createServer(app);
-const wss    = new WebSocket.Server({ server, path: '/ws' });
-const bot    = new Telegraf(BOT_TOKEN);
-let botUsername = '';
+/* Toolbar */
+#toolbar{display:flex;align-items:center;gap:5px;
+  padding:7px 8px calc(7px + var(--sb));
+  background:var(--surface);border-top:1px solid var(--border);
+  flex-shrink:0;overflow-x:auto;z-index:20;}
+#toolbar::-webkit-scrollbar{display:none;}
+.tbtn{width:40px;height:40px;border-radius:var(--r);border:1.5px solid var(--border);
+  background:var(--surface2);color:var(--text);font-size:1rem;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;transition:all .12s;flex-shrink:0;}
+.tbtn:active{transform:scale(.9);}
+.tbtn.on{border-color:var(--accent);background:rgba(124,111,247,.18);color:var(--accent);}
+.tbtn.gbtn{border-color:var(--green);background:rgba(61,214,140,.12);color:var(--green);}
+.sep{width:1px;height:28px;background:var(--border);flex-shrink:0;}
+.cdot{width:28px;height:28px;border-radius:50%;border:2.5px solid transparent;
+  cursor:pointer;flex-shrink:0;transition:transform .12s;}
+.cdot:active{transform:scale(.85);}
+.cdot.on{border-color:#fff;transform:scale(1.18);}
+#sz-wrap{display:flex;align-items:center;gap:6px;background:var(--surface2);
+  border:1.5px solid var(--border);border-radius:var(--r);padding:0 8px;height:40px;flex-shrink:0;}
+#sz-range{-webkit-appearance:none;width:76px;height:3px;border-radius:2px;
+  background:var(--border);outline:none;}
+#sz-range::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;
+  border-radius:50%;background:var(--accent);border:2px solid #fff;cursor:pointer;}
+#sz-dot{width:18px;height:18px;display:flex;align-items:center;justify-content:center;}
+#zoom-lbl{font-size:.7rem;color:var(--text2);font-weight:800;white-space:nowrap;
+  flex-shrink:0;min-width:34px;text-align:center;}
 
-app.use(express.json());
-app.use(express.static(path.join(__dirname, '../../client')));
+/* Panels */
+.panel{position:absolute;background:var(--surface);border:1px solid var(--border);
+  border-radius:var(--r);padding:8px;z-index:30;display:none;flex-direction:column;
+  gap:5px;box-shadow:0 8px 32px rgba(0,0,0,.6);}
+.panel.open{display:flex;}
+#brush-panel{left:8px;top:52px;min-width:130px;}
+#layer-panel{right:8px;top:52px;min-width:148px;}
+#settings-panel{left:50%;top:52px;transform:translateX(-50%);min-width:190px;}
+.brush-opt{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;
+  cursor:pointer;font-size:.82rem;font-weight:700;border:1.5px solid transparent;}
+.brush-opt.on{border-color:var(--accent);background:rgba(124,111,247,.12);}
+.brush-opt:hover{background:var(--surface2);}
+.bi{font-size:1rem;width:20px;text-align:center;}
+.panel-title{font-size:.72rem;color:var(--text2);font-weight:800;padding:0 2px 3px;}
+.lrow{display:flex;align-items:center;gap:6px;padding:5px 6px;border-radius:6px;
+  cursor:pointer;font-size:.82rem;font-weight:700;border:1.5px solid transparent;}
+.lrow.al{border-color:var(--accent);background:rgba(124,111,247,.1);}
+.lrow:hover{background:var(--surface2);}
+.lvis{font-size:.85rem;cursor:pointer;opacity:.35;transition:opacity .15s;}
+.lvis.sv{opacity:1;}
+.lname{flex:1;}
+.lthumb{width:28px;height:18px;border-radius:3px;border:1px solid var(--border);
+  background:#fff;overflow:hidden;flex-shrink:0;}
+.lthumb canvas{width:100%;height:100%;}
+.panel label{font-size:.78rem;color:var(--text2);font-weight:700;}
+.panel select{background:var(--surface2);border:1px solid var(--border);
+  color:var(--text);padding:6px 10px;border-radius:6px;font-size:.83rem;
+  font-family:'Nunito',sans-serif;width:100%;}
+.panel-btn{background:var(--accent);color:#fff;border:none;padding:8px;
+  border-radius:6px;font-size:.83rem;font-weight:700;cursor:pointer;
+  font-family:'Nunito',sans-serif;width:100%;}
+.panel-btn.sm{background:var(--surface2);color:var(--text2);border:1px solid var(--border);
+  font-size:.75rem;padding:5px;}
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Health-check endpoint (used by railway.json healthcheckPath)
-// ─────────────────────────────────────────────────────────────────────────────
-app.get('/', (req, res) => res.send('OK'));
+/* Chat & Guess */
+#chat-log{max-height:0;overflow:hidden;background:var(--surface);transition:max-height .25s;flex-shrink:0;}
+#chat-log.open{max-height:96px;overflow-y:auto;border-top:1px solid var(--border);}
+#chat-log::-webkit-scrollbar{width:2px;}
+#chat-log::-webkit-scrollbar-thumb{background:var(--border);}
+.cmsg{padding:3px 12px;font-size:.79rem;color:var(--text2);}
+.cmsg .cn{color:var(--text);font-weight:700;}
+.cmsg.ok{color:var(--green);}
+.cmsg.sys{color:var(--accent);font-style:italic;}
+#guess-row{display:none;align-items:center;gap:7px;
+  padding:7px 10px calc(7px + var(--sb));
+  background:var(--surface);border-top:1px solid var(--border);flex-shrink:0;z-index:20;}
+#guess-in{flex:1;background:var(--surface2);border:1.5px solid var(--border);
+  border-radius:var(--r);color:var(--text);padding:9px 13px;font-size:.9rem;
+  outline:none;font-family:'Nunito',sans-serif;}
+#guess-in:focus{border-color:var(--accent);}
+#guess-go{background:var(--accent);color:#fff;border:none;padding:9px 16px;
+  border-radius:var(--r);font-size:.88rem;font-weight:800;cursor:pointer;
+  font-family:'Nunito',sans-serif;}
 
-// ── Render canvas PNG ─────────────────────────────────────────────────────────
-const CW = 1600, CH = 1000;
+/* Toast */
+#toast{position:fixed;top:54px;left:50%;transform:translateX(-50%) translateY(-10px);
+  background:var(--surface2);color:var(--text);padding:8px 18px;border-radius:30px;
+  font-size:.83rem;font-weight:700;border:1px solid var(--border);opacity:0;
+  transition:all .25s;z-index:100;pointer-events:none;white-space:nowrap;}
+#toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+#toast.ok{background:rgba(61,214,140,.2);border-color:var(--green);color:var(--green);}
 
-function hexToInt(hex) {
-  try {
-    const c = (hex || '#000').replace('#', '').padEnd(6, '0');
-    return Jimp.rgbaToInt(
-      parseInt(c.slice(0, 2), 16), parseInt(c.slice(2, 4), 16),
-      parseInt(c.slice(4, 6), 16), 255
-    );
-  } catch { return 0x000000FF; }
+/* Join overlay */
+#join-overlay{position:fixed;inset:0;background:rgba(0,0,0,.9);
+  display:flex;align-items:center;justify-content:center;
+  z-index:200;backdrop-filter:blur(10px);}
+#join-box{background:var(--surface);border:1px solid var(--border);
+  border-radius:18px;padding:28px 22px;width:min(310px,90vw);
+  display:flex;flex-direction:column;gap:14px;}
+#join-box h2{text-align:center;font-size:1.4rem;font-weight:800;
+  background:linear-gradient(135deg,var(--accent),var(--accent2));
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;}
+#join-box input{background:var(--surface2);border:1.5px solid var(--border);
+  border-radius:var(--r);color:var(--text);padding:11px 14px;font-size:.95rem;
+  outline:none;font-family:'Nunito',sans-serif;}
+#join-box input:focus{border-color:var(--accent);}
+#join-btn{background:linear-gradient(135deg,var(--accent),#9d96ff);color:#fff;
+  border:none;padding:13px;border-radius:var(--r);font-size:.95rem;font-weight:800;
+  cursor:pointer;font-family:'Nunito',sans-serif;}
+
+/* Round result */
+#round-overlay{position:fixed;inset:0;background:rgba(0,0,0,.78);
+  display:none;align-items:center;justify-content:center;z-index:150;backdrop-filter:blur(6px);}
+#round-overlay.show{display:flex;}
+#round-box{background:var(--surface);border:1px solid var(--border);
+  border-radius:18px;padding:26px 22px;text-align:center;width:min(290px,86vw);}
+#round-box .re{font-size:2.6rem;margin-bottom:6px;}
+#round-box h3{font-size:1.2rem;font-weight:800;margin-bottom:4px;}
+#round-box .rw{font-size:1.5rem;font-weight:800;color:var(--accent);margin:10px 0;}
+#round-box p{color:var(--text2);font-size:.85rem;}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="join-overlay">
+    <div id="join-box">
+      <h2>🎨 Draw & Guess</h2>
+      <input id="name-in" placeholder="Your name" maxlength="24" autocomplete="off"/>
+      <input id="room-in" placeholder="Room ID" maxlength="60" autocomplete="off"/>
+      <button id="join-btn">Join Game →</button>
+    </div>
+  </div>
+
+  <div id="round-overlay">
+    <div id="round-box">
+      <div class="re" id="re-emoji">🎉</div>
+      <h3 id="re-title"></h3>
+      <div class="rw" id="re-word"></div>
+      <p id="re-sub"></p>
+    </div>
+  </div>
+
+  <div id="brush-panel" class="panel">
+    <div class="panel-title">BRUSH TYPE</div>
+    <div class="brush-opt on" data-brush="pen">   <span class="bi">🖊</span>Pen</div>
+    <div class="brush-opt"    data-brush="pencil"><span class="bi">✏️</span>Pencil</div>
+    <div class="brush-opt"    data-brush="marker"><span class="bi">🖍</span>Marker</div>
+    <div class="brush-opt"    data-brush="eraser"><span class="bi">🧽</span>Eraser</div>
+  </div>
+
+  <div id="layer-panel" class="panel">
+    <div class="panel-title">LAYERS</div>
+    <div class="lrow al" data-layer="3">
+      <span class="lvis sv" data-lv="3">👁</span><span class="lname">Layer 3</span>
+      <div class="lthumb"><canvas id="lt3"></canvas></div>
+    </div>
+    <div class="lrow" data-layer="2">
+      <span class="lvis sv" data-lv="2">👁</span><span class="lname">Layer 2</span>
+      <div class="lthumb"><canvas id="lt2"></canvas></div>
+    </div>
+    <div class="lrow" data-layer="1">
+      <span class="lvis sv" data-lv="1">👁</span><span class="lname">Layer 1</span>
+      <div class="lthumb"><canvas id="lt1"></canvas></div>
+    </div>
+    <button id="merge-btn" class="panel-btn sm">Merge All Layers</button>
+  </div>
+
+  <div id="settings-panel" class="panel">
+    <div class="panel-title">CANVAS SETTINGS</div>
+    <label>Canvas Size</label>
+    <select id="canvas-size-sel">
+      <option value="640x360">640 × 360</option>
+      <option value="800x500" selected>800 × 500</option>
+      <option value="1024x640">1024 × 640</option>
+      <option value="1280x720">1280 × 720 (HD)</option>
+    </select>
+    <button id="apply-size-btn" class="panel-btn">Apply Size</button>
+  </div>
+
+  <div id="topbar">
+    <div id="conn-dot"></div>
+    <div id="word-display">connecting…</div>
+    <span id="role-pill">—</span>
+    <button class="tbtn" id="btn-settings" style="width:32px;height:32px;font-size:.85rem;">⚙️</button>
+  </div>
+
+  <div id="canvas-outer">
+    <div id="canvas-inner">
+      <canvas id="cv-bg" class="cvl"></canvas>
+      <canvas id="cv-l1" class="cvl"></canvas>
+      <canvas id="cv-l2" class="cvl"></canvas>
+      <canvas id="cv-l3" class="cvl"></canvas>
+    </div>
+  </div>
+
+  <div id="chat-log"></div>
+
+  <div id="toolbar">
+    <div id="palette" style="display:flex;gap:4px;align-items:center;"></div>
+    <div class="sep"></div>
+    <button class="tbtn on" id="btn-brush" title="Brush">🖊</button>
+    <button class="tbtn" id="btn-layers" title="Layers">📋</button>
+    <div class="sep"></div>
+    <div id="sz-wrap">
+      <div id="sz-dot"></div>
+      <input type="range" id="sz-range" min="1" max="80" value="8"/>
+    </div>
+    <div class="sep"></div>
+    <button class="tbtn" id="btn-undo">↩️</button>
+    <button class="tbtn" id="btn-redo">↪️</button>
+    <button class="tbtn" id="btn-clear" style="font-size:.85rem;">🗑</button>
+    <div class="sep"></div>
+    <button class="tbtn" id="btn-zoom-out" style="font-size:1.1rem;font-weight:800;">−</button>
+    <span id="zoom-lbl">100%</span>
+    <button class="tbtn" id="btn-zoom-in"  style="font-size:1.1rem;font-weight:800;">+</button>
+    <button class="tbtn" id="btn-zoom-fit" style="font-size:.65rem;font-weight:800;">FIT</button>
+    <div class="sep"></div>
+    <button class="tbtn gbtn" id="btn-done">✅</button>
+  </div>
+
+  <div id="guess-row">
+    <input id="guess-in" placeholder="Type your guess…" autocomplete="off" autocorrect="off" autocapitalize="off"/>
+    <button id="guess-go">Send</button>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script>
+(function(){
+'use strict';
+const tg=window.Telegram?.WebApp;
+if(tg){tg.ready();tg.expand();}
+
+// ── Canvas state ──────────────────────────────────────────────────────────────
+let CW=800,CH=500;
+const LAYERS={bg:document.getElementById('cv-bg'),1:document.getElementById('cv-l1'),
+  2:document.getElementById('cv-l2'),3:document.getElementById('cv-l3')};
+const CTX={};
+const layerVis={1:true,2:true,3:true};
+let activeLayer=3;
+
+function initCanvases(){
+  Object.entries(LAYERS).forEach(([k,c])=>{
+    c.width=CW;c.height=CH;
+    c.style.width=CW+'px';c.style.height=CH+'px';
+    CTX[k]=c.getContext('2d');
+  });
+  CTX.bg.fillStyle='#fff';CTX.bg.fillRect(0,0,CW,CH);
+  fitCanvas();
+}
+function actCtx(){return CTX[activeLayer];}
+
+// ── Zoom/pan ──────────────────────────────────────────────────────────────────
+let zoom=1,panX=0,panY=0;
+const inner=document.getElementById('canvas-inner');
+const outer=document.getElementById('canvas-outer');
+
+function applyT(){
+  inner.style.transform=`translate(${panX}px,${panY}px) scale(${zoom})`;
+  document.getElementById('zoom-lbl').textContent=Math.round(zoom*100)+'%';
+}
+function fitCanvas(){
+  const ow=outer.clientWidth,oh=outer.clientHeight;
+  zoom=Math.min(ow/CW,oh/CH,1);
+  panX=(ow-CW*zoom)/2;panY=(oh-CH*zoom)/2;
+  applyT();
+}
+window.addEventListener('resize',fitCanvas);
+
+function zoomAt(delta,cx,cy){
+  const r=outer.getBoundingClientRect();
+  const ox=cx-r.left,oy=cy-r.top;
+  const nz=Math.max(0.15,Math.min(8,zoom*delta));
+  panX=ox-(ox-panX)*(nz/zoom);
+  panY=oy-(oy-panY)*(nz/zoom);
+  zoom=nz;applyT();
 }
 
-function plotLine(img, x0, y0, x1, y1, col, r) {
-  x0 = Math.round(x0); y0 = Math.round(y0);
-  x1 = Math.round(x1); y1 = Math.round(y1);
-  const dx = Math.abs(x1 - x0), dy = Math.abs(y1 - y0);
-  const sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
-  let err = dx - dy;
-  for (;;) {
-    for (let tx = -r; tx <= r; tx++) for (let ty = -r; ty <= r; ty++) {
-      if (tx * tx + ty * ty <= r * r) {
-        const px = x0 + tx, py = y0 + ty;
-        if (px >= 0 && px < CW && py >= 0 && py < CH) img.setPixelColor(col, px, py);
-      }
-    }
-    if (x0 === x1 && y0 === y1) break;
-    const e2 = 2 * err;
-    if (e2 > -dy) { err -= dy; x0 += sx; }
-    if (e2 < dx)  { err += dx; y0 += sy; }
+// Ctrl+scroll
+outer.addEventListener('wheel',e=>{
+  if(e.ctrlKey||e.metaKey){
+    e.preventDefault();
+    zoomAt(e.deltaY<0?1.12:0.89,e.clientX,e.clientY);
   }
-}
+},{passive:false});
 
-async function renderPNG(strokes, drawerName, word, done) {
-  const img = new Jimp(CW, CH, 0xFFFFFFFF);
-  for (const s of strokes) {
-    const pts = s.points || [];
-    if (pts.length < 2) continue;
-    const col = hexToInt(s.color);
-    const r   = Math.max(1, Math.round((s.size || 4) * 0.9));
-    for (let i = 1; i < pts.length; i++) {
-      plotLine(img,
-        pts[i - 1][0] * 2, pts[i - 1][1] * 2,
-        pts[i][0]     * 2, pts[i][1]     * 2,
-        col, r * 2);
-    }
+// Pinch zoom
+let pinching=false,lastPinchD=0,lastPinchM=null;
+outer.addEventListener('touchstart',e=>{
+  if(e.touches.length===2){
+    pinching=true;
+    lastPinchD=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,
+      e.touches[0].clientY-e.touches[1].clientY);
+    lastPinchM={(x:(e.touches[0].clientX+e.touches[1].clientX)/2,
+      y:(e.touches[0].clientY+e.touches[1].clientY)/2)};
+    e.preventDefault();
   }
-  const barCol = done ? 0x2dc653FF : 0x1a1a2eFF;
-  for (let x = 0; x < CW; x++)
-    for (let y = CH - 46; y < CH; y++) img.setPixelColor(barCol, x, y);
-  return img.getBufferAsync(Jimp.MIME_PNG);
+},{passive:false});
+outer.addEventListener('touchmove',e=>{
+  if(e.touches.length===2&&pinching){
+    e.preventDefault();
+    const d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,
+      e.touches[0].clientY-e.touches[1].clientY);
+    const m={(x:(e.touches[0].clientX+e.touches[1].clientX)/2,
+      y:(e.touches[0].clientY+e.touches[1].clientY)/2)};
+    if(lastPinchD>0) zoomAt(d/lastPinchD,m.x,m.y);
+    panX+=m.x-lastPinchM.x;panY+=m.y-lastPinchM.y;
+    lastPinchD=d;lastPinchM=m;applyT();
+  }
+},{passive:false});
+outer.addEventListener('touchend',e=>{if(e.touches.length<2)pinching=false;});
+
+document.getElementById('btn-zoom-in').addEventListener('click',()=>{
+  const r=outer.getBoundingClientRect();
+  zoomAt(1.25,r.left+r.width/2,r.top+r.height/2);
+});
+document.getElementById('btn-zoom-out').addEventListener('click',()=>{
+  const r=outer.getBoundingClientRect();
+  zoomAt(0.8,r.left+r.width/2,r.top+r.height/2);
+});
+document.getElementById('btn-zoom-fit').addEventListener('click',fitCanvas);
+
+// Canvas coords (zoom-aware)
+function getXY(e){
+  const r=outer.getBoundingClientRect();
+  const s=e.touches?e.touches[0]:e;
+  return[(s.clientX-r.left-panX)/zoom,(s.clientY-r.top-panY)/zoom];
 }
 
-// ── State ─────────────────────────────────────────────────────────────────────
-const rooms = new Map();
+// ── Drawing ───────────────────────────────────────────────────────────────────
+let drawing=false,lx=0,ly=0;
+let brushType='pen',color='#1a1a2e',brushSize=8;
+let undoStack=[],redoStack=[];
 
-// FIX: Minimum players required before a round starts.
-const MIN_PLAYERS = 1; // Set to 1 so a solo tester can verify the canvas loads.
-                        // Change to 2 for real multiplayer enforcement.
+const BRUSHES={
+  pen:   {op:'source-over',alpha:1,   lw:1,   blur:0},
+  pencil:{op:'source-over',alpha:0.6, lw:0.8, blur:0.4},
+  marker:{op:'source-over',alpha:0.4, lw:2.5, blur:0},
+  eraser:{op:'destination-out',alpha:1,lw:1,  blur:0},
+};
 
-const WORDS = [
-  'cat','dog','house','tree','car','sun','moon','fish','bird','flower',
-  'pizza','guitar','elephant','rainbow','rocket','castle','dragon','piano',
-  'submarine','tornado','volcano','lighthouse','butterfly','telescope','snowman',
-  'dinosaur','waterfall','helicopter','cactus','penguin','banana','scissors',
-  'telephone','umbrella','bicycle','glasses','crown','anchor','compass','bridge',
-  'robot','alien','wizard','knight','ninja','pirate','mermaid','unicorn',
-];
+function applyBS(ctx,c,s,bt){
+  const b=BRUSHES[bt||brushType]||BRUSHES.pen;
+  ctx.globalCompositeOperation=b.op;
+  ctx.globalAlpha=b.alpha;
+  ctx.strokeStyle=b.op==='destination-out'?'rgba(0,0,0,1)':c;
+  ctx.lineWidth=s*b.lw;
+  ctx.lineCap='round';ctx.lineJoin='round';
+  ctx.filter=b.blur?`blur(${b.blur}px)`:'none';
+}
+function resetBS(ctx){ctx.globalCompositeOperation='source-over';ctx.globalAlpha=1;ctx.filter='none';}
 
-function makeRoom(id, chatId) {
-  return {
-    id, chatId,
-    clients: new Map(),
-    strokes: [],
-    currentDrawer: null,
-    drawerName: '',
-    word: null,
-    guesses: new Set(),
-    roundActive: false,
-    liveMessageId: null,
-    updateTimer: null,
-  };
+function drawSeg(ctx,x1,y1,x2,y2,c,s,bt){
+  applyBS(ctx,c,s,bt);
+  ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();
+  resetBS(ctx);
 }
 
-function bcast(room, msg, skip = null) {
-  const d = JSON.stringify(msg);
-  room.clients.forEach((c, id) => {
-    if (id !== skip && c.ws.readyState === WebSocket.OPEN) c.ws.send(d);
+function renderStroke(stroke,tCtx){
+  const ctx=tCtx||CTX[stroke.layer||activeLayer]||actCtx();
+  const pts=stroke.points||[];
+  if(!pts.length)return;
+  const bt=stroke.brush||'pen';
+  applyBS(ctx,stroke.color||'#000',stroke.size||8,bt);
+  ctx.beginPath();
+  if(pts.length===1){
+    ctx.arc(pts[0][0],pts[0][1],(stroke.size||8)/2,0,Math.PI*2);
+    ctx.fill();
+  } else {
+    ctx.moveTo(pts[0][0],pts[0][1]);
+    for(let i=1;i<pts.length;i++) ctx.lineTo(pts[i][0],pts[i][1]);
+    ctx.stroke();
+  }
+  resetBS(ctx);
+}
+
+// Undo/Redo
+function saveUndo(){
+  const s={};[1,2,3].forEach(n=>s[n]=CTX[n].getImageData(0,0,CW,CH));
+  undoStack.push(s);if(undoStack.length>40)undoStack.shift();redoStack=[];
+}
+function doUndo(){
+  if(!undoStack.length)return;
+  const c={};[1,2,3].forEach(n=>c[n]=CTX[n].getImageData(0,0,CW,CH));
+  redoStack.push(c);const s=undoStack.pop();
+  [1,2,3].forEach(n=>CTX[n].putImageData(s[n],0,0));
+  sendSnap();updateThumbs();
+}
+function doRedo(){
+  if(!redoStack.length)return;
+  const c={};[1,2,3].forEach(n=>c[n]=CTX[n].getImageData(0,0,CW,CH));
+  undoStack.push(c);const s=redoStack.pop();
+  [1,2,3].forEach(n=>CTX[n].putImageData(s[n],0,0));
+  sendSnap();updateThumbs();
+}
+
+// Merge to PNG for server
+function getMerged(){
+  const t=document.createElement('canvas');t.width=CW;t.height=CH;
+  const tc=t.getContext('2d');tc.fillStyle='#fff';tc.fillRect(0,0,CW,CH);
+  [1,2,3].forEach(n=>{if(layerVis[n])tc.drawImage(LAYERS[n],0,0);});
+  return t.toDataURL('image/png');
+}
+function sendSnap(){ws?.send(JSON.stringify({type:'snapshot',data:getMerged()}));}
+
+// Layer thumbnails
+function updateThumbs(){
+  [1,2,3].forEach(n=>{
+    const th=document.getElementById(`lt${n}`);if(!th)return;
+    th.width=28;th.height=18;
+    const tc=th.getContext('2d');tc.fillStyle='#fff';tc.fillRect(0,0,28,18);
+    tc.drawImage(LAYERS[n],0,0,28,18);
   });
 }
 
-// ── Canvas push ───────────────────────────────────────────────────────────────
-async function pushCanvas(room) {
-  if (!room.chatId || !room.roundActive || !room.word) return;
-  let png;
-  try { png = await renderPNG(room.strokes, room.drawerName, room.word, false); }
-  catch (e) { console.error('renderPNG error:', e.message); return; }
-
-  const hint      = room.word.split('').map(() => '_').join(' ');
-  const caption   = `🎨 *${room.drawerName}* is drawing!\n🔤 \`${hint}\` — ${room.word.length} letters\n\n💬 Type your guess here!`;
-  const canvasUrl = `${PUBLIC_URL}/?room=${encodeURIComponent(room.id)}`;
-
-  try {
-    if (!room.liveMessageId) {
-      const m = await bot.telegram.sendPhoto(
-        room.chatId,
-        { source: png, filename: 'drawing.png' },
-        {
-          caption,
-          parse_mode: 'Markdown',
-          ...Markup.inlineKeyboard([Markup.button.url('🖌 Open Canvas', canvasUrl)]),
-        }
-      );
-      room.liveMessageId = m.message_id;
-      console.log(`[canvas] sent message_id=${m.message_id}`);
-    } else {
-      await bot.telegram.editMessageMedia(
-        room.chatId, room.liveMessageId, null,
-        { type: 'photo', media: { source: png, filename: 'drawing.png' }, caption, parse_mode: 'Markdown' }
-      );
-    }
-  } catch (e) {
-    if (e.message.includes('message is not modified')) return; // benign
-    console.error('pushCanvas error:', e.message);
-    // FIX: reset liveMessageId on any "message gone" error so the next push resends it fresh
-    if (/(not found|deleted|no message|message to edit)/i.test(e.message)) {
-      room.liveMessageId = null;
-    }
-  }
-}
-
-function scheduleUpdate(room) {
-  if (room.updateTimer) return;
-  room.updateTimer = setTimeout(async () => {
-    room.updateTimer = null;
-    await pushCanvas(room);
-  }, 1200);
-}
-
-async function saveFinal(room, guesserName) {
-  if (!room.chatId) return;
-  let png;
-  try { png = await renderPNG(room.strokes, room.drawerName, room.word, true); }
-  catch (e) { console.error('saveFinal render error:', e.message); return; }
-
-  if (room.liveMessageId) {
-    try { await bot.telegram.deleteMessage(room.chatId, room.liveMessageId); } catch { /* ignore */ }
-    room.liveMessageId = null;
-  }
-
-  const caption = [
-    `✅ *Round Complete!*`, ``,
-    `🖌 Artist: *${room.drawerName}*`,
-    `🎯 Word: *${room.word}*`,
-    guesserName ? `🏆 Guessed by: *${guesserName}*` : `😔 Nobody guessed!`,
-    ``, `_Next round in 5 seconds..._`,
-  ].join('\n');
-
-  try {
-    await bot.telegram.sendPhoto(
-      room.chatId,
-      { source: png, filename: `${room.word}.png` },
-      { caption, parse_mode: 'Markdown' }
-    );
-  } catch (e) { console.error('saveFinal send error:', e.message); }
-}
-
-// ── Rounds ────────────────────────────────────────────────────────────────────
-function startRound(room) {
-  const ids = Array.from(room.clients.keys());
-
-  // FIX: Guard — don't start if not enough players
-  if (ids.length < MIN_PLAYERS) {
-    console.log(`[round] Not enough players in room ${room.id} (${ids.length}/${MIN_PLAYERS}). Waiting...`);
-    // FIX: Notify existing clients so the UI isn't just frozen
-    bcast(room, { type: 'status', message: `Waiting for players… (${ids.length}/${MIN_PLAYERS} needed)` });
-    return;
-  }
-
-  // FIX: Cancel any pending update timer before resetting state
-  if (room.updateTimer) { clearTimeout(room.updateTimer); room.updateTimer = null; }
-
-  room.strokes        = [];
-  room.guesses        = new Set();
-  room.roundActive    = true;
-  room.liveMessageId  = null; // FIX: always reset so a fresh photo is sent each round
-  room.currentDrawer  = ids[Math.floor(Math.random() * ids.length)];
-  room.drawerName     = room.clients.get(room.currentDrawer)?.name || 'Someone';
-  room.word           = WORDS[Math.floor(Math.random() * WORDS.length)];
-
-  console.log(`[round] START room=${room.id} drawer=${room.drawerName} word=${room.word} players=${ids.length}`);
-
-  // FIX: Send role messages individually — each client gets the right payload
-  room.clients.forEach((c, id) => {
-    const isDrawer = id === room.currentDrawer;
-    const msg = isDrawer
-      ? { type: 'role', role: 'drawer', word: room.word }
-      : { type: 'role', role: 'guesser', hint: room.word.length };
-    if (c.ws.readyState === WebSocket.OPEN) c.ws.send(JSON.stringify(msg));
+// ── Color palette ─────────────────────────────────────────────────────────────
+const COLORS=['#1a1a2e','#ffffff','#ff3855','#ff8c42','#ffd60a',
+  '#06d6a0','#0077b6','#7b2d8b','#ff6b8a','#8b4513',
+  '#adb5bd','#4cc9f0','#7c6ff7','#f72585','#2dc653'];
+const palette=document.getElementById('palette');
+COLORS.forEach(c=>{
+  const d=document.createElement('div');
+  d.className='cdot'+(c===color?' on':'');
+  d.style.background=c;
+  if(c==='#ffffff')d.style.border='2.5px solid #555';
+  d.addEventListener('pointerdown',()=>{
+    document.querySelectorAll('.cdot').forEach(x=>x.classList.remove('on'));
+    d.classList.add('on');color=c;
+    if(brushType==='eraser'){brushType='pen';updateBrushUI();}
+    updateSzDot();
   });
+  palette.appendChild(d);
+});
 
-  bcast(room, { type: 'clear' });
-  bcast(room, { type: 'status', message: `${room.drawerName} is drawing!` });
+function updateSzDot(){
+  const s=Math.max(3,Math.min(brushSize,22));
+  document.getElementById('sz-dot').innerHTML=
+    `<div style="width:${s}px;height:${s}px;border-radius:50%;background:${brushType==='eraser'?'#888':color};"></div>`;
+}
+document.getElementById('sz-range').addEventListener('input',e=>{brushSize=+e.target.value;updateSzDot();});
+updateSzDot();
 
-  if (room.chatId) {
-    bot.telegram.sendMessage(
-      room.chatId,
-      `🎮 *New Round!*\n\n✏️ *${room.drawerName}* is drawing...\n💬 Guess by typing here!`,
-      { parse_mode: 'Markdown' }
-    ).catch(e => console.error('[bot] sendMessage error:', e.message));
-  }
+// ── Brush panel ───────────────────────────────────────────────────────────────
+const brushPanel=document.getElementById('brush-panel');
+const layerPanel=document.getElementById('layer-panel');
+const settingsPanel=document.getElementById('settings-panel');
 
-  // Push first canvas snapshot after a short delay
-  setTimeout(() => pushCanvas(room), 800);
+document.getElementById('btn-brush').addEventListener('click',()=>{
+  brushPanel.classList.toggle('open');
+  layerPanel.classList.remove('open');settingsPanel.classList.remove('open');
+});
+document.querySelectorAll('.brush-opt').forEach(el=>{
+  el.addEventListener('click',()=>{
+    document.querySelectorAll('.brush-opt').forEach(x=>x.classList.remove('on'));
+    el.classList.add('on');brushType=el.dataset.brush;
+    document.getElementById('btn-brush').textContent=el.querySelector('.bi').textContent;
+    updateSzDot();brushPanel.classList.remove('open');
+  });
+});
+function updateBrushUI(){
+  document.querySelectorAll('.brush-opt').forEach(x=>x.classList.remove('on'));
+  document.querySelector(`.brush-opt[data-brush="${brushType}"]`)?.classList.add('on');
+  updateSzDot();
 }
 
-async function endRound(room, guesserName) {
-  if (!room.roundActive) return; // FIX: idempotency guard (already handled)
-  room.roundActive   = false;
-  room.currentDrawer = null; // FIX: reset drawer so reconnect logic works correctly
+// ── Layer panel ───────────────────────────────────────────────────────────────
+document.getElementById('btn-layers').addEventListener('click',()=>{
+  layerPanel.classList.toggle('open');
+  brushPanel.classList.remove('open');settingsPanel.classList.remove('open');
+  updateThumbs();
+});
+document.querySelectorAll('.lrow').forEach(el=>{
+  el.addEventListener('click',e=>{
+    if(e.target.classList.contains('lvis'))return;
+    document.querySelectorAll('.lrow').forEach(x=>x.classList.remove('al'));
+    el.classList.add('al');activeLayer=+el.dataset.layer;
+  });
+});
+document.querySelectorAll('.lvis').forEach(el=>{
+  el.addEventListener('click',e=>{
+    e.stopPropagation();const n=+el.dataset.lv;
+    layerVis[n]=!layerVis[n];
+    LAYERS[n].style.opacity=layerVis[n]?'1':'0';
+    el.classList.toggle('sv',layerVis[n]);
+  });
+});
+document.getElementById('merge-btn').addEventListener('click',()=>{
+  saveUndo();
+  const t=document.createElement('canvas');t.width=CW;t.height=CH;
+  const tc=t.getContext('2d');
+  [1,2,3].forEach(n=>tc.drawImage(LAYERS[n],0,0));
+  CTX[1].clearRect(0,0,CW,CH);CTX[1].drawImage(t,0,0);
+  [2,3].forEach(n=>CTX[n].clearRect(0,0,CW,CH));
+  activeLayer=1;
+  document.querySelectorAll('.lrow').forEach(x=>x.classList.remove('al'));
+  document.querySelector('.lrow[data-layer="1"]')?.classList.add('al');
+  showToast('Layers merged');updateThumbs();layerPanel.classList.remove('open');
+});
 
-  if (room.updateTimer) { clearTimeout(room.updateTimer); room.updateTimer = null; }
+// ── Settings panel ────────────────────────────────────────────────────────────
+document.getElementById('btn-settings').addEventListener('click',()=>{
+  settingsPanel.classList.toggle('open');
+  brushPanel.classList.remove('open');layerPanel.classList.remove('open');
+});
+document.getElementById('apply-size-btn').addEventListener('click',()=>{
+  const[w,h]=document.getElementById('canvas-size-sel').value.split('x').map(Number);
+  const saved={};[1,2,3].forEach(n=>saved[n]=LAYERS[n].toDataURL());
+  CW=w;CH=h;initCanvases();
+  [1,2,3].forEach(n=>{const img=new Image();img.src=saved[n];
+    img.onload=()=>CTX[n].drawImage(img,0,0,CW,CH);});
+  settingsPanel.classList.remove('open');showToast(`Canvas: ${w}×${h}`);
+});
 
-  console.log(`[round] END room=${room.id} word=${room.word} guesser=${guesserName || 'none'}`);
+// Close panels on outside click
+document.addEventListener('pointerdown',e=>{
+  if(!e.target.closest('#brush-panel,#btn-brush'))brushPanel.classList.remove('open');
+  if(!e.target.closest('#layer-panel,#btn-layers'))layerPanel.classList.remove('open');
+  if(!e.target.closest('#settings-panel,#btn-settings'))settingsPanel.classList.remove('open');
+});
 
-  bcast(room, { type: 'round_end', word: room.word, drawerName: room.drawerName, guesser: guesserName || null });
-  await saveFinal(room, guesserName);
+// ── Drawing events ────────────────────────────────────────────────────────────
+let curStroke=null;
+function onStart(e){
+  if(!isDrawer||pinching)return;
+  if(e.touches?.length>1)return;
+  e.preventDefault();
+  drawing=true;saveUndo();[lx,ly]=getXY(e);
+  curStroke={brush:brushType,color:brushType==='eraser'?null:color,
+    size:brushSize,layer:activeLayer,points:[[lx,ly]]};
+}
+function onMove(e){
+  if(!drawing||!isDrawer||pinching)return;
+  if(e.touches?.length>1)return;
+  e.preventDefault();
+  const[x,y]=getXY(e);
+  drawSeg(actCtx(),lx,ly,x,y,color,brushSize);
+  curStroke.points.push([x,y]);lx=x;ly=y;
+}
+function onEnd(){
+  if(!drawing)return;drawing=false;
+  if(curStroke&&ws?.readyState===1)ws.send(JSON.stringify({type:'draw',stroke:curStroke}));
+  curStroke=null;updateThumbs();
+}
+outer.addEventListener('pointerdown',onStart,{passive:false});
+outer.addEventListener('pointermove',onMove,{passive:false});
+outer.addEventListener('pointerup',onEnd);
+outer.addEventListener('pointercancel',onEnd);
 
-  setTimeout(() => {
-    if (rooms.has(room.id) && room.clients.size >= MIN_PLAYERS) {
-      startRound(room);
-    } else {
-      console.log(`[round] Skipping next round — room gone or too few players`);
-    }
-  }, 5000);
+// Toolbar
+document.getElementById('btn-undo').addEventListener('click',()=>{if(isDrawer)doUndo();});
+document.getElementById('btn-redo').addEventListener('click',()=>{if(isDrawer)doRedo();});
+document.getElementById('btn-clear').addEventListener('click',()=>{
+  if(!isDrawer)return;saveUndo();
+  [1,2,3].forEach(n=>CTX[n].clearRect(0,0,CW,CH));
+  redoStack=[];ws?.send(JSON.stringify({type:'clear'}));updateThumbs();
+});
+document.getElementById('btn-done').addEventListener('click',()=>{
+  if(!isDrawer)return;
+  if(confirm('Finish drawing?'))ws?.send(JSON.stringify({type:'done_drawing'}));
+});
+
+// ── Toast ─────────────────────────────────────────────────────────────────────
+let toastT=null;const toastEl=document.getElementById('toast');
+function showToast(msg,cls=''){
+  toastEl.textContent=msg;toastEl.className='show '+cls;
+  clearTimeout(toastT);toastT=setTimeout(()=>{toastEl.className='';},3000);
 }
 
-// ── Bot commands ──────────────────────────────────────────────────────────────
+// ── Chat ──────────────────────────────────────────────────────────────────────
+const chatLog=document.getElementById('chat-log');
+function addChat(cls,html){
+  const d=document.createElement('div');d.className='cmsg '+cls;d.innerHTML=html;
+  chatLog.appendChild(d);chatLog.scrollTop=chatLog.scrollHeight;chatLog.classList.add('open');
+}
 
-// ── Bot commands ─────────────────────────────────────────────────────────────
-//
-// HOW THE MINI APP OPENS IN-GROUP (no private chat redirect)
-//
-// Telegram allows webApp buttons on inline keyboards attached to group messages
-// sent by the bot. When the user taps, the Mini App opens as an overlay right
-// inside the group chat — no private chat needed.
-//
-// REQUIREMENT: In @BotFather you must set the Menu Button URL to PUBLIC_URL so
-// Telegram trusts the domain for in-group Mini App launches:
-//   /mybots → your bot → Bot Settings → Menu Button → Set URL → <PUBLIC_URL>
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Round result ──────────────────────────────────────────────────────────────
+const roundOverlay=document.getElementById('round-overlay');
+function showResult(emoji,title,word,sub){
+  document.getElementById('re-emoji').textContent=emoji;
+  document.getElementById('re-title').textContent=title;
+  document.getElementById('re-word').textContent=word;
+  document.getElementById('re-sub').textContent=sub;
+  roundOverlay.classList.add('show');
+  setTimeout(()=>roundOverlay.classList.remove('show'),4500);
+}
 
-// ── Bot commands ─────────────────────────────────────────────────────────────
-//
-// MINI APP IN TELEGRAM — HOW IT WORKS
-//
-// Telegram has strict rules on where webApp buttons are allowed:
-//
-//   ❌ ctx.reply() in a group   → BUTTON_TYPE_INVALID (what we had)
-//   ❌ Inline keyboard on group message → not allowed by Telegram API
-//   ✅ Menu Button (☰ beside text input) → works in ANY chat, set via bot API
-//   ✅ Private chat reply → always works
-//   ✅ Inline query answer → works but requires user to type @bot
-//
-// SOLUTION: Set the Menu Button for the group chat when /startgame is called.
-// The bot calls setChatMenuButton() for that specific group, which changes the
-// ☰ icon next to the message input into a branded Mini App launcher button.
-// Users tap it → canvas opens as a real Telegram Mini App, fully trusted,
-// no external browser, no private chat needed.
-//
-// ALSO: /startgame still sends a message telling users HOW to open it (tap ☰).
-// ─────────────────────────────────────────────────────────────────────────────
-
-// GROUP: /startgame
-// ─────────────────────────────────────────────────────────────────────────────
-// HOW THE MINI APP OPENS IN-GROUP WITHOUT PRIVATE CHAT
-//
-// Telegram's setChatMenuButton() replaces the ☰ menu icon (next to the text
-// input) with a branded Mini App button FOR THIS SPECIFIC GROUP CHAT.
-// When a user taps it, the Mini App opens as a native Telegram overlay —
-// fully trusted, no external browser, no private chat.
-//
-// The URL passed to setChatMenuButton must include ?room=CHATID so the client
-// knows which room to connect to. The client reads this from location.search
-// and auto-joins, skipping the manual join screen entirely.
-// ─────────────────────────────────────────────────────────────────────────────
-bot.command('startgame', async (ctx) => {
-  if (ctx.chat.type === 'private') {
-    const roomId    = `solo_${ctx.from.id}`;
-    const canvasUrl = `${PUBLIC_URL}/?room=${encodeURIComponent(roomId)}`;
-    // In private chat, webApp buttons on replies ARE allowed
-    try {
-      await bot.telegram.setChatMenuButton({
-        chatId: ctx.chat.id,
-        menuButton: { type: 'web_app', text: '🖌 Canvas', web_app: { url: canvasUrl } },
-      });
-    } catch (e) {
-      console.warn('[bot] setChatMenuButton private failed:', e.message);
-    }
-    return ctx.reply(
-      `🎨 *Draw & Guess*\n\nTap *🖌 Canvas* next to the message box to open the canvas!`,
-      { parse_mode: 'Markdown' }
-    );
-  }
-
-  const roomId = String(ctx.chat.id);
-  if (!rooms.has(roomId)) {
-    rooms.set(roomId, makeRoom(roomId, ctx.chat.id));
+// ── Role ──────────────────────────────────────────────────────────────────────
+let isDrawer=true;
+function setRole(role,wordOrLen){
+  isDrawer=role==='drawer';
+  document.getElementById('toolbar').style.display=isDrawer?'flex':'none';
+  document.getElementById('guess-row').style.display=isDrawer?'none':'flex';
+  const pill=document.getElementById('role-pill');
+  pill.className='role-pill '+(isDrawer?'drawer':'guesser');
+  pill.textContent=isDrawer?'DRAWING':'GUESSING';
+  if(isDrawer){
+    document.getElementById('word-display').textContent=`Draw: ${wordOrLen}`;
+    document.getElementById('word-display').style.color='var(--green)';
+    showToast(`🖌 Draw: ${wordOrLen}`);undoStack=[];redoStack=[];
   } else {
-    rooms.get(roomId).chatId = ctx.chat.id;
+    const hint=Array(+wordOrLen).fill('_').join(' ');
+    document.getElementById('word-display').textContent=hint;
+    document.getElementById('word-display').style.color='var(--accent)';
+    showToast(`🤔 Guess! ${wordOrLen} letters`);
   }
-
-  // Room ID is embedded in the URL so the client auto-joins the right room
-  const canvasUrl = `${PUBLIC_URL}/?room=${encodeURIComponent(roomId)}`;
-  console.log(`[bot] /startgame room=${roomId} url=${canvasUrl}`);
-
-  try {
-    await bot.telegram.setChatMenuButton({
-      chatId: ctx.chat.id,
-      menuButton: {
-        type: 'web_app',
-        text: '🖌 Draw!',
-        web_app: { url: canvasUrl },
-      },
-    });
-    console.log(`[bot] Menu button set for chat ${ctx.chat.id}`);
-
-    await ctx.reply(
-      `🎨 *Draw & Guess is ready!*\n\n👇 Tap the *🖌 Draw!* button next to the message box to open the canvas.\n\nEveryone else: type your guesses here!`,
-      { parse_mode: 'Markdown' }
-    );
-  } catch (e) {
-    console.error('[bot] setChatMenuButton failed:', e.message);
-    // Fallback: deep-link to private chat (old behaviour)
-    const deepLink = `https://t.me/${botUsername}?start=${encodeURIComponent(roomId)}`;
-    await ctx.reply(
-      `🎨 *Draw & Guess Started!*\n\n_Could not set menu button — tap below to open the canvas:_`,
-      {
-        parse_mode: 'Markdown',
-        ...Markup.inlineKeyboard([[Markup.button.url('▶️ Open Canvas', deepLink)]]),
-      }
-    );
-  }
-});
-
-// PRIVATE: /start — deep-link fallback (still works from old links)
-bot.command('start', async (ctx) => {
-  if (ctx.chat.type !== 'private') return;
-  const parts  = ctx.message.text.split(' ');
-  const roomId = parts[1] ? decodeURIComponent(parts[1]) : null;
-
-  if (!roomId) {
-    return ctx.reply('👋 Add me to a group and use /startgame there to play!');
-  }
-
-  if (!rooms.has(roomId)) {
-    rooms.set(roomId, makeRoom(roomId, null));
-    console.log(`[bot] /start stub room roomId=${roomId}`);
-  }
-
-  const canvasUrl = `${PUBLIC_URL}/?room=${encodeURIComponent(roomId)}`;
-  // webApp button is allowed in private chat replies
-  await ctx.reply(
-    `🎨 *Draw & Guess* — tap to open:`,
-    {
-      parse_mode: 'Markdown',
-      ...Markup.inlineKeyboard([[Markup.button.webApp('🖌 Open Canvas', canvasUrl)]]),
-    }
-  );
-});
-bot.command('stopgame', async (ctx) => {
-  const roomId = String(ctx.chat.id);
-  if (rooms.has(roomId)) {
-    const room = rooms.get(roomId);
-    if (room.updateTimer) clearTimeout(room.updateTimer);
-    rooms.delete(roomId);
-    // Reset the Menu Button back to default (remove the Mini App button)
-    try {
-      await bot.telegram.setChatMenuButton({
-        chatId: ctx.chat.id,
-        menuButton: { type: 'default' },
-      });
-    } catch (e) {
-      console.warn('[bot] Failed to reset menu button:', e.message);
-    }
-    ctx.reply('🛑 Game stopped. Menu button reset.');
-  } else {
-    ctx.reply('No active game.');
-  }
-});
-
-bot.command('newround', async (ctx) => {
-  const roomId = String(ctx.chat.id);
-  const room   = rooms.get(roomId);
-  if (!room)                 return ctx.reply('No game. Use /startgame first.');
-  if (!room.clients.size)    return ctx.reply('No players on canvas yet!');
-  await endRound(room, null);
-});
-
-// Group text = guesses
-bot.on('text', async (ctx) => {
-  if (ctx.chat.type === 'private') return;
-  const roomId = String(ctx.chat.id);
-  const room   = rooms.get(roomId);
-  if (!room || !room.roundActive || !room.word) return;
-
-  const text = (ctx.message.text || '').trim();
-  if (text.startsWith('/')) return;
-
-  const userId   = String(ctx.from.id);
-  // FIX: do not block the drawer from seeing their own confirmation in group chat,
-  //      but do prevent them from accidentally ending the round with the correct word
-  if (userId === room.currentDrawer) return;
-  if (room.guesses.has(userId)) return;
-
-  const userName = [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' ')
-    || ctx.from.username || 'Player';
-  const correct  = text.toLowerCase() === room.word.toLowerCase();
-
-  bcast(room, { type: 'guess', name: userName, text, correct });
-
-  if (correct) {
-    room.guesses.add(userId);
-    await endRound(room, userName);
-  }
-});
+}
 
 // ── WebSocket ─────────────────────────────────────────────────────────────────
-wss.on('connection', (ws, req) => {
-  const clientId = uuidv4();
-  const url      = new URL(req.url, 'http://localhost');
-  const roomId   = url.searchParams.get('room') || 'default';
-  const name     = url.searchParams.get('name') || `Player${Math.floor(Math.random() * 1000)}`;
-
-  if (!rooms.has(roomId)) rooms.set(roomId, makeRoom(roomId, null));
-  const room = rooms.get(roomId);
-  room.clients.set(clientId, { ws, name });
-
-  console.log(`[ws] +${name} → room=${roomId} total=${room.clients.size}`);
-
-  // Send current state to the new client
-  ws.send(JSON.stringify({ type: 'init', strokes: room.strokes, players: room.clients.size }));
-  bcast(room, { type: 'player_joined', name, count: room.clients.size }, clientId);
-
-  // FIX: Only auto-start a round if one isn't already active
-  if (!room.roundActive && !room.currentDrawer) {
-    if (room.clients.size >= MIN_PLAYERS) {
-      console.log(`[ws] Enough players — starting round in room=${roomId}`);
-      setTimeout(() => startRound(room), 800);
-    } else {
-      // Inform the new client that we're waiting
-      ws.send(JSON.stringify({
-        type: 'status',
-        message: `Waiting for players… (${room.clients.size}/${MIN_PLAYERS} needed)`,
-      }));
-    }
-  } else if (room.roundActive) {
-    // FIX: Catch up late-joiner — send them the correct role
-    const isDrawer = clientId === room.currentDrawer; // always false for a new client
-    ws.send(JSON.stringify({
-      type: 'role',
-      role: 'guesser',
-      hint: room.word ? room.word.length : 0,
-    }));
-    ws.send(JSON.stringify({ type: 'status', message: `${room.drawerName} is drawing!` }));
-  }
-
-  ws.on('message', data => {
-    let msg;
-    try { msg = JSON.parse(data); } catch { return; }
-
-    switch (msg.type) {
+let ws=null,myName='',myRoom='';
+function connect(){
+  const proto=location.protocol==='https:'?'wss':'ws';
+  ws=new WebSocket(`${proto}://${location.host}/ws?room=${encodeURIComponent(myRoom)}&name=${encodeURIComponent(myName)}`);
+  ws.onopen=()=>document.getElementById('conn-dot').style.background='var(--green)';
+  ws.onmessage=({data})=>{
+    let m;try{m=JSON.parse(data);}catch{return;}
+    switch(m.type){
+      case 'init':
+        [1,2,3].forEach(n=>CTX[n].clearRect(0,0,CW,CH));
+        (m.strokes||[]).forEach(s=>renderStroke(s,CTX[s.layer||3]));
+        document.getElementById('word-display').textContent=`${m.players} players`;
+        break;
       case 'draw':
-        if (clientId !== room.currentDrawer) return;
-        room.strokes.push(msg.stroke);
-        bcast(room, { type: 'draw', stroke: msg.stroke }, clientId);
-        scheduleUpdate(room);
-        break;
-
+        renderStroke(m.stroke,CTX[m.stroke.layer||activeLayer]);updateThumbs();break;
       case 'clear':
-        if (clientId !== room.currentDrawer) return;
-        room.strokes = [];
-        bcast(room, { type: 'clear' });
-        scheduleUpdate(room);
-        break;
-
+        [1,2,3].forEach(n=>CTX[n].clearRect(0,0,CW,CH));
+        undoStack=[];redoStack=[];updateThumbs();break;
       case 'snapshot':
-        if (clientId !== room.currentDrawer) return;
-        bcast(room, { type: 'snapshot', data: msg.data }, clientId);
-        break;
-
-      case 'guess': {
-        if (clientId === room.currentDrawer) return; // drawer can't guess
-        const t  = (msg.text || '').trim();
-        if (!t) return;
-        const ok = !!room.word && t.toLowerCase() === room.word.toLowerCase();
-        bcast(room, { type: 'guess', name, text: t, correct: ok });
-        if (ok) endRound(room, name);
-        break;
-      }
-
-      case 'done_drawing':
-        if (clientId !== room.currentDrawer) return;
-        endRound(room, null);
-        break;
+        const img=new Image();img.onload=()=>{
+          [1,2,3].forEach(n=>CTX[n].clearRect(0,0,CW,CH));
+          CTX[1].drawImage(img,0,0,CW,CH);updateThumbs();};img.src=m.data;break;
+      case 'role':
+        setRole(m.role,m.role==='drawer'?m.word:m.hint);
+        [1,2,3].forEach(n=>CTX[n].clearRect(0,0,CW,CH));
+        undoStack=[];redoStack=[];updateThumbs();break;
+      case 'guess':
+        addChat(m.correct?'ok':'',`<span class="cn">${m.name}:</span> ${m.text}${m.correct?' ✅':''}`);
+        if(m.correct)showToast(`🎉 ${m.name} got it!`,'ok');break;
+      case 'round_end':
+        showResult(m.guesser?'🎉':'⏰',
+          m.guesser?`${m.guesser} guessed it!`:'Round Over',
+          m.word,m.guesser?`Artist: ${m.drawerName}`:`Word was: ${m.word}`);break;
+      case 'status':
+        document.getElementById('word-display').textContent=m.message;
+        addChat('sys',m.message);break;
+      case 'player_joined':case 'player_left':
+        addChat('sys',m.type==='player_joined'?`${m.name} joined`:`${m.name} left`);break;
     }
-  });
+  };
+  ws.onclose=()=>{document.getElementById('conn-dot').style.background='#ff3855';setTimeout(connect,2500);};
+  ws.onerror=()=>ws.close();
+}
 
-  ws.on('close', () => {
-    room.clients.delete(clientId);
-    console.log(`[ws] -${name} left room=${roomId} remaining=${room.clients.size}`);
-    bcast(room, { type: 'player_left', name, count: room.clients.size });
+// ── Guess ─────────────────────────────────────────────────────────────────────
+function sendGuess(){
+  const t=document.getElementById('guess-in').value.trim();
+  if(!t||!ws||ws.readyState!==1)return;
+  ws.send(JSON.stringify({type:'guess',text:t}));
+  document.getElementById('guess-in').value='';
+}
+document.getElementById('guess-go').addEventListener('click',sendGuess);
+document.getElementById('guess-in').addEventListener('keydown',e=>{if(e.key==='Enter')sendGuess();});
 
-    if (room.currentDrawer === clientId) {
-      // FIX: drawer disconnected — cleanly end the round (if active) then restart
-      room.currentDrawer = null;
-      if (room.roundActive) {
-        room.roundActive = false;
-        if (room.updateTimer) { clearTimeout(room.updateTimer); room.updateTimer = null; }
-        bcast(room, { type: 'status', message: `${name} (drawer) disconnected. New round soon…` });
-        if (room.chatId) {
-          bot.telegram.sendMessage(room.chatId, `⚠️ *${name}* (drawer) disconnected. Starting new round...`,
-            { parse_mode: 'Markdown' }).catch(() => {});
-        }
-      }
-      if (room.clients.size >= MIN_PLAYERS) {
-        setTimeout(() => startRound(room), 2000);
-      }
-    }
-  });
+// ── Join ──────────────────────────────────────────────────────────────────────
+const joinOverlay=document.getElementById('join-overlay');
+function doJoin(){
+  myName=document.getElementById('name-in').value.trim()||`Player${Math.floor(Math.random()*1000)}`;
+  myRoom=document.getElementById('room-in').value.trim()||'default';
+  joinOverlay.style.display='none';
+  initCanvases();connect();
+}
+document.getElementById('join-btn').addEventListener('click',doJoin);
+document.getElementById('name-in').addEventListener('keydown',e=>{if(e.key==='Enter')document.getElementById('room-in').focus();});
+document.getElementById('room-in').addEventListener('keydown',e=>{if(e.key==='Enter')doJoin();});
 
-  ws.on('error', err => {
-    console.error(`[ws] error for ${name}:`, err.message);
-    ws.close();
-  });
-});
-
-// ── Start ─────────────────────────────────────────────────────────────────────
-
-// FIX 409: Telegraf's bot.launch() runs the polling loop in the background.
-// When a 409 occurs it throws *inside* the async polling loop — outside any
-// try/catch we wrap around bot.launch(). The only reliable intercept point is
-// process.on('uncaughtException') / process.on('unhandledRejection').
+// ── Auto-join: detect room from every possible Telegram/URL source ────────────
 //
-// Strategy:
-//   1. deleteWebhook before every launch to evict the old instance's session.
-//   2. Catch 409 at the process level, stop the current bot instance cleanly,
-//      wait, then restart — without crashing the HTTP/WS server.
+// When launched as a Mini App via setChatMenuButton, Telegram passes the URL
+// we set (PUBLIC_URL/?room=ROOMID). So ?room= is the primary source.
+//
+// tg.initDataUnsafe.start_param is only populated when opened via deep-link
+// (t.me/bot?start=PARAM), NOT via Menu Button — so we can't rely on it alone.
+//
+// Priority order:
+//   1. ?room= URL param        (Menu Button launch — most common)
+//   2. tg.initDataUnsafe.start_param  (deep-link fallback)
+//   3. ?startapp= param        (alternative Telegram param name)
+//   4. Nothing found → show join screen so user can enter manually
 
-let botRestartTimer = null;
+(function autoJoin() {
+  const usp = new URLSearchParams(location.search);
 
-function stopBot() {
-  try { bot.stop(); } catch { /* already stopped */ }
-}
+  // Priority 1: tg.initDataUnsafe.start_param
+  //   → set when opened via t.me/bot?startapp=ROOMID (our group button)
+  //   → most reliable source when running as a real Mini App
+  let roomId = '';
+  if (tg) {
+    const sp = tg.initDataUnsafe?.start_param;
+    if (sp) roomId = decodeURIComponent(sp);
+  }
 
-async function launchBot(retryCount = 0) {
-  try {
-    await bot.telegram.deleteWebhook({ drop_pending_updates: true });
-    console.log('[bot] Webhook cleared');
+  // Priority 2: ?room= URL param (direct URL access / setChatMenuButton)
+  if (!roomId) roomId = usp.get('room') || '';
 
-    const me = await bot.telegram.getMe();
-    botUsername = me.username;
+  // Priority 3: ?startapp= URL param (some Telegram clients append it)
+  if (!roomId) roomId = usp.get('startapp') || '';
 
-    await bot.telegram.setMyCommands([
-      { command: 'startgame', description: 'Start Draw & Guess in this group' },
-      { command: 'stopgame',  description: 'Stop the game' },
-      { command: 'newround',  description: 'Skip to next round' },
-    ]);
+  // Final decode pass (in case of double-encoding)
+  if (roomId) try { roomId = decodeURIComponent(roomId); } catch {}
 
-    // bot.launch() returns a Promise that resolves when the bot is stopped.
-    // We do NOT await it — we let it run in the background.
-    // Errors from the polling loop are caught via unhandledRejection below.
-    bot.launch({ allowedUpdates: ['message', 'callback_query'] })
-      .catch(e => {
-        // This catches errors from the *polling loop* (including 409)
-        if (e.response?.error_code === 409) {
-          console.warn('[bot] 409 Conflict caught from polling loop');
-          handle409(retryCount);
-        } else {
-          console.error('[bot] Polling loop error:', e.message);
-        }
-      });
-
-    console.log(`🤖 @${botUsername} running`);
-  } catch (e) {
-    // Errors from deleteWebhook / getMe / setMyCommands
-    if (e.response?.error_code === 409) {
-      handle409(retryCount);
-    } else {
-      console.error('[bot] Launch setup error:', e.message);
+  // Get player name from Telegram user data
+  let playerName = '';
+  if (tg) {
+    const u = tg.initDataUnsafe?.user;
+    if (u) {
+      playerName = [u.first_name, u.last_name].filter(Boolean).join(' ')
+        || u.username || '';
     }
   }
-}
+  if (!playerName) playerName = `Player${Math.floor(Math.random() * 1000)}`;
 
-function handle409(retryCount) {
-  if (botRestartTimer) return; // already scheduled
-  const maxRetries = 5;
-  if (retryCount >= maxRetries) {
-    console.error(`[bot] Giving up after ${maxRetries} retries. Restart the service manually.`);
-    return;
-  }
-  const delay = Math.min(3000 * Math.pow(2, retryCount), 30000); // exp back-off, max 30s
-  console.warn(`[bot] Scheduling restart in ${delay / 1000}s (attempt ${retryCount + 1}/${maxRetries})`);
-  stopBot();
-  botRestartTimer = setTimeout(() => {
-    botRestartTimer = null;
-    launchBot(retryCount + 1);
-  }, delay);
-}
-
-// Safety net: catch any 409 that escapes via unhandledRejection
-process.on('unhandledRejection', (reason) => {
-  const code = reason?.response?.error_code;
-  if (code === 409) {
-    console.warn('[bot] 409 caught via unhandledRejection');
-    handle409(0);
+  if (roomId) {
+    // We have everything we need — skip the join screen entirely
+    document.getElementById('room-in').value = roomId;
+    document.getElementById('name-in').value = playerName;
+    document.getElementById('join-overlay').style.display = 'none';
+    myName = playerName;
+    myRoom = roomId;
+    initCanvases();
+    connect();
+    console.log('[join] Auto-joined room=' + roomId + ' name=' + playerName);
   } else {
-    // Log but don't crash the process for other unhandled rejections
-    console.error('[process] Unhandled rejection:', reason?.message || reason);
+    // No room found — show join screen (manual entry fallback)
+    document.getElementById('name-in').value = playerName;
+    console.log('[join] No room found, showing join screen');
   }
-});
-
-process.on('uncaughtException', (err) => {
-  const code = err?.response?.error_code;
-  if (code === 409) {
-    console.warn('[bot] 409 caught via uncaughtException');
-    handle409(0);
-  } else {
-    // For non-409 uncaught exceptions, log and exit (standard behavior)
-    console.error('[process] Uncaught exception:', err.message);
-    process.exit(1);
-  }
-});
-
-server.listen(PORT, () => {
-  console.log(`✅ http://localhost:${PORT}  |  📡 ${PUBLIC_URL}`);
-  // 1s delay gives Railway time to kill the old container's network connections
-  // before we hit the Telegram API, reducing (but not eliminating) 409 chances.
-  setTimeout(() => launchBot(), 1000);
-});
-
-process.once('SIGINT',  () => { stopBot(); server.close(); });
-process.once('SIGTERM', () => { stopBot(); server.close(); });
+})();
+})();
+</script>
+</body>
+</html>

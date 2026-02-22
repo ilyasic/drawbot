@@ -1329,31 +1329,51 @@ function connect(){
 }
 
 // ── Auto-join ─────────────────────────────────────────────────────────────────
-function getAutoJoinData(){
-  const usp=new URLSearchParams(location.search);
-  let roomId='';
-  if(tg){const sp=tg.initDataUnsafe?.start_param;if(sp)roomId=decodeURIComponent(sp);}
-  if(!roomId) roomId=usp.get('room')||'';
-  if(!roomId) roomId=usp.get('startapp')||'';
-  if(roomId) try{roomId=decodeURIComponent(roomId);}catch{}
-  let playerName='';
-  if(tg){const u=tg.initDataUnsafe?.user;if(u)playerName=[u.first_name,u.last_name].filter(Boolean).join(' ')||u.username||'';}
-  if(!playerName) playerName=`Player${Math.floor(Math.random()*1000)}`;
-  return {roomId,playerName};
+function getTgUser() {
+  // Telegram injects user data asynchronously — poll until available
+  if (!tg) return null;
+  const u = tg.initDataUnsafe?.user;
+  if (!u) return null;
+  return [u.first_name, u.last_name].filter(Boolean).join(' ').trim() || u.username || null;
 }
 
-function doJoin(roomId,playerName){
-  myName=playerName; myRoom=roomId;
-  document.getElementById('join-overlay').style.display='none';
+function getRoomId() {
+  if (tg) {
+    const sp = tg.initDataUnsafe?.start_param;
+    if (sp) try { return decodeURIComponent(sp); } catch {}
+  }
+  const usp = new URLSearchParams(location.search);
+  return usp.get('room') || usp.get('startapp') || '';
+}
+
+function doJoin(roomId, playerName) {
+  myName = playerName; myRoom = roomId;
+  document.getElementById('join-overlay').style.display = 'none';
   initCanvases(); renderPalette(); updateSzOpLabel(); connect();
 }
 
-(function tryAutoJoin(attempt){
-  const{roomId,playerName}=getAutoJoinData();
-  if(roomId){doJoin(roomId,playerName);return;}
-  if(attempt<10){setTimeout(()=>tryAutoJoin(attempt+1),100);return;}
-  const{playerName:name}=getAutoJoinData();
-  document.getElementById('name-in').value=name;
+// Retry until BOTH roomId AND playerName from Telegram are available
+// Telegram can take up to ~800ms to inject initDataUnsafe on some devices
+(function tryAutoJoin(attempt) {
+  const roomId    = getRoomId();
+  const tgName    = getTgUser();
+
+  // We have both — join immediately
+  if (roomId && tgName) { doJoin(roomId, tgName); return; }
+
+  // Still waiting — retry for up to 2 seconds (20 × 100ms)
+  if (attempt < 20) { setTimeout(() => tryAutoJoin(attempt + 1), 100); return; }
+
+  // Timed out — use what we have
+  if (roomId) {
+    // Have room but no Telegram name — use a readable random name
+    const fallbackName = tgName || ('Artist' + Math.floor(Math.random()*900+100));
+    doJoin(roomId, fallbackName);
+  } else {
+    // No room ID — show manual join form with Telegram name pre-filled
+    const name = tgName || '';
+    if (name) document.getElementById('name-in').value = name;
+  }
 })(0);
 
 document.getElementById('join-btn').addEventListener('click',()=>{

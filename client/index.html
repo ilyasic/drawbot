@@ -708,24 +708,65 @@ document.getElementById('join-btn').addEventListener('click',doJoin);
 document.getElementById('name-in').addEventListener('keydown',e=>{if(e.key==='Enter')document.getElementById('room-in').focus();});
 document.getElementById('room-in').addEventListener('keydown',e=>{if(e.key==='Enter')doJoin();});
 
-// Auto-fill from Telegram/URL
-const usp=new URLSearchParams(location.search);
-const ur=usp.get('room')||usp.get('startapp')||'';
-if(ur)document.getElementById('room-in').value=decodeURIComponent(ur);
-if(tg){
-  const u=tg.initDataUnsafe?.user;
-  if(u){
-    const n=[u.first_name,u.last_name].filter(Boolean).join(' ')||u.username||'';
-    document.getElementById('name-in').value=n;
+// ── Auto-join: detect room from every possible Telegram/URL source ────────────
+//
+// When launched as a Mini App via setChatMenuButton, Telegram passes the URL
+// we set (PUBLIC_URL/?room=ROOMID). So ?room= is the primary source.
+//
+// tg.initDataUnsafe.start_param is only populated when opened via deep-link
+// (t.me/bot?start=PARAM), NOT via Menu Button — so we can't rely on it alone.
+//
+// Priority order:
+//   1. ?room= URL param        (Menu Button launch — most common)
+//   2. tg.initDataUnsafe.start_param  (deep-link fallback)
+//   3. ?startapp= param        (alternative Telegram param name)
+//   4. Nothing found → show join screen so user can enter manually
+
+(function autoJoin() {
+  const usp = new URLSearchParams(location.search);
+
+  // 1. URL ?room= param (set by setChatMenuButton URL)
+  let roomId = usp.get('room') || '';
+
+  // 2. Telegram start_param (deep-link: t.me/bot?start=ROOMID)
+  if (!roomId && tg) {
+    const sp = tg.initDataUnsafe?.start_param;
+    if (sp) roomId = decodeURIComponent(sp);
   }
-  const sp=tg.initDataUnsafe?.start_param;
-  if(sp)document.getElementById('room-in').value=decodeURIComponent(sp);
-}
-if(document.getElementById('room-in').value){
-  if(!document.getElementById('name-in').value)
-    document.getElementById('name-in').value=`Player${Math.floor(Math.random()*1000)}`;
-  setTimeout(doJoin,350);
-}
+
+  // 3. ?startapp= (some Telegram clients use this)
+  if (!roomId) roomId = usp.get('startapp') || '';
+
+  // Decode if URL-encoded
+  if (roomId) roomId = decodeURIComponent(roomId);
+
+  // Get player name from Telegram user data
+  let playerName = '';
+  if (tg) {
+    const u = tg.initDataUnsafe?.user;
+    if (u) {
+      playerName = [u.first_name, u.last_name].filter(Boolean).join(' ')
+        || u.username || '';
+    }
+  }
+  if (!playerName) playerName = `Player${Math.floor(Math.random() * 1000)}`;
+
+  if (roomId) {
+    // We have everything we need — skip the join screen entirely
+    document.getElementById('room-in').value = roomId;
+    document.getElementById('name-in').value = playerName;
+    document.getElementById('join-overlay').style.display = 'none';
+    myName = playerName;
+    myRoom = roomId;
+    initCanvases();
+    connect();
+    console.log('[join] Auto-joined room=' + roomId + ' name=' + playerName);
+  } else {
+    // No room found — show join screen (manual entry fallback)
+    document.getElementById('name-in').value = playerName;
+    console.log('[join] No room found, showing join screen');
+  }
+})();
 })();
 </script>
 </body>

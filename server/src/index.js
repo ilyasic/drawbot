@@ -124,6 +124,7 @@ function makeRoom(id, chatId) {
     liveMessageId: null,
     scores:        new Map(),   // name → total score
     roundNumber:   0,
+    roundStartTime:0,
     drawerQueue:   [],          // rotation queue of clientIds
   };
 }
@@ -259,6 +260,7 @@ function startRound(room) {
   room.roundActive   = true;
   room.liveMessageId = null;
   room.roundNumber  += 1;
+  room.roundStartTime = Date.now(); // for time-based scoring
   room.currentDrawer = pickDrawer(room);
   room.drawerName    = room.clients.get(room.currentDrawer)?.name || 'Someone';
   room.word          = pickWord();
@@ -430,12 +432,12 @@ bot.on('text', async (ctx) => {
     room.guesses.add(userId);
     // Score: 100 - 10 per hint revealed
     const hintsRevealed = room.hintRevealed.filter(Boolean).length;
-    const pts = Math.max(10, 100 - hintsRevealed*10);
+    const elapsed   = (Date.now() - (room.roundStartTime||Date.now())) / 1000;
+    const timeBonus = Math.max(0, Math.floor((ROUND_DURATION_MS/1000 - elapsed) / 10));
+    const pts = Math.max(10, 100 - hintsRevealed*10 + timeBonus);
     room.scores.set(name, (room.scores.get(name)||0) + pts);
-    // Drawer gets points too
-    const drawerPts = 50;
-    room.scores.set(room.drawerName, (room.scores.get(room.drawerName)||0) + drawerPts);
-    bcast(room, { type:'score_update', name, pts, board: getLeaderboard(room) });
+    room.scores.set(room.drawerName, (room.scores.get(room.drawerName)||0) + 50);
+    bcast(room, { type:'score_update', name, pts, timeBonus, board: getLeaderboard(room) });
     await endRound(room, name);
   }
 });
@@ -511,10 +513,12 @@ wss.on('connection', (ws, req) => {
         if (ok) {
           room.guesses.add(userId);
           const hintsRevealed = room.hintRevealed.filter(Boolean).length;
-          const pts = Math.max(10, 100 - hintsRevealed*10);
+          const elapsed   = (Date.now() - (room.roundStartTime||Date.now())) / 1000;
+          const timeBonus = Math.max(0, Math.floor((ROUND_DURATION_MS/1000 - elapsed) / 10));
+          const pts = Math.max(10, 100 - hintsRevealed*10 + timeBonus);
           room.scores.set(name, (room.scores.get(name)||0) + pts);
           room.scores.set(room.drawerName, (room.scores.get(room.drawerName)||0) + 50);
-          bcast(room, { type:'score_update', name, pts, board: getLeaderboard(room) });
+          bcast(room, { type:'score_update', name, pts, timeBonus, board: getLeaderboard(room) });
           endRound(room, name);
         }
         break;

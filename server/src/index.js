@@ -653,19 +653,30 @@ async function launchBot() {
       { command:'leaderboard', description:'Show scores' },
     ]);
 
-    // Check webhook status — never set or delete it here.
-    // Railway overlapping deploys cause race conditions if we touch the webhook.
-    // Webhook is registered once manually via browser and stays forever.
+    // Check current webhook and auto-register if missing or wrong
     const infoResult = await telegramPost('getWebhookInfo', {});
     const info = infoResult.result || {};
     console.log(`🤖 @${botUsername} ready`);
-    console.log(`[bot] webhook="${info.url||'NOT SET'}"`);
     console.log(`[bot] pending=${info.pending_update_count} last_error=${info.last_error_message||'none'}`);
-    if (!info.url) {
-      console.warn('[bot] ⚠️  Webhook not set — register it manually in your browser:');
-      console.warn(`[bot] https://api.telegram.org/bot${BOT_TOKEN}/setWebhook?url=${encodeURIComponent(WEBHOOK_URL)}&allowed_updates=["message","callback_query"]`);
+
+    if (info.url === WEBHOOK_URL) {
+      console.log('[bot] ✅ Webhook already active');
     } else {
-      console.log('[bot] ✅ Webhook active');
+      // Not set or wrong URL — register it now
+      console.log(`[bot] Registering webhook (current="${info.url||'none'}")...`);
+      const result = await telegramPost('setWebhook', {
+        url: WEBHOOK_URL,
+        drop_pending_updates: true,
+        allowed_updates: ['message', 'callback_query'],
+      });
+      console.log(`[bot] setWebhook: ${result.description||JSON.stringify(result)}`);
+      // Verify
+      const check = (await telegramPost('getWebhookInfo', {})).result || {};
+      if (check.url === WEBHOOK_URL) {
+        console.log('[bot] ✅ Webhook registered successfully');
+      } else {
+        console.error(`[bot] ❌ Webhook failed. Got: "${check.url||'empty'}"`);
+      }
     }
   } catch(e) {
     console.error('[bot] launchBot error:', e.message);

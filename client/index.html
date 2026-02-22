@@ -1346,6 +1346,13 @@ function getRoomId() {
   return usp.get('room') || usp.get('startapp') || '';
 }
 
+function getUrlName() {
+  // Bot passes ?name=ilyas in the URL so we know who clicked Open Canvas
+  const usp = new URLSearchParams(location.search);
+  const n = usp.get('name');
+  return n ? decodeURIComponent(n) : null;
+}
+
 function doJoin(roomId, playerName) {
   myName = playerName; myRoom = roomId;
   document.getElementById('join-overlay').style.display = 'none';
@@ -1359,15 +1366,18 @@ function doJoin(roomId, playerName) {
   const tgName    = getTgUser();
 
   // We have both — join immediately
+  const urlName = getUrlName();
   if (roomId && tgName) { doJoin(roomId, tgName); return; }
+  // URL has name param (set by bot) — use it immediately without waiting
+  if (roomId && urlName) { doJoin(roomId, urlName); return; }
 
   // Still waiting — retry for up to 2 seconds (20 × 100ms)
   if (attempt < 20) { setTimeout(() => tryAutoJoin(attempt + 1), 100); return; }
 
   // Timed out — use what we have
   if (roomId) {
-    // Have room but no Telegram name — use a readable random name
-    const fallbackName = tgName || ('Artist' + Math.floor(Math.random()*900+100));
+    // Priority: Telegram user > URL name param > random
+    const fallbackName = tgName || getUrlName() || ('Artist' + Math.floor(Math.random()*900+100));
     doJoin(roomId, fallbackName);
   } else {
     // No room ID — show manual join form with Telegram name pre-filled

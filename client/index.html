@@ -133,9 +133,13 @@ html, body {
 ──────────────────────────────────────────────────────────── */
 #toolbar {
   flex-shrink:0; display:none; flex-direction:column;
-  align-items:center; gap:10px;
-  padding:10px 16px calc(10px + env(safe-area-inset-bottom,0px));
-  background:transparent; z-index:20;
+  align-items:center; justify-content:center; gap:8px;
+  padding:10px 20px calc(10px + env(safe-area-inset-bottom,0px));
+  background:rgba(30,42,43,0.85);
+  backdrop-filter:blur(12px);
+  -webkit-backdrop-filter:blur(12px);
+  border-top:1px solid rgba(255,255,255,.06);
+  z-index:20;
 }
 #toolbar.visible { display:flex; }
 
@@ -145,22 +149,23 @@ html, body {
 
 /* The big rounded icon buttons — exactly like reference */
 .tbtn {
-  width:56px; height:56px; min-width:56px;
-  border-radius:var(--r); border:none;
-  background:var(--btn-bg); color:#fff;
-  font-size:1.3rem; cursor:pointer;
+  width:52px; height:52px; min-width:52px;
+  border-radius:13px; border:none;
+  background:rgba(196,149,106,.9); color:#fff;
+  font-size:1.25rem; cursor:pointer;
   display:flex; align-items:center; justify-content:center;
-  transition:all .14s; flex-shrink:0;
+  transition:transform .12s, background .12s; flex-shrink:0;
   -webkit-user-select:none;
-  box-shadow:0 3px 10px rgba(0,0,0,.3);
+  box-shadow:0 2px 8px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.15);
   position:relative;
+  font-family:'DM Sans',sans-serif;
 }
-.tbtn:active { transform:scale(.86); background:var(--btn-bg2); }
-.tbtn.on     { background:var(--btn-active); box-shadow:0 4px 14px rgba(196,149,106,.5); }
-.tbtn.tred   { background:#c44; }
-.tbtn.tred:active { background:#a33; }
-.tbtn.tgreen { background:#2a9c6a; }
-.tbtn.tgreen:active { background:#237a54; }
+.tbtn:active { transform:scale(.84); }
+.tbtn.on     { background:rgba(220,175,120,.95); box-shadow:0 3px 12px rgba(196,149,106,.6),inset 0 1px 0 rgba(255,255,255,.2); }
+.tbtn.tred   { background:rgba(180,60,60,.9); }
+.tbtn.tred:active { background:rgba(150,40,40,.9); }
+.tbtn.tgreen { background:rgba(42,156,106,.9); }
+.tbtn.tgreen:active { background:rgba(32,120,82,.9); }
 
 /* Size+opacity label — shown next to last btn in row 2 like reference */
 #sz-op-label {
@@ -393,6 +398,15 @@ html, body {
   #toolbar{ gap:7px; padding:8px 10px; }
   .tb-row{ gap:7px; }
 }
+
+/* Logs popup */
+#logs-popup { top:calc(var(--topbar-h) + 8px); left:50%; transform:translateX(-50%); width:min(440px,92vw); max-height:60vh; }
+#log-entries { font-family:'Courier New',monospace; font-size:.7rem; color:#8aabac; overflow-y:auto; max-height:calc(60vh - 80px); }
+.log-entry { padding:2px 4px; border-bottom:1px solid rgba(255,255,255,.04); line-height:1.5; }
+.log-entry.round { color:#c4956a; }
+.log-entry.join  { color:#3dd68c; }
+.log-entry.guess { color:#b3adff; }
+#log-clear-btn { font-size:.72rem; padding:5px 12px; border-radius:8px; background:var(--surface2); border:1px solid var(--border); color:var(--text2); cursor:pointer; }
 </style>
 </head>
 <body>
@@ -489,8 +503,23 @@ html, body {
     <div class="setting-row" id="s-skip"><span class="s-icon">⏭</span><span class="s-label">Skip word</span></div>
     <div class="setting-row" id="s-done"><span class="s-icon">✅</span><span class="s-label">Finish drawing</span></div>
     <div class="setting-row" id="s-newround"><span class="s-icon">▶</span><span class="s-label">New round</span></div>
+    <div class="pop-divider"></div>
+    <div class="setting-section">Developer</div>
+    <div class="setting-row" id="s-logs"><span class="s-icon">📋</span><span class="s-label">Server logs</span></div>
   </div>
 
+
+  <!-- Logs popup -->
+  <div class="popup" id="logs-popup">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+      <div class="pop-label">Server Logs</div>
+      <div style="display:flex;gap:6px">
+        <button id="log-refresh-btn" class="tbtn" style="width:28px;height:28px;font-size:.7rem;border-radius:7px;background:var(--surface2)">↻</button>
+        <button id="log-clear-btn">Clear</button>
+      </div>
+    </div>
+    <div id="log-entries"><div style="color:var(--text2);font-size:.72rem;padding:8px">No logs yet. Connect to load.</div></div>
+  </div>
   <!-- Players popup -->
   <div class="popup" id="players-popup">
     <div class="pop-label">Players</div>
@@ -980,6 +1009,7 @@ document.getElementById('s-send-bot').addEventListener('click',()=>{
   sendDrawingToTelegram();
   closeAllPanels();
 });
+document.getElementById('s-logs').addEventListener('click',()=>{togglePanel('logs-popup');requestLogs();closeAllPanels();setTimeout(()=>document.getElementById('logs-popup').classList.add('open'),10);});
 document.getElementById('s-gallery').addEventListener('click',()=>{
   openGallery(); closeAllPanels();
 });
@@ -1001,6 +1031,30 @@ function sendDrawingToTelegram() {
     }
   } catch(e){ showToast('Failed to send','warn'); }
 }
+
+// ── Server logs panel ────────────────────────────────────────────────────────
+function requestLogs() {
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify({type:'get_logs'}));
+}
+function renderLogs(logs) {
+  const el = document.getElementById('log-entries'); if (!el) return;
+  if (!logs.length) { el.innerHTML='<div style="color:var(--text2);font-size:.72rem;padding:8px">No logs yet.</div>'; return; }
+  el.innerHTML = logs.map(({t,msg}) => {
+    const time = new Date(t).toLocaleTimeString();
+    let cls = '';
+    if (msg.includes('[round]')) cls = 'round';
+    else if (msg.includes('joined') || msg.includes('left')) cls = 'join';
+    else if (msg.includes('guess') || msg.includes('word')) cls = 'guess';
+    return `<div class="log-entry ${cls}"><span style="color:var(--text2)">[${time}]</span> ${msg}</div>`;
+  }).join('');
+  el.scrollTop = el.scrollHeight;
+}
+
+document.getElementById('log-refresh-btn')?.addEventListener('click', requestLogs);
+document.getElementById('log-clear-btn')?.addEventListener('click', () => {
+  const el = document.getElementById('log-entries');
+  if (el) el.innerHTML = '<div style="color:var(--text2);font-size:.72rem;padding:8px">Cleared.</div>';
+});
 
 // ── Toast ─────────────────────────────────────────────────────────────────────
 let toastTimer=null;
@@ -1262,6 +1316,7 @@ function connect(){
         if(m.word&&m.drawerName) saveToGallery(m.word,m.drawerName);
         break;
       case 'leaderboard': if(m.board){updatePlayerList(m.board);updateLeaderboard(m.board);} break;
+      case 'logs': renderLogs(m.logs||[]); break;
       case 'status':
         document.getElementById('word-display').textContent=m.message;
         addChat('sys',m.message); break;

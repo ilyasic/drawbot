@@ -31,6 +31,8 @@ let   botUsername = '';
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '../../client')));
 
+app.get('/ping', (req, res) => res.send('pong'));
+
 app.get('/', (req, res) => {
   const ua = req.headers['user-agent'] || '';
   const isTelegram = /TelegramBot|Telegram/i.test(ua);
@@ -571,6 +573,22 @@ async function launchBot(retryCount=0) {
         else console.error('[bot] polling error:', e.message);
       });
     console.log(`🤖 @${botUsername} running`);
+
+  // Watchdog: restart bot if it goes silent for 5 minutes
+  let lastActivity = Date.now();
+  const origOn = bot.on.bind(bot);
+  // Touch lastActivity on any update
+  bot.use((ctx, next) => { lastActivity = Date.now(); return next(); });
+
+  setInterval(() => {
+    const silent = Date.now() - lastActivity;
+    if (silent > 5 * 60 * 1000 && !botRestartTimer) {
+      console.warn(`[bot] No activity for ${Math.round(silent/1000)}s — restarting bot`);
+      lastActivity = Date.now(); // reset so we don't spam
+      handle409(0);
+    }
+  }, 60 * 1000); // check every minute
+
   } catch(e) {
     if (e.response?.error_code===409) handle409(retryCount);
     else console.error('[bot] launch error:', e.message);
@@ -579,7 +597,7 @@ async function launchBot(retryCount=0) {
 
 function handle409(retryCount) {
   if (botRestartTimer) return;
-  if (retryCount >= 5) { console.error('[bot] giving up after 5 retries'); return; }
+  if (retryCount >= 10) { console.error('[bot] giving up after 10 retries'); return; }
   const delay = Math.min(3000 * Math.pow(2, retryCount), 30000);
   console.warn(`[bot] retry in ${delay/1000}s (${retryCount+1}/5)`);
   stopBot();
@@ -598,6 +616,22 @@ process.on('uncaughtException', err => {
 server.listen(PORT, () => {
   console.log(`✅ http://localhost:${PORT}  |  📡 ${PUBLIC_URL}`);
   setTimeout(() => launchBot(), 1000);
+
+  // ── Keep-alive: self-ping every 4 min to prevent Railway sleep ──────────
+  // Railway free tier sleeps containers after ~10min of no inbound requests.
+  // Pinging our own health endpoint keeps the process alive 24/7.
+  if (PUBLIC_URL) {
+    setInterval(() => {
+      const https = require('https');
+      const http2  = require('http');
+      const url    = new URL(PUBLIC_URL + '/ping');
+      const lib    = url.protocol === 'https:' ? https : http2;
+      lib.get(url.toString(), res => {
+        console.log(`[keepalive] ping → ${res.statusCode}`);
+      }).on('error', e => console.warn('[keepalive] ping failed:', e.message));
+    }, 4 * 60 * 1000); // every 4 minutes
+    console.log('[keepalive] Self-ping enabled every 4 min');
+  }
 });
 
 process.once('SIGINT',  () => { stopBot(); server.close(); });

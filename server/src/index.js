@@ -13,7 +13,10 @@ const PORT               = process.env.PORT || 3000;
 // FUTURE OPTION: set ALLOW_EXTERNAL_URL=true in Railway env vars to let
 // players open the canvas in an external browser (outside Telegram).
 // Currently false — canvas only opens inside Telegram as a Mini App.
-const ALLOW_EXTERNAL_URL = process.env.ALLOW_EXTERNAL_URL === 'true';
+const ALLOW_EXTERNAL_URL  = process.env.ALLOW_EXTERNAL_URL === 'true';
+// Registered Mini App short name from BotFather (/newapp → short name)
+// Full link: t.me/BOT/SHORT_NAME?startapp=ROOMID → opens Mini App directly in group
+const WEBAPP_SHORT_NAME   = process.env.WEBAPP_SHORT_NAME || 'draw1';
 
 if (!BOT_TOKEN)  { console.error('BOT_TOKEN missing'); process.exit(1); }
 if (!PUBLIC_URL) { console.error('PUBLIC_URL missing'); process.exit(1); }
@@ -329,12 +332,12 @@ async function endRound(room, guesserName) {
 // and auto-joins, skipping the manual join screen entirely.
 // ─────────────────────────────────────────────────────────────────────────────
 bot.command('startgame', async (ctx) => {
-  // ── Private chat ────────────────────────────────────────────────────────────
+  // ── Private chat ─────────────────────────────────────────────────────────
   if (ctx.chat.type === 'private') {
     const roomId    = `solo_${ctx.from.id}`;
     const canvasUrl = `${PUBLIC_URL}/?room=${encodeURIComponent(roomId)}`;
     await ctx.reply(
-      `🎨 *Draw & Guess*\n\nThis works best in a group — add me and use /startgame there.\n\n_Solo practice: tap below 👇_`,
+      `🎨 *Draw & Guess*\n\nWorks best in a group! Add me and use /startgame there.\n\n_Solo: tap below 👇_`,
       {
         parse_mode: 'Markdown',
         ...Markup.inlineKeyboard([[Markup.button.webApp('🖌 Open Canvas', canvasUrl)]]),
@@ -343,11 +346,9 @@ bot.command('startgame', async (ctx) => {
     return;
   }
 
-  // ── Group chat ──────────────────────────────────────────────────────────────
-  const roomId  = String(ctx.chat.id);
-  // FIX: use the numeric chat ID directly — Telegraf gives it as a number already.
-  // Supergroup IDs like -1003812843449 must stay numeric for setChatMenuButton.
-  const chatId  = ctx.chat.id; // number, not string
+  // ── Group / Supergroup ────────────────────────────────────────────────────
+  const roomId = String(ctx.chat.id);
+  const chatId = ctx.chat.id;
 
   if (!rooms.has(roomId)) {
     rooms.set(roomId, makeRoom(roomId, chatId));
@@ -355,48 +356,35 @@ bot.command('startgame', async (ctx) => {
     rooms.get(roomId).chatId = chatId;
   }
 
-  const canvasUrl = `${PUBLIC_URL}/?room=${encodeURIComponent(roomId)}`;
-
-  // FIX: guard against botUsername not yet set (race between /startgame and launchBot)
-  const safeBotUsername = botUsername || (await bot.telegram.getMe().then(m => { botUsername = m.username; return m.username; }).catch(() => ''));
-  if (!safeBotUsername) {
-    console.error('[bot] botUsername still empty — cannot build startapp link');
-    return ctx.reply('Bot is still starting up, please wait a few seconds and try again.');
+  // Ensure botUsername is populated
+  if (!botUsername) {
+    try {
+      const me = await bot.telegram.getMe();
+      botUsername = me.username;
+    } catch (e) {
+      console.error('[bot] getMe failed:', e.message);
+      return ctx.reply('Bot is still starting, please try again in a moment.');
+    }
   }
 
-  const startappLink = `https://t.me/${safeBotUsername}?startapp=${encodeURIComponent(roomId)}`;
-  console.log(`[bot] /startgame room=${roomId} type=${ctx.chat.type} chatId=${chatId}`);
+  console.log(`[bot] /startgame room=${roomId} type=${ctx.chat.type} bot=@${botUsername}`);
 
-  // ── Attempt 1: setChatMenuButton — true in-group Mini App, no private chat ──
-  // Requires bot admin with "Change Group Info" permission
-  let menuButtonSet = false;
-  try {
-    await bot.telegram.setChatMenuButton({
-      chatId,  // numeric — fixes "invalid chat_id" for supergroups
-      menuButton: { type: 'web_app', text: '🖌 Draw!', web_app: { url: canvasUrl } },
-    });
-    menuButtonSet = true;
-    console.log(`[bot] ✅ setChatMenuButton OK for chatId=${chatId}`);
-  } catch (e) {
-    console.warn(`[bot] ⚠️ setChatMenuButton failed (${e.response?.error_code}): ${e.response?.description || e.message}`);
-  }
+  // ── Registered Web App deep link (1 tap, opens Mini App directly in group) ─
+  // Format: t.me/BOT/SHORT_NAME?startapp=ROOMID
+  // Because the bot has a registered Web App (/newapp in BotFather),
+  // this link opens the Mini App as a native Telegram overlay — no private chat,
+  // no extra taps, fully trusted inside Telegram.
+  const startappLink = `https://t.me/${botUsername}/${WEBAPP_SHORT_NAME}?startapp=${encodeURIComponent(roomId)}`;
 
-  // ── Reply ───────────────────────────────────────────────────────────────────
-  if (menuButtonSet) {
-    await ctx.reply(
-      `🎨 *Draw & Guess is ready!*\n\n👇 Tap *🖌 Draw!* next to the message box to open the canvas.\nEveryone else: type your guesses here!`,
-      { parse_mode: 'Markdown' }
-    );
-  } else {
-    // Fallback: ?startapp= link — fully inside Telegram, opens Mini App instantly
-    await ctx.reply(
-      `🎨 *Draw & Guess is ready!*\n\n👇 Tap *🖌 Open Canvas* to play inside Telegram!\nEveryone else: type your guesses here!`,
-      {
-        parse_mode: 'Markdown',
-        ...Markup.inlineKeyboard([[Markup.button.url('🖌 Open Canvas', startappLink)]]),
-      }
-    );
-  }
+  console.log(`[bot] startappLink=${startappLink}`);
+
+  await ctx.reply(
+    `🎨 *Draw & Guess is ready!*\n\n👇 Tap *🖌 Open Canvas* to draw right here in Telegram!\nEveryone else: type your guesses in the chat!`,
+    {
+      parse_mode: 'Markdown',
+      ...Markup.inlineKeyboard([[Markup.button.url('🖌 Open Canvas', startappLink)]]),
+    }
+  );
 });
 // PRIVATE: /start — deep-link fallback (still works from old links)
 bot.command('start', async (ctx) => {

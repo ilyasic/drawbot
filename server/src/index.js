@@ -280,17 +280,43 @@ async function endRound(room, guesserName) {
 //   /mybots → your bot → Bot Settings → Menu Button → Set URL → <PUBLIC_URL>
 // ─────────────────────────────────────────────────────────────────────────────
 
-// GROUP: /startgame → opens canvas directly in-group via webApp button
+// ── Bot commands ─────────────────────────────────────────────────────────────
+//
+// MINI APP IN TELEGRAM — HOW IT WORKS
+//
+// Telegram has strict rules on where webApp buttons are allowed:
+//
+//   ❌ ctx.reply() in a group   → BUTTON_TYPE_INVALID (what we had)
+//   ❌ Inline keyboard on group message → not allowed by Telegram API
+//   ✅ Menu Button (☰ beside text input) → works in ANY chat, set via bot API
+//   ✅ Private chat reply → always works
+//   ✅ Inline query answer → works but requires user to type @bot
+//
+// SOLUTION: Set the Menu Button for the group chat when /startgame is called.
+// The bot calls setChatMenuButton() for that specific group, which changes the
+// ☰ icon next to the message input into a branded Mini App launcher button.
+// Users tap it → canvas opens as a real Telegram Mini App, fully trusted,
+// no external browser, no private chat needed.
+//
+// ALSO: /startgame still sends a message telling users HOW to open it (tap ☰).
+// ─────────────────────────────────────────────────────────────────────────────
+
+// GROUP: /startgame → sets Menu Button for this group → no private chat needed
 bot.command('startgame', async (ctx) => {
   if (ctx.chat.type === 'private') {
-    // Solo preview mode
+    // In private, we CAN use a webApp button directly
     const canvasUrl = `${PUBLIC_URL}/?room=solo_${ctx.from.id}`;
+    try {
+      await bot.telegram.setChatMenuButton({
+        chatId: ctx.chat.id,
+        menuButton: { type: 'web_app', text: '🖌 Canvas', web_app: { url: canvasUrl } },
+      });
+    } catch (e) {
+      console.warn('[bot] setChatMenuButton (private) failed:', e.message);
+    }
     return ctx.reply(
-      `👋 *Draw & Guess* is designed for groups!\n\nAdd me to a group and use /startgame there.\n\n_Or tap below to try the canvas solo:_`,
-      {
-        parse_mode: 'Markdown',
-        ...Markup.inlineKeyboard([[Markup.button.webApp('🖌 Try Canvas (solo)', canvasUrl)]]),
-      }
+      `🎨 *Draw & Guess* is better in a group!\n\nAdd me to a group and use /startgame.\n\n_Solo mode: tap the *🖌 Canvas* button next to the text box below!_`,
+      { parse_mode: 'Markdown' }
     );
   }
 
@@ -298,24 +324,40 @@ bot.command('startgame', async (ctx) => {
   if (!rooms.has(roomId)) {
     rooms.set(roomId, makeRoom(roomId, ctx.chat.id));
   } else {
-    rooms.get(roomId).chatId = ctx.chat.id; // re-link after bot restart
+    rooms.get(roomId).chatId = ctx.chat.id;
   }
 
   const canvasUrl = `${PUBLIC_URL}/?room=${encodeURIComponent(roomId)}`;
   console.log(`[bot] /startgame room=${roomId} canvasUrl=${canvasUrl}`);
 
+  // Set the Menu Button (☰) for THIS specific group chat to open the Mini App
+  try {
+    await bot.telegram.setChatMenuButton({
+      chatId: ctx.chat.id,
+      menuButton: { type: 'web_app', text: '🖌 Draw!', web_app: { url: canvasUrl } },
+    });
+    console.log(`[bot] Menu button set for chat ${ctx.chat.id}`);
+  } catch (e) {
+    console.error('[bot] setChatMenuButton failed:', e.message);
+    // Fallback: send a deep-link to private chat if Menu Button fails
+    const deepLink = `https://t.me/${botUsername}?start=${encodeURIComponent(roomId)}`;
+    await ctx.reply(
+      `🎨 *Draw & Guess Started!*\n\n⚠️ Couldn't set menu button — tap below to open canvas via private chat:`,
+      {
+        parse_mode: 'Markdown',
+        ...Markup.inlineKeyboard([[Markup.button.url('▶️ Open Canvas', deepLink)]]),
+      }
+    );
+    return;
+  }
+
   await ctx.reply(
-    `🎨 *Draw & Guess!*\n\nTap *🖌 Open Canvas* — the drawing board opens right here!\n\nEveryone else: type your guesses in this chat.`,
-    {
-      parse_mode: 'Markdown',
-      ...Markup.inlineKeyboard([
-        [Markup.button.webApp('🖌 Open Canvas', canvasUrl)],
-      ]),
-    }
+    `🎨 *Draw & Guess is ready!*\n\n👇 Tap the *🖌 Draw!* button next to the message box to open the canvas!\n\nEveryone else: type your guesses here in the chat.`,
+    { parse_mode: 'Markdown' }
   );
 });
 
-// PRIVATE: /start — backwards compatibility with any old deep links
+// PRIVATE: /start — handles deep-link fallback & direct private use
 bot.command('start', async (ctx) => {
   if (ctx.chat.type !== 'private') return;
   const parts  = ctx.message.text.split(' ');
@@ -331,6 +373,8 @@ bot.command('start', async (ctx) => {
   }
 
   const canvasUrl = `${PUBLIC_URL}/?room=${encodeURIComponent(roomId)}`;
+
+  // In private chat we can use a real webApp button
   await ctx.reply(
     `🎨 *Draw & Guess* — tap to open the canvas:`,
     {

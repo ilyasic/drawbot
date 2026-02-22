@@ -52,11 +52,11 @@ app.get('/', (req, res) => {
   res.send('OK');
 });
 
-// ── Webhook secret and route (must be defined before server.listen) ──────────
-const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET ||
-  require('crypto').createHash('sha256').update(BOT_TOKEN).digest('hex').slice(0,32);
+// Fixed webhook path — set WEBHOOK_SECRET in Railway env vars to customize
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || 'tgbot';
 const WEBHOOK_PATH   = `/webhook/${WEBHOOK_SECRET}`;
 const WEBHOOK_URL    = `${PUBLIC_URL}${WEBHOOK_PATH}`;
+console.log('[config] Webhook path:', WEBHOOK_PATH);
 
 // Telegram POSTs updates to this endpoint
 app.post(WEBHOOK_PATH, async (req, res) => {

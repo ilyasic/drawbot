@@ -24,7 +24,7 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, '../../client')));
 
 // ── Render canvas PNG ─────────────────────────────────────────────────────────
-const CW = 800, CH = 560;
+const CW = 1600, CH = 1000;
 
 function hexToInt(hex) {
   try {
@@ -62,9 +62,9 @@ async function renderPNG(strokes, drawerName, word, done) {
     const r=Math.max(1,Math.round((s.size||4)*0.9));
     for (let i=1;i<pts.length;i++) {
       plotLine(img,
-        pts[i-1][0]*CW/800, pts[i-1][1]*(CH-50)/500,
-        pts[i][0]*CW/800,   pts[i][1]*(CH-50)/500,
-        col, r);
+        pts[i-1][0]*2, pts[i-1][1]*2,
+        pts[i][0]*2,   pts[i][1]*2,
+        col, r*2);
     }
   }
   const barCol = done ? 0x2dc653FF : 0x1a1a2eFF;

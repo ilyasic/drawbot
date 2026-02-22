@@ -333,7 +333,6 @@ bot.command('startgame', async (ctx) => {
   if (ctx.chat.type === 'private') {
     const roomId    = `solo_${ctx.from.id}`;
     const canvasUrl = `${PUBLIC_URL}/?room=${encodeURIComponent(roomId)}`;
-    // webApp button works fine in private chat replies
     await ctx.reply(
       `🎨 *Draw & Guess*\n\nThis works best in a group — add me and use /startgame there.\n\n_Solo practice: tap below 👇_`,
       {
@@ -345,47 +344,53 @@ bot.command('startgame', async (ctx) => {
   }
 
   // ── Group chat ──────────────────────────────────────────────────────────────
-  const roomId = String(ctx.chat.id);
+  const roomId  = String(ctx.chat.id);
+  // FIX: use the numeric chat ID directly — Telegraf gives it as a number already.
+  // Supergroup IDs like -1003812843449 must stay numeric for setChatMenuButton.
+  const chatId  = ctx.chat.id; // number, not string
+
   if (!rooms.has(roomId)) {
-    rooms.set(roomId, makeRoom(roomId, ctx.chat.id));
+    rooms.set(roomId, makeRoom(roomId, chatId));
   } else {
-    rooms.get(roomId).chatId = ctx.chat.id;
+    rooms.get(roomId).chatId = chatId;
   }
 
-  const canvasUrl     = `${PUBLIC_URL}/?room=${encodeURIComponent(roomId)}`;
-  // ?startapp= deep link: opens private chat and launches Mini App INSTANTLY
-  // This is fully inside Telegram — NOT an external browser link
-  const startappLink  = `https://t.me/${botUsername}?startapp=${encodeURIComponent(roomId)}`;
+  const canvasUrl = `${PUBLIC_URL}/?room=${encodeURIComponent(roomId)}`;
 
-  console.log(`[bot] /startgame room=${roomId} type=${ctx.chat.type}`);
+  // FIX: guard against botUsername not yet set (race between /startgame and launchBot)
+  const safeBotUsername = botUsername || (await bot.telegram.getMe().then(m => { botUsername = m.username; return m.username; }).catch(() => ''));
+  if (!safeBotUsername) {
+    console.error('[bot] botUsername still empty — cannot build startapp link');
+    return ctx.reply('Bot is still starting up, please wait a few seconds and try again.');
+  }
 
-  // ── Attempt 1: setChatMenuButton (true in-group, no private chat at all) ───
-  // Requires bot to be admin WITH "Change Group Info" permission
+  const startappLink = `https://t.me/${safeBotUsername}?startapp=${encodeURIComponent(roomId)}`;
+  console.log(`[bot] /startgame room=${roomId} type=${ctx.chat.type} chatId=${chatId}`);
+
+  // ── Attempt 1: setChatMenuButton — true in-group Mini App, no private chat ──
+  // Requires bot admin with "Change Group Info" permission
   let menuButtonSet = false;
   try {
     await bot.telegram.setChatMenuButton({
-      chatId: ctx.chat.id,
+      chatId,  // numeric — fixes "invalid chat_id" for supergroups
       menuButton: { type: 'web_app', text: '🖌 Draw!', web_app: { url: canvasUrl } },
     });
     menuButtonSet = true;
-    console.log(`[bot] ✅ setChatMenuButton OK — chat ${ctx.chat.id}`);
+    console.log(`[bot] ✅ setChatMenuButton OK for chatId=${chatId}`);
   } catch (e) {
     console.warn(`[bot] ⚠️ setChatMenuButton failed (${e.response?.error_code}): ${e.response?.description || e.message}`);
-    console.warn(`[bot] Tip: make sure bot is admin with "Change Group Info" permission`);
   }
 
-  // ── Reply based on result ───────────────────────────────────────────────────
+  // ── Reply ───────────────────────────────────────────────────────────────────
   if (menuButtonSet) {
-    // Best case: Mini App button appears right next to the message input in-group
     await ctx.reply(
       `🎨 *Draw & Guess is ready!*\n\n👇 Tap *🖌 Draw!* next to the message box to open the canvas.\nEveryone else: type your guesses here!`,
       { parse_mode: 'Markdown' }
     );
   } else {
-    // Fallback: ?startapp= button — still fully inside Telegram (not external)
-    // Opens private chat → Mini App launches immediately with no extra taps
+    // Fallback: ?startapp= link — fully inside Telegram, opens Mini App instantly
     await ctx.reply(
-      `🎨 *Draw & Guess is ready!*\n\n👇 Tap *🖌 Open Canvas* — opens inside Telegram!\nEveryone else: type your guesses here!`,
+      `🎨 *Draw & Guess is ready!*\n\n👇 Tap *🖌 Open Canvas* to play inside Telegram!\nEveryone else: type your guesses here!`,
       {
         parse_mode: 'Markdown',
         ...Markup.inlineKeyboard([[Markup.button.url('🖌 Open Canvas', startappLink)]]),

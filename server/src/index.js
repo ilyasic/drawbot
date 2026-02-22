@@ -29,15 +29,17 @@ const bot    = new Telegraf(BOT_TOKEN);
 let   botUsername = '';
 
 app.use(express.json());
-app.use(express.static(path.join(__dirname, '../../client')));
 
-// Log every incoming request so we can see if Telegram is hitting us at all
+// Log every incoming request BEFORE static so we see everything
 app.use((req, res, next) => {
-  if (req.path !== '/ping') { // skip keepalive noise
-    console.log(`[http] ${req.method} ${req.path} ua=${(req.headers['user-agent']||'').slice(0,40)}`);
+  if (req.path !== '/ping') {
+    console.log(`[http] ${req.method} ${req.path}`);
   }
   next();
 });
+
+// Static files AFTER logging and webhook routes
+// (registered below after webhook route)
 
 app.get('/ping', (req, res) => res.send('pong'));
 
@@ -75,6 +77,9 @@ app.post(WEBHOOK_PATH, async (req, res) => {
 
 // Quick test endpoint to confirm webhook path is reachable
 app.get(WEBHOOK_PATH, (req, res) => res.send('Webhook endpoint active ✅'));
+
+// Static files served last — after all API/webhook routes
+app.use(express.static(path.join(__dirname, '../../client')));
 
 
 // ── Canvas render (PNG for Telegram) ─────────────────────────────────────────
@@ -637,7 +642,9 @@ function telegramPost(method, body) {
 
 async function launchBot() {
   try {
-    // Register bot commands
+    const me = await bot.telegram.getMe();
+    botUsername = me.username;
+
     await bot.telegram.setMyCommands([
       { command:'startgame',   description:'Start Draw & Guess' },
       { command:'stopgame',    description:'Stop the game' },
@@ -646,32 +653,19 @@ async function launchBot() {
       { command:'leaderboard', description:'Show scores' },
     ]);
 
-    // Get bot info
-    const me = await bot.telegram.getMe();
-    botUsername = me.username;
-
-    // Register webhook directly via raw HTTPS POST — guaranteed correct format
-    console.log(`[bot] Registering webhook → ${WEBHOOK_URL}`);
-    const setResult = await telegramPost('setWebhook', {
-      url:                  WEBHOOK_URL,
-      drop_pending_updates: true,
-      allowed_updates:      ['message', 'callback_query'],
-    });
-    console.log(`[bot] setWebhook response:`, JSON.stringify(setResult));
-
-    // Verify it took effect
+    // Check webhook status — never set or delete it here.
+    // Railway overlapping deploys cause race conditions if we touch the webhook.
+    // Webhook is registered once manually via browser and stays forever.
     const infoResult = await telegramPost('getWebhookInfo', {});
     const info = infoResult.result || {};
     console.log(`🤖 @${botUsername} ready`);
-    console.log(`[bot] webhook_url="${info.url}"`);
+    console.log(`[bot] webhook="${info.url||'NOT SET'}"`);
     console.log(`[bot] pending=${info.pending_update_count} last_error=${info.last_error_message||'none'}`);
-
-    if (info.url !== WEBHOOK_URL) {
-      console.error(`[bot] ❌ Webhook URL mismatch! Expected: ${WEBHOOK_URL} Got: ${info.url}`);
-      console.error(`[bot] Retrying in 5s...`);
-      setTimeout(launchBot, 5000);
+    if (!info.url) {
+      console.warn('[bot] ⚠️  Webhook not set — register it manually in your browser:');
+      console.warn(`[bot] https://api.telegram.org/bot${BOT_TOKEN}/setWebhook?url=${encodeURIComponent(WEBHOOK_URL)}&allowed_updates=["message","callback_query"]`);
     } else {
-      console.log(`[bot] ✅ Webhook confirmed active`);
+      console.log('[bot] ✅ Webhook active');
     }
   } catch(e) {
     console.error('[bot] launchBot error:', e.message);
@@ -700,11 +694,11 @@ server.listen(PORT, () => {
 });
 
 async function gracefulShutdown(signal) {
-  console.log(`[shutdown] ${signal} received — deleting webhook`);
-  try { await bot.telegram.deleteWebhook(); console.log('[shutdown] Webhook deleted'); }
-  catch(e) { console.warn('[shutdown] deleteWebhook failed:', e.message); }
+  // DO NOT delete webhook — Railway starts new instance before killing old one.
+  // Deleting webhook on shutdown would break the already-running new instance.
+  console.log(`[shutdown] ${signal} — keeping webhook alive for new instance`);
   server.close(() => { console.log('[shutdown] Server closed'); process.exit(0); });
-  setTimeout(() => process.exit(1), 5000); // force-exit after 5s if not clean
+  setTimeout(() => process.exit(1), 5000);
 }
 
 process.on('unhandledRejection', reason => {

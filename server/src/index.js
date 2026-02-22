@@ -595,9 +595,33 @@ app.post(WEBHOOK_PATH, async (req, res) => {
   }
 });
 
+// Call Telegram API directly with raw HTTPS — bypasses any Telegraf wrapper bugs
+function telegramPost(method, body) {
+  return new Promise((resolve, reject) => {
+    const https   = require('https');
+    const payload = JSON.stringify(body);
+    const req = https.request({
+      hostname: 'api.telegram.org',
+      path:     `/bot${BOT_TOKEN}/${method}`,
+      method:   'POST',
+      headers:  { 'Content-Type':'application/json', 'Content-Length':Buffer.byteLength(payload) },
+    }, res => {
+      let data = '';
+      res.on('data', d => data += d);
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)); }
+        catch(e) { reject(new Error('Bad JSON: ' + data)); }
+      });
+    });
+    req.on('error', reject);
+    req.write(payload);
+    req.end();
+  });
+}
+
 async function launchBot() {
   try {
-    // Register commands
+    // Register bot commands
     await bot.telegram.setMyCommands([
       { command:'startgame',   description:'Start Draw & Guess' },
       { command:'stopgame',    description:'Stop the game' },
@@ -606,22 +630,35 @@ async function launchBot() {
       { command:'leaderboard', description:'Show scores' },
     ]);
 
-    // Set the webhook — Telegram will now POST updates to our URL
-    await bot.telegram.setWebhook(WEBHOOK_URL, {
-      drop_pending_updates: true, // ignore queued updates from previous instance
-      allowed_updates: ['message', 'callback_query'],
-      // Note: secret is embedded in the path itself — no secret_token header needed
+    // Get bot info
+    const me = await bot.telegram.getMe();
+    botUsername = me.username;
+
+    // Register webhook directly via raw HTTPS POST — guaranteed correct format
+    console.log(`[bot] Registering webhook → ${WEBHOOK_URL}`);
+    const setResult = await telegramPost('setWebhook', {
+      url:                  WEBHOOK_URL,
+      drop_pending_updates: true,
+      allowed_updates:      ['message', 'callback_query'],
     });
+    console.log(`[bot] setWebhook response:`, JSON.stringify(setResult));
 
-    const info = await bot.telegram.getWebhookInfo();
-    botUsername = (await bot.telegram.getMe()).username;
+    // Verify it took effect
+    const infoResult = await telegramPost('getWebhookInfo', {});
+    const info = infoResult.result || {};
+    console.log(`🤖 @${botUsername} ready`);
+    console.log(`[bot] webhook_url="${info.url}"`);
+    console.log(`[bot] pending=${info.pending_update_count} last_error=${info.last_error_message||'none'}`);
 
-    console.log(`🤖 @${botUsername} webhook active → ${WEBHOOK_URL}`);
-    console.log(`[bot] pending=${info.pending_update_count} last_error=${info.last_error_message||'none'} last_error_date=${info.last_error_date||'none'}`);
-    console.log(`[bot] webhook_url=${info.url} has_custom_certificate=${info.has_custom_certificate}`);
+    if (info.url !== WEBHOOK_URL) {
+      console.error(`[bot] ❌ Webhook URL mismatch! Expected: ${WEBHOOK_URL} Got: ${info.url}`);
+      console.error(`[bot] Retrying in 5s...`);
+      setTimeout(launchBot, 5000);
+    } else {
+      console.log(`[bot] ✅ Webhook confirmed active`);
+    }
   } catch(e) {
     console.error('[bot] launchBot error:', e.message);
-    // Retry after 5s — non-fatal, server still handles WebSocket game
     setTimeout(launchBot, 5000);
   }
 }

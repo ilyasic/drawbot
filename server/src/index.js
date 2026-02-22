@@ -43,13 +43,13 @@ app.use((req, res, next) => {
 
 app.get('/ping', (req, res) => res.send('pong'));
 
-app.get('/', (req, res) => {
+app.get('/', (req, res, next) => {
   const ua = req.headers['user-agent'] || '';
   const isTelegram = /TelegramBot|Telegram/i.test(ua);
   if (!ALLOW_EXTERNAL_URL && !isTelegram && /text\/html/i.test(req.headers['accept'] || '')) {
     return res.status(403).send('<h2 style="font-family:sans-serif;padding:2rem">Open inside Telegram only 🎨</h2>');
   }
-  res.send('OK');
+  next(); // let express.static serve index.html
 });
 
 // Fixed webhook path — set WEBHOOK_SECRET in Railway env vars to customize

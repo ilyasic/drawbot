@@ -327,8 +327,8 @@ outer.addEventListener('touchstart',e=>{
     pinching=true;
     lastPinchD=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,
       e.touches[0].clientY-e.touches[1].clientY);
-    lastPinchM={(x:(e.touches[0].clientX+e.touches[1].clientX)/2,
-      y:(e.touches[0].clientY+e.touches[1].clientY)/2)};
+    lastPinchM={x:(e.touches[0].clientX+e.touches[1].clientX)/2,
+      y:(e.touches[0].clientY+e.touches[1].clientY)/2};
     e.preventDefault();
   }
 },{passive:false});
@@ -337,8 +337,8 @@ outer.addEventListener('touchmove',e=>{
     e.preventDefault();
     const d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,
       e.touches[0].clientY-e.touches[1].clientY);
-    const m={(x:(e.touches[0].clientX+e.touches[1].clientX)/2,
-      y:(e.touches[0].clientY+e.touches[1].clientY)/2)};
+    const m={x:(e.touches[0].clientX+e.touches[1].clientX)/2,
+      y:(e.touches[0].clientY+e.touches[1].clientY)/2};
     if(lastPinchD>0) zoomAt(d/lastPinchD,m.x,m.y);
     panX+=m.x-lastPinchM.x;panY+=m.y-lastPinchM.y;
     lastPinchD=d;lastPinchM=m;applyT();
@@ -722,54 +722,68 @@ document.getElementById('room-in').addEventListener('keydown',e=>{if(e.key==='En
 //   3. ?startapp= param        (alternative Telegram param name)
 //   4. Nothing found → show join screen so user can enter manually
 
-(function autoJoin() {
+// ── Auto-join ──────────────────────────────────────────────────────────────
+// tg.initDataUnsafe is only guaranteed to be populated AFTER tg.ready() fires.
+// We poll briefly to catch the case where the Mini App data arrives slightly late.
+function getAutoJoinData() {
   const usp = new URLSearchParams(location.search);
 
-  // Priority 1: tg.initDataUnsafe.start_param
-  //   → set when opened via t.me/bot?startapp=ROOMID (our group button)
-  //   → most reliable source when running as a real Mini App
+  // Priority 1: tg.initDataUnsafe.start_param (from ?startapp= or setChatMenuButton)
   let roomId = '';
   if (tg) {
     const sp = tg.initDataUnsafe?.start_param;
     if (sp) roomId = decodeURIComponent(sp);
   }
 
-  // Priority 2: ?room= URL param (direct URL access / setChatMenuButton)
+  // Priority 2: ?room= URL param (setChatMenuButton passes this in the URL)
   if (!roomId) roomId = usp.get('room') || '';
 
-  // Priority 3: ?startapp= URL param (some Telegram clients append it)
+  // Priority 3: ?startapp= URL param fallback
   if (!roomId) roomId = usp.get('startapp') || '';
 
-  // Final decode pass (in case of double-encoding)
+  // Decode if double-encoded
   if (roomId) try { roomId = decodeURIComponent(roomId); } catch {}
 
-  // Get player name from Telegram user data
+  // Player name from Telegram
   let playerName = '';
   if (tg) {
     const u = tg.initDataUnsafe?.user;
-    if (u) {
-      playerName = [u.first_name, u.last_name].filter(Boolean).join(' ')
-        || u.username || '';
-    }
+    if (u) playerName = [u.first_name, u.last_name].filter(Boolean).join(' ') || u.username || '';
   }
   if (!playerName) playerName = `Player${Math.floor(Math.random() * 1000)}`;
 
+  return { roomId, playerName };
+}
+
+function doAutoJoin(roomId, playerName) {
+  document.getElementById('room-in').value  = roomId;
+  document.getElementById('name-in').value  = playerName;
+  document.getElementById('join-overlay').style.display = 'none';
+  myName = playerName;
+  myRoom = roomId;
+  initCanvases();
+  connect();
+  console.log('[join] Auto-joined room=' + roomId + ' name=' + playerName);
+}
+
+(function tryAutoJoin(attempt) {
+  const { roomId, playerName } = getAutoJoinData();
+
   if (roomId) {
-    // We have everything we need — skip the join screen entirely
-    document.getElementById('room-in').value = roomId;
-    document.getElementById('name-in').value = playerName;
-    document.getElementById('join-overlay').style.display = 'none';
-    myName = playerName;
-    myRoom = roomId;
-    initCanvases();
-    connect();
-    console.log('[join] Auto-joined room=' + roomId + ' name=' + playerName);
-  } else {
-    // No room found — show join screen (manual entry fallback)
-    document.getElementById('name-in').value = playerName;
-    console.log('[join] No room found, showing join screen');
+    doAutoJoin(roomId, playerName);
+    return;
   }
-})();
+
+  // tg.initDataUnsafe may not be ready yet — retry up to 10x over 1s
+  if (attempt < 10) {
+    setTimeout(() => tryAutoJoin(attempt + 1), 100);
+  } else {
+    // Give up — show join screen with name pre-filled
+    const { playerName: name } = getAutoJoinData();
+    document.getElementById('name-in').value = name;
+    console.log('[join] No room found after retries, showing join screen');
+  }
+})(0);
 })();
 </script>
 </body>

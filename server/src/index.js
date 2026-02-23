@@ -5,7 +5,7 @@ const WebSocket = require('ws');
 const path      = require('path');
 const { v4: uuidv4 } = require('uuid');
 const { Telegraf, Markup } = require('telegraf');
-const Jimp      = require('jimp');
+const { createCanvas } = require('canvas');
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const BOT_TOKEN         = process.env.BOT_TOKEN;
@@ -67,54 +67,84 @@ const WORDS = [
 function pickWord() { return WORDS[Math.floor(Math.random() * WORDS.length)]; }
 
 // ── Canvas render (PNG for Telegram chat) ─────────────────────────────────────
-const RENDER_W = 1600, RENDER_H = 1000;
+// Uses node-canvas which is identical to browser Canvas API —
+// same anti-aliasing, lineCap, lineJoin, globalAlpha as the frontend
+const CANVAS_W = 800, CANVAS_H = 500; // match frontend logical size exactly
 
-function hexToInt(hex) {
-  try {
-    const c = (hex || '#000').replace('#', '').padEnd(6, '0');
-    return Jimp.rgbaToInt(
-      parseInt(c.slice(0,2),16),
-      parseInt(c.slice(2,4),16),
-      parseInt(c.slice(4,6),16),
-      255
-    );
-  } catch { return 0x000000FF; }
-}
+const BRUSH_TYPE_MAP = {
+  pen:     { lw: 1.0, alpha: 1.0,  cap: 'round', dash: [] },
+  pencil:  { lw: 0.8, alpha: 0.75, cap: 'round', dash: [0.6, 0.3] }, // relative to size
+  marker:  { lw: 1.4, alpha: 0.6,  cap: 'round', dash: [] },
+  bristle: { lw: 0.3, alpha: 0.4,  cap: 'round', dash: [] }, // drawn as multiple lines
+  flat:    { lw: 2.5, alpha: 1.0,  cap: 'square',dash: [] },
+  eraser:  { lw: 1.0, alpha: 1.0,  cap: 'round', dash: [], erase: true },
+};
 
-function plotLine(img, x0, y0, x1, y1, col, r) {
-  x0=Math.round(x0); y0=Math.round(y0); x1=Math.round(x1); y1=Math.round(y1);
-  const dx=Math.abs(x1-x0), dy=Math.abs(y1-y0);
-  const sx=x0<x1?1:-1, sy=y0<y1?1:-1;
-  let err=dx-dy;
-  for(;;) {
-    for(let tx=-r;tx<=r;tx++) for(let ty=-r;ty<=r;ty++) {
-      if(tx*tx+ty*ty<=r*r){
-        const px=x0+tx, py=y0+ty;
-        if(px>=0&&px<RENDER_W&&py>=0&&py<RENDER_H) img.setPixelColor(col,px,py);
-      }
-    }
-    if(x0===x1&&y0===y1) break;
-    const e2=2*err;
-    if(e2>-dy){err-=dy;x0+=sx;}
-    if(e2< dx){err+=dx;y0+=sy;}
-  }
-}
+function renderPNG(strokes) {
+  const canvas = createCanvas(CANVAS_W, CANVAS_H);
+  const ctx    = canvas.getContext('2d');
 
-async function renderPNG(strokes) {
-  const img = new Jimp(RENDER_W, RENDER_H, 0xFFFFFFFF);
-  for (const s of (strokes||[])) {
-    const pts = s.points || [];
+  // White background
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+
+  for (const s of (strokes || [])) {
+    const pts  = s.points || [];
     if (pts.length < 2) continue;
-    const col = hexToInt(s.color);
-    const r   = Math.max(1, Math.round((s.size || 4) * 0.9));
-    for (let i=1; i<pts.length; i++) {
-      plotLine(img,
-        pts[i-1][0]*2, pts[i-1][1]*2,
-        pts[i][0]*2,   pts[i][1]*2,
-        col, r*2);
+
+    const size      = s.size    || 4;
+    const color     = s.color   || '#000000';
+    const opacity   = s.opacity != null ? s.opacity : 1.0;
+    const brushType = s.brushType || 'pen';
+    const brush     = BRUSH_TYPE_MAP[brushType] || BRUSH_TYPE_MAP.pen;
+
+    ctx.save();
+
+    if (brush.erase) {
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.globalAlpha = 1.0;
+    } else {
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.globalAlpha = opacity * brush.alpha;
     }
+
+    ctx.strokeStyle = brush.erase ? 'rgba(0,0,0,1)' : color;
+    ctx.lineWidth   = size * brush.lw;
+    ctx.lineCap     = brush.cap;
+    ctx.lineJoin    = 'round';
+
+    if (brush.dash.length) {
+      ctx.setLineDash(brush.dash.map(d => d * size));
+    } else {
+      ctx.setLineDash([]);
+    }
+
+    if (brushType === 'bristle') {
+      // Bristle: draw multiple offset lines like the frontend does
+      const bristles = Math.max(3, Math.floor(size / 2));
+      ctx.lineWidth  = Math.max(1, size / bristles);
+      for (let b = 0; b < bristles; b++) {
+        ctx.beginPath();
+        const r = size * 0.6;
+        ctx.moveTo(pts[0][0] + (Math.random()-.5)*r, pts[0][1] + (Math.random()-.5)*r);
+        for (let i = 1; i < pts.length; i++) {
+          ctx.lineTo(pts[i][0] + (Math.random()-.5)*r, pts[i][1] + (Math.random()-.5)*r);
+        }
+        ctx.stroke();
+      }
+    } else {
+      ctx.beginPath();
+      ctx.moveTo(pts[0][0], pts[0][1]);
+      for (let i = 1; i < pts.length; i++) {
+        ctx.lineTo(pts[i][0], pts[i][1]);
+      }
+      ctx.stroke();
+    }
+
+    ctx.restore();
   }
-  return img.getBufferAsync(Jimp.MIME_PNG);
+
+  return canvas.toBuffer('image/png');
 }
 
 // ── Game state ────────────────────────────────────────────────────────────────
@@ -215,7 +245,7 @@ function revealNextHint(game) {
 async function pushCanvasToChat(game) {
   if (game.phase !== 'drawing' || !game.word) return;
   let png;
-  try { png = await renderPNG(game.strokes); }
+  try { png = renderPNG(game.strokes); }
   catch(e) { console.error('[render]', e.message); return; }
 
   const hint    = buildHint(game.word, game.hintRevealed);
@@ -289,7 +319,7 @@ async function endGame(game, guesserName, reason) {
 
   // Render final image
   let png;
-  try { png = await renderPNG(game.strokes); }
+  try { png = renderPNG(game.strokes); }
   catch(e) { console.error('[endGame render]', e.message); }
 
   // Delete the live drawing message
@@ -449,30 +479,23 @@ bot.action(/^claim_draw:(.+)$/, async (ctx) => {
 
   await ctx.answerCbQuery('✅ You are the drawer! Open your canvas.', { show_alert:false });
 
-  // Update invite message — remove the button, show who is drawing
+  // Build Mini App canvas URL
+  const startappParam = encodeURIComponent(`${chatId}__${tgId}__${uname}`);
+  const canvasUrl     = `https://t.me/${botUsername}/${WEBAPP_SHORT_NAME}?startapp=${startappParam}`;
+
+  // Edit the invite message to show drawer + canvas button — one clean message, no extras
   try {
     await bot.telegram.editMessageText(
       chatId, game.inviteMessageId, null,
       `🎨 *${uname}* is drawing!\n🔤 \`${buildHint(game.word, game.hintRevealed)}\`  —  ${game.word.length} letters\n\n💬 Type your guess in the chat!`,
-      { parse_mode:'Markdown' }
+      {
+        parse_mode: 'Markdown',
+        ...Markup.inlineKeyboard([[
+          Markup.button.url('🖌 Open Canvas to Draw', canvasUrl),
+        ]]),
+      }
     );
   } catch(e) { console.error('[editInvite]', e.message); }
-
-  // Build Mini App canvas URL — encodes chatId + tgId + name so frontend knows the room and role
-  const startappParam = encodeURIComponent(`${chatId}__${tgId}__${uname}`);
-  const canvasUrl     = `https://t.me/${botUsername}/${WEBAPP_SHORT_NAME}?startapp=${startappParam}`;
-
-  // Post canvas button in group so the drawer (and only they need to) can open it
-  await bot.telegram.sendMessage(
-    chatId,
-    `✏️ *${uname}*, tap below to open your canvas!`,
-    {
-      parse_mode:'Markdown',
-      ...Markup.inlineKeyboard([[
-        Markup.button.url('🖌 Open Canvas to Draw', canvasUrl),
-      ]]),
-    }
-  ).catch(e => console.error('[sendCanvasBtn]', e.message));
 
   // Timer starts on first stroke — not here
   // Do NOT push canvas yet — wait for first stroke
@@ -533,7 +556,7 @@ bot.on('text', async (ctx) => {
   const name  = `${fname} ${lname}`.trim() || ctx.from.username || 'Player';
 
   // Drawer cannot guess their own word
-  // if (tgId === game.drawerTgId) return;
+  if (tgId === game.drawerTgId) return;
 
   const correct = text.toLowerCase() === game.word.toLowerCase();
 

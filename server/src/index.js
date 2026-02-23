@@ -644,7 +644,7 @@ bot.on('text', async (ctx) => {
   const name  = `${fname} ${lname}`.trim() || ctx.from.username || 'Player';
 
   // Drawer cannot guess their own word
-  if (tgId === game.drawerTgId) return;
+  // if (tgId === game.drawerTgId) return;
 
   const correct = text.toLowerCase() === game.word.toLowerCase();
 

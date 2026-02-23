@@ -39,8 +39,6 @@ html, body {
 #app {
   display:flex; flex-direction:column;
   position:fixed; inset:0;
-  top: var(--tg-safe-top, 0px);
-  height: var(--tg-viewport-stable-height, 100dvh);
   overflow:hidden;
 }
 
@@ -617,7 +615,18 @@ if (tg) {
       tg.SettingsButton.onClick(() => togglePanel('settings-popup'));
     }
   } catch(e) {}
+  // Refit canvas when Telegram changes viewport
+  try {
+    tg.onEvent('viewportChanged', () => setTimeout(fitCanvas, 100));
+  } catch(e) {}
 }
+
+// Fit canvas on load and after fonts/layout settle
+window.addEventListener('load', () => {
+  setTimeout(fitCanvas, 0);
+  setTimeout(fitCanvas, 200);
+  setTimeout(fitCanvas, 600);
+});
 
 // ── Canvas setup ──────────────────────────────────────────────────────────────
 let CW = 800, CH = 500;
@@ -672,12 +681,14 @@ function applyTransform() {
   canvasWrap.style.transform = `translate(${panX}px,${panY}px) scale(${zoom})`;
 }
 function fitCanvas() {
-  const aw = canvasArea.clientWidth || window.innerWidth;
-  const ah = canvasArea.clientHeight || window.innerHeight - 44;
-  if (!aw || !ah) { setTimeout(fitCanvas, 50); return; }
+  // Use getBoundingClientRect for accurate dimensions after layout
+  const rect = canvasArea.getBoundingClientRect();
+  const aw = rect.width  || canvasArea.offsetWidth  || window.innerWidth;
+  const ah = rect.height || canvasArea.offsetHeight || (window.innerHeight - 44);
+  if (aw < 10 || ah < 10) { setTimeout(fitCanvas, 100); return; }
   zoom = Math.min(aw/CW, ah/CH, 1);
   panX = (aw - CW*zoom)/2;
-  panY = Math.max(0, (ah - CH*zoom)/2);
+  panY = Math.max(0,(ah - CH*zoom)/2);
   applyTransform();
 }
 window.addEventListener('resize', fitCanvas);
@@ -1237,7 +1248,9 @@ let isDrawer=false;
 function setRole(role,wordOrHint,round){
   showStartBtn(false);
   isDrawer=role==='drawer';
-  document.getElementById('toolbar').classList.toggle('visible',isDrawer);
+  const tb=document.getElementById('toolbar');
+  tb.classList.toggle('visible',isDrawer);
+  tb.style.display=isDrawer?'flex':'none'; // force display as backup
   document.getElementById('chat-panel').classList.add('visible');
   showStartBtn(false);
   document.getElementById('guess-row').style.display=isDrawer?'none':'flex';
@@ -1256,6 +1269,7 @@ function setRole(role,wordOrHint,round){
     const hint=typeof wordOrHint==='number'?'_ '.repeat(wordOrHint).trim():wordOrHint;
     wd.textContent=hint;
     setRoundStatus('Guess the word!');
+    setTimeout(fitCanvas, 50);
   }
   if(round) addChat('sys',`Round ${round} — let\'s go!`);
 }

@@ -216,7 +216,7 @@ function revealNextHint(game) {
   const hint = buildHint(game.word, game.hintRevealed);
   broadcastToGame(game, {type:'hint', hint});
   bot.telegram.sendMessage(game.chatId, `💡 Hint: \`${hint}\``, {parse_mode:'Markdown'}).catch(()=>{});
-  game.hintTimer = setTimeout(()=>revealNextHint(game), HINT_INTERVAL_MS);
+  // no auto-reschedule — next hint triggered by guesser
 }
 
 // ── Canvas push to Telegram ───────────────────────────────────────────────────
@@ -380,7 +380,7 @@ bot.command('skipword', async (ctx) => {
   const nw=pickWord();
   game.word=nw; game.hintRevealed=new Array(nw.length).fill(false); game.strokes=[];
   clearTimeout(game.hintTimer);
-  game.hintTimer=setTimeout(()=>revealNextHint(game), HINT_INTERVAL_MS);
+  // no auto-hint on skip
   if (game.drawerWsId) sendToWs(game, game.drawerWsId, {type:'role',role:'drawer',word:nw,round:1});
   broadcastToGame(game, {type:'clear'}, game.drawerWsId);
   broadcastToGame(game, {type:'word_skipped',hint:buildHint(nw,game.hintRevealed)}, game.drawerWsId);
@@ -448,7 +448,7 @@ bot.action(/^claim_draw:(.+)$/, async (ctx) => {
   });
 
   game.roundTimer = setTimeout(()=>endGame(game,null,'timeout'), ROUND_DURATION_MS);
-  game.hintTimer  = setTimeout(()=>revealNextHint(game), HINT_INTERVAL_MS);
+  // hint timer removed — guessers request hints manually
 
   // Push blank canvas to chat after 2s
   setTimeout(()=>pushCanvasToChat(game), 2000);
@@ -614,12 +614,36 @@ wss.on('connection', (ws, req) => {
           const nw=pickWord();
           game.word=nw; game.hintRevealed=new Array(nw.length).fill(false); game.strokes=[];
           clearTimeout(game.hintTimer);
-          game.hintTimer=setTimeout(()=>revealNextHint(game), HINT_INTERVAL_MS);
+          // no auto-hint on skip
           sendToWs(game, wsId, {type:'role',role:'drawer',word:nw,round:1});
           broadcastToGame(game,{type:'clear'},wsId);
           broadcastToGame(game,{type:'word_skipped',hint:buildHint(nw,game.hintRevealed)},wsId);
         }
         break;
+
+      case 'request_hint': {
+        // Any guesser can request a hint — drawer is NOT interrupted
+        if (wsId === game.drawerWsId) return; // drawer can't request their own hint
+        if (game.phase !== 'drawing' || !game.word) return;
+        const unrevealed = game.word.split('').map((_,i)=>i)
+          .filter(i => game.word[i] !== ' ' && !game.hintRevealed[i]);
+        if (!unrevealed.length) {
+          ws.send(JSON.stringify({type:'status', message:'No more hints available!'}));
+          return;
+        }
+        // 1 hint per request
+        const idx = unrevealed[Math.floor(Math.random()*unrevealed.length)];
+        game.hintRevealed[idx] = true;
+        const hint = buildHint(game.word, game.hintRevealed);
+        broadcastToGame(game, {type:'hint', hint, requester: name});
+        bot.telegram.sendMessage(
+          game.chatId,
+          `💡 *${name}* requested a hint: \`${hint}\``,
+          {parse_mode:'Markdown'}
+        ).catch(()=>{});
+        console.log(`[hint] ${name} requested hint for word="${game.word}" → "${hint}"`);
+        break;
+      }
 
       case 'get_logs':
         ws.send(JSON.stringify({type:'logs', logs:[]}));

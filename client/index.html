@@ -9,12 +9,10 @@
 <style>
 :root {
   --bg:        #253334;
-  --bg2:       #1e2a2b;
   --surface:   #2d3f40;
   --surface2:  #354849;
   --border:    #3d5355;
   --btn-bg:    #c4956a;
-  --btn-bg2:   #b8875e;
   --btn-active:#e0a870;
   --accent:    #6c63ff;
   --green:     #3dd68c;
@@ -23,181 +21,208 @@
   --text:      #eef2f2;
   --text2:     #8aabac;
   --r:         14px;
-  --topbar-h:  44px;
-  --toolbar-h: 160px;
+  --topbar-h:  48px;
+  --toolbar-h: 76px;
+  --safe-b:    env(safe-area-inset-bottom, 0px);
 }
 
 *,*::before,*::after { box-sizing:border-box; margin:0; padding:0; -webkit-tap-highlight-color:transparent; }
+
 html, body {
   width:100%; height:100%; overflow:hidden;
   background:var(--bg); color:var(--text);
-  font-family:'DM Sans',sans-serif; touch-action:none;
+  font-family:'DM Sans',sans-serif;
+  touch-action:none;
+  -webkit-user-select:none; user-select:none;
 }
 
 #app {
   display:flex; flex-direction:column;
   position:fixed; inset:0;
-  overflow:hidden;
+  /* respect safe areas on iPhone notch etc */
+  padding-top: env(safe-area-inset-top, 0px);
 }
 
 /* ── Topbar ── */
 #topbar {
-  height:var(--topbar-h); min-height:var(--topbar-h);
-  display:flex; align-items:center; gap:8px; padding:0 14px;
-  background:transparent; flex-shrink:0; z-index:20;
+  height:var(--topbar-h); min-height:var(--topbar-h); flex-shrink:0;
+  display:flex; align-items:center; gap:10px; padding:0 12px;
+  background:rgba(37,51,52,.95);
+  backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px);
+  border-bottom:1px solid rgba(255,255,255,.06);
+  z-index:20;
 }
 #conn-dot {
   width:7px; height:7px; border-radius:50%;
   background:var(--green); flex-shrink:0; transition:background .3s;
 }
 #word-display {
-  flex:1; text-align:center; font-family:'Syne',sans-serif;
-  font-size:.9rem; font-weight:700; letter-spacing:.12em;
-  text-transform:uppercase; color:var(--text);
+  flex:1; text-align:center;
+  font-family:'Syne',sans-serif; font-size:.9rem; font-weight:700;
+  letter-spacing:.1em; text-transform:uppercase; color:var(--text);
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0;
 }
 #role-pill {
   font-size:.58rem; font-weight:700; padding:3px 8px; border-radius:20px;
-  background:rgba(255,255,255,.1); color:var(--text2);
+  background:rgba(255,255,255,.08); color:var(--text2);
   text-transform:uppercase; white-space:nowrap; flex-shrink:0;
 }
-#role-pill.drawer  { background:rgba(108,99,255,.3); color:#b3adff; }
-#role-pill.guesser { background:rgba(61,214,140,.2); color:var(--green); }
-#timer-display {
-  font-family:'Syne',sans-serif; font-size:.88rem; font-weight:700;
-  color:var(--yellow); min-width:34px; text-align:right; flex-shrink:0;
+#role-pill.drawer  { background:rgba(108,99,255,.3);  color:#b3adff; }
+#role-pill.guesser { background:rgba(61,214,140,.2);   color:var(--green); }
+#round-status-pill {
+  font-size:.6rem; color:var(--text2); font-weight:600;
+  white-space:nowrap; flex-shrink:0; display:none;
 }
-#timer-display.urgent { color:var(--red); animation:pulse .5s ease-in-out infinite; }
-@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
-
-#top-actions { display:flex; gap:8px; flex-shrink:0; }
 .top-icon {
-  width:36px; height:36px; border-radius:50%;
-  background:rgba(0,0,0,.35); border:none; color:var(--text);
-  font-size:1rem; cursor:pointer; display:flex;
-  align-items:center; justify-content:center;
-  backdrop-filter:blur(4px);
+  width:36px; height:36px; border-radius:50%; flex-shrink:0;
+  background:rgba(255,255,255,.07); border:none; color:var(--text);
+  font-size:1.05rem; cursor:pointer;
+  display:flex; align-items:center; justify-content:center;
+  transition:background .15s, transform .12s;
 }
-.top-icon:active { background:rgba(0,0,0,.5); transform:scale(.9); }
+.top-icon:active { background:rgba(255,255,255,.15); transform:scale(.88); }
 
-/* ── Canvas area — takes ALL space between topbar and chat/toolbar ── */
+/* ── Canvas area — fills ALL remaining space ── */
 #canvas-area {
   flex:1; position:relative; overflow:hidden;
   background:var(--bg); min-height:0;
+  /* checkerboard so white canvas edge is visible */
+  background-image:
+    linear-gradient(45deg,rgba(255,255,255,.03) 25%,transparent 25%),
+    linear-gradient(-45deg,rgba(255,255,255,.03) 25%,transparent 25%),
+    linear-gradient(45deg,transparent 75%,rgba(255,255,255,.03) 75%),
+    linear-gradient(-45deg,transparent 75%,rgba(255,255,255,.03) 75%);
+  background-size:20px 20px;
+  background-position:0 0,0 10px,10px -10px,-10px 0;
 }
-#canvas-wrap { position:absolute; top:0; left:0; transform-origin:0 0; will-change:transform; }
+#canvas-wrap {
+  position:absolute; top:0; left:0;
+  transform-origin:0 0;
+  will-change:transform;
+}
 .cvl { position:absolute; top:0; left:0; }
-#cv-bg { background:#fff; z-index:1; }
+#cv-bg { background:#fff; z-index:1; border-radius:2px; }
 #cv-main { z-index:2; cursor:crosshair; }
 #cv-preview { z-index:3; pointer-events:none; }
 
-/* ── Waiting overlay inside canvas area ── */
+/* shadow around canvas */
+#cv-bg { box-shadow:0 4px 32px rgba(0,0,0,.5); }
+
+/* ── Waiting overlay ── */
 #waiting-overlay {
-  position:absolute; inset:0; display:flex; flex-direction:column;
-  align-items:center; justify-content:center; gap:16px; z-index:10;
-  pointer-events:none;
+  position:absolute; inset:0;
+  display:flex; flex-direction:column;
+  align-items:center; justify-content:center; gap:16px;
+  z-index:10; pointer-events:none;
 }
 #start-btn {
   background:var(--btn-bg); color:#fff; border:none;
-  padding:16px 40px; border-radius:16px; font-size:1.1rem;
+  padding:14px 36px; border-radius:16px; font-size:1rem;
   font-family:'Syne',sans-serif; font-weight:800; cursor:pointer;
   box-shadow:0 6px 24px rgba(196,149,106,.5);
   pointer-events:all; display:none; letter-spacing:.05em;
+  transition:transform .12s;
 }
+#start-btn:active { transform:scale(.94); }
 
-/* ── Chat strip — SIBLING of canvas-area, NOT inside it ── */
+/* ── Chat panel (guesser view) ── */
 #chat-panel {
   flex-shrink:0; display:none; flex-direction:column; gap:4px;
-  padding:6px 12px calc(6px + env(safe-area-inset-bottom,0px));
+  padding:6px 12px calc(6px + var(--safe-b));
   background:var(--surface); border-top:1px solid var(--border); z-index:15;
+  max-height:110px;
 }
 #chat-panel.visible { display:flex; }
 #chat-log {
-  max-height:44px; overflow-y:auto; display:flex;
-  flex-direction:column; gap:1px; scrollbar-width:none;
+  flex:1; overflow-y:auto; display:flex; flex-direction:column;
+  gap:1px; scrollbar-width:none; max-height:44px;
 }
 #chat-log::-webkit-scrollbar { display:none; }
-.cmsg { font-size:.75rem; color:var(--text2); line-height:1.3; }
+.cmsg { font-size:.75rem; color:var(--text2); line-height:1.4; }
 .cmsg .cn { color:var(--text); font-weight:600; }
 .cmsg.ok  { color:var(--green); font-weight:700; }
 .cmsg.sys { color:#8abfbf; font-style:italic; }
 #guess-row { display:flex; gap:8px; }
 #guess-in {
   flex:1; background:var(--surface2); border:1.5px solid var(--border);
-  border-radius:10px; color:var(--text); padding:8px 12px;
-  font-size:.88rem; outline:none; font-family:'DM Sans',sans-serif; min-width:0;
+  border-radius:10px; color:var(--text); padding:9px 12px;
+  font-size:.88rem; outline:none;
+  font-family:'DM Sans',sans-serif; min-width:0;
+  -webkit-user-select:text; user-select:text;
 }
 #guess-in:focus { border-color:var(--accent); }
 #guess-go {
-  background:var(--accent); color:#fff; border:none; padding:8px 18px;
-  border-radius:10px; font-size:.85rem; font-weight:700; cursor:pointer;
-  font-family:'Syne',sans-serif; flex-shrink:0;
+  background:var(--accent); color:#fff; border:none;
+  padding:9px 18px; border-radius:10px; font-size:.85rem;
+  font-weight:700; cursor:pointer; font-family:'Syne',sans-serif; flex-shrink:0;
 }
 
-/* ── Toolbar — drawer only ── */
+/* ── Toolbar (drawer only) — single row, 8 buttons max ── */
 #toolbar {
-  flex-shrink:0; display:none; flex-direction:column;
-  align-items:center; justify-content:center; gap:8px;
-  padding:10px 20px calc(10px + env(safe-area-inset-bottom,0px));
-  background:rgba(30,42,43,0.85);
-  backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px);
-  border-top:1px solid rgba(255,255,255,.06); z-index:20;
+  flex-shrink:0; display:none; flex-direction:row;
+  align-items:center; justify-content:center;
+  gap:8px; padding:10px 16px calc(10px + var(--safe-b));
+  background:rgba(29,40,41,.96);
+  backdrop-filter:blur(16px); -webkit-backdrop-filter:blur(16px);
+  border-top:1px solid rgba(255,255,255,.07);
+  z-index:20; min-height:var(--toolbar-h);
 }
 #toolbar.visible { display:flex; }
-.tb-row { display:flex; gap:10px; align-items:center; justify-content:center; }
 
 .tbtn {
-  width:52px; height:52px; min-width:52px;
-  border-radius:13px; border:none;
-  background:rgba(196,149,106,.9); color:#fff;
-  font-size:1.25rem; cursor:pointer;
+  width:50px; height:50px; min-width:50px;
+  border-radius:14px; border:none;
+  background:rgba(196,149,106,.85); color:#fff;
+  font-size:1.3rem; cursor:pointer;
   display:flex; align-items:center; justify-content:center;
-  transition:transform .12s, background .12s; flex-shrink:0;
+  flex-shrink:0; position:relative;
+  transition:transform .1s, background .12s, box-shadow .12s;
+  box-shadow:0 2px 8px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.18);
   -webkit-user-select:none;
-  box-shadow:0 2px 8px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.15);
-  position:relative; font-family:'DM Sans',sans-serif;
 }
-.tbtn:active { transform:scale(.84); }
-.tbtn.on     { background:rgba(220,175,120,.95); box-shadow:0 3px 12px rgba(196,149,106,.6),inset 0 1px 0 rgba(255,255,255,.2); }
-.tbtn.tred   { background:rgba(180,60,60,.9); }
-.tbtn.tred:active { background:rgba(150,40,40,.9); }
-.tbtn.tgreen { background:rgba(42,156,106,.9); }
-.tbtn.tgreen:active { background:rgba(32,120,82,.9); }
+.tbtn:active { transform:scale(.82); box-shadow:0 1px 4px rgba(0,0,0,.4); }
+.tbtn.on  { background:rgba(224,168,112,.95); box-shadow:0 3px 14px rgba(196,149,106,.55), inset 0 1px 0 rgba(255,255,255,.25); }
+.tbtn.tred   { background:rgba(180,55,55,.9); }
+.tbtn.tred:active { background:rgba(140,35,35,.9); }
 
-#sz-op-label {
-  font-size:.7rem; color:var(--text2); font-weight:600;
-  line-height:1.5; text-align:left; min-width:40px;
-}
 .color-dot {
-  position:absolute; bottom:5px; right:5px;
-  width:11px; height:11px; border-radius:50%;
-  border:2px solid rgba(255,255,255,.7);
-  pointer-events:none; background:#1a1a2e;
+  position:absolute; bottom:4px; right:4px;
+  width:10px; height:10px; border-radius:50%;
+  border:2px solid rgba(255,255,255,.75);
+  pointer-events:none;
+}
+
+/* sz/opacity mini label */
+#sz-op-label {
+  font-size:.65rem; color:var(--text2); font-weight:700;
+  line-height:1.6; text-align:center; min-width:36px;
+  display:flex; flex-direction:column; align-items:center;
 }
 
 /* ── Popups ── */
 .popup {
   position:fixed; background:var(--surface); border:1px solid var(--border);
-  border-radius:16px; padding:12px; z-index:300;
+  border-radius:16px; padding:12px; z-index:500;
   display:none; flex-direction:column; gap:8px;
-  box-shadow:0 16px 50px rgba(0,0,0,.75);
-  animation:popUp .16s cubic-bezier(.17,.67,.41,1.3);
-  max-height:70vh; overflow-y:auto;
+  box-shadow:0 20px 60px rgba(0,0,0,.8);
+  max-height:72vh; overflow-y:auto;
+  animation:popUp .15s cubic-bezier(.17,.67,.41,1.3);
 }
 .popup.open { display:flex; }
 @keyframes popUp {
-  from { opacity:0; transform:scale(.88) translateY(10px); }
+  from { opacity:0; transform:scale(.88) translateY(8px); }
   to   { opacity:1; transform:scale(1)   translateY(0); }
 }
 
-#brush-popup   { bottom:calc(var(--toolbar-h) + 8px); left:50%; transform:translateX(-50%); min-width:160px; }
-#color-popup   { bottom:calc(var(--toolbar-h) + 8px); left:50%; transform:translateX(-50%); min-width:220px; }
-#opacity-popup { bottom:calc(var(--toolbar-h) + 8px); left:50%; transform:translateX(-50%); min-width:200px; }
-#layer-popup   { bottom:calc(var(--toolbar-h) + 8px); right:14px; min-width:175px; }
-#settings-popup{ top:calc(var(--topbar-h) + 8px); right:14px; min-width:210px; }
+/* Popup positioning — above toolbar */
+#brush-popup   { bottom:calc(var(--toolbar-h) + var(--safe-b) + 8px); left:8px;  min-width:165px; }
+#color-popup   { bottom:calc(var(--toolbar-h) + var(--safe-b) + 8px); left:50%; transform:translateX(-50%); min-width:230px; }
+#opacity-popup { bottom:calc(var(--toolbar-h) + var(--safe-b) + 8px); left:50%; transform:translateX(-50%); min-width:210px; }
+#layer-popup   { bottom:calc(var(--toolbar-h) + var(--safe-b) + 8px); right:8px; min-width:180px; }
+#settings-popup{ top:calc(var(--topbar-h) + 8px); right:8px; min-width:215px; }
 #players-popup { top:calc(var(--topbar-h) + 8px); left:50%; transform:translateX(-50%); min-width:165px; max-height:280px; }
-#lb-popup      { top:calc(var(--topbar-h) + 8px); left:50%; transform:translateX(-50%); min-width:210px; }
-#logs-popup    { top:calc(var(--topbar-h) + 8px); left:50%; transform:translateX(-50%); width:min(440px,92vw); max-height:60vh; }
+#lb-popup      { top:calc(var(--topbar-h) + 8px); left:50%; transform:translateX(-50%); min-width:215px; }
+#logs-popup    { top:calc(var(--topbar-h) + 8px); left:50%; transform:translateX(-50%); width:min(440px,94vw); max-height:60vh; }
 
 .pop-label { font-size:.62rem; color:var(--text2); font-weight:700; letter-spacing:.08em; text-transform:uppercase; }
 .pop-divider { height:1px; background:var(--border); margin:2px 0; }
@@ -207,51 +232,43 @@ html, body {
   border-radius:9px; cursor:pointer; font-size:.83rem; font-weight:600;
   border:1.5px solid transparent; transition:all .1s; white-space:nowrap;
 }
-.brush-opt:hover { background:var(--surface2); }
-.brush-opt.on    { border-color:var(--btn-bg); background:rgba(196,149,106,.15); color:var(--btn-active); }
-.brush-icon      { font-size:1rem; width:22px; text-align:center; }
+.brush-opt:hover,.brush-opt:active { background:var(--surface2); }
+.brush-opt.on { border-color:var(--btn-bg); background:rgba(196,149,106,.15); color:var(--btn-active); }
+.brush-icon   { font-size:1rem; width:22px; text-align:center; }
 
 .color-row { display:flex; gap:7px; flex-wrap:wrap; }
 .cswatch {
-  width:32px; height:32px; min-width:32px;
+  width:30px; height:30px; min-width:30px;
   border-radius:50%; border:2px solid transparent;
   cursor:pointer; flex-shrink:0; transition:transform .1s;
 }
-.cswatch:active { transform:scale(.82); }
+.cswatch:active { transform:scale(.8); }
 .cswatch.on { border-color:#fff; transform:scale(1.18); box-shadow:0 0 0 2px var(--btn-bg); }
 #custom-color-wrap { display:flex; align-items:center; gap:8px; padding-top:2px; }
-#custom-color { width:30px; height:30px; border-radius:50%; border:2px solid var(--border); cursor:pointer; padding:0; }
+#custom-color { width:28px; height:28px; border-radius:50%; border:2px solid var(--border); cursor:pointer; padding:0; }
 #custom-color-lbl { font-size:.76rem; color:var(--text2); }
 
-#op-popup-wrap { display:flex; align-items:center; gap:10px; }
-#op-range {
+/* sliders */
+.pop-slider-wrap { display:flex; align-items:center; gap:10px; }
+input[type=range].pop-slider {
   -webkit-appearance:none; flex:1; height:4px;
   border-radius:2px; background:var(--border); outline:none;
 }
-#op-range::-webkit-slider-thumb {
-  -webkit-appearance:none; width:18px; height:18px;
-  border-radius:50%; background:var(--btn-bg); border:2px solid #fff; cursor:pointer;
+input[type=range].pop-slider::-webkit-slider-thumb {
+  -webkit-appearance:none; width:20px; height:20px;
+  border-radius:50%; background:var(--btn-bg); border:2.5px solid #fff;
+  cursor:pointer; box-shadow:0 1px 4px rgba(0,0,0,.4);
 }
-#op-lbl { font-size:.76rem; color:var(--text2); font-weight:700; min-width:36px; text-align:right; }
+.pop-slider-lbl { font-size:.76rem; color:var(--text2); font-weight:700; min-width:38px; text-align:right; }
+#sz-preview { width:22px; height:22px; display:flex; align-items:center; justify-content:center; }
 
-#sz-popup-wrap { display:flex; align-items:center; gap:10px; }
-#sz-range {
-  -webkit-appearance:none; flex:1; height:4px;
-  border-radius:2px; background:var(--border); outline:none;
-}
-#sz-range::-webkit-slider-thumb {
-  -webkit-appearance:none; width:18px; height:18px;
-  border-radius:50%; background:var(--btn-bg); border:2px solid #fff; cursor:pointer;
-}
-#sz-lbl { font-size:.76rem; color:var(--text2); font-weight:700; min-width:28px; text-align:right; }
-#sz-preview { width:20px; height:20px; display:flex; align-items:center; justify-content:center; }
-
+/* layer panel */
 .layer-row {
   display:flex; align-items:center; gap:6px; padding:7px 8px;
   border-radius:9px; cursor:pointer; font-size:.8rem; font-weight:600;
   border:1.5px solid transparent;
 }
-.layer-row:hover  { background:var(--surface2); }
+.layer-row:active,.layer-row:hover { background:var(--surface2); }
 .layer-row.active { border-color:var(--btn-bg); background:rgba(196,149,106,.1); color:var(--btn-active); }
 .layer-vis { font-size:.85rem; opacity:.3; transition:opacity .15s; }
 .layer-vis.on { opacity:1; }
@@ -261,21 +278,23 @@ html, body {
   background:var(--border); border-radius:2px; outline:none; flex-shrink:0;
 }
 .layer-op-slider::-webkit-slider-thumb {
-  -webkit-appearance:none; width:12px; height:12px;
+  -webkit-appearance:none; width:13px; height:13px;
   border-radius:50%; background:var(--text2); cursor:pointer;
 }
 
+/* settings */
 .setting-row {
   display:flex; align-items:center; gap:10px; padding:9px 8px;
   border-radius:9px; cursor:pointer; font-size:.83rem; font-weight:500;
   border:1px solid transparent; transition:background .1s;
 }
-.setting-row:hover { background:var(--surface2); }
+.setting-row:hover,.setting-row:active { background:var(--surface2); }
 .setting-row .s-icon  { font-size:1.1rem; width:24px; text-align:center; flex-shrink:0; }
 .setting-row .s-label { flex:1; }
 .setting-row .s-value { font-size:.75rem; color:var(--text2); font-weight:600; }
-.setting-section { font-family:'Syne',sans-serif; font-size:.72rem; font-weight:700; color:var(--btn-bg); letter-spacing:.06em; text-transform:uppercase; padding:2px 4px; }
+.setting-section { font-family:'Syne',sans-serif; font-size:.7rem; font-weight:700; color:var(--btn-bg); letter-spacing:.06em; text-transform:uppercase; padding:2px 4px; }
 
+/* leaderboard */
 .player-row  { display:flex; align-items:center; gap:7px; padding:5px 6px; font-size:.8rem; }
 .player-dot  { width:8px; height:8px; border-radius:50%; background:var(--green); flex-shrink:0; }
 .player-name { flex:1; font-weight:500; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -287,6 +306,7 @@ html, body {
 .lb-name  { flex:1; font-weight:500; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .lb-pts   { color:var(--yellow); font-weight:700; white-space:nowrap; }
 
+/* logs */
 #log-entries { font-family:'Courier New',monospace; font-size:.7rem; color:#8aabac; overflow-y:auto; max-height:calc(60vh - 80px); }
 .log-entry { padding:2px 4px; border-bottom:1px solid rgba(255,255,255,.04); line-height:1.5; }
 .log-entry.round { color:#c4956a; }
@@ -298,26 +318,26 @@ html, body {
 #toast {
   position:fixed; top:calc(var(--topbar-h) + 10px); left:50%;
   transform:translateX(-50%) translateY(-6px);
-  background:rgba(30,42,43,.92); color:var(--text);
+  background:rgba(29,40,41,.95); color:var(--text);
   padding:8px 18px; border-radius:30px; font-size:.8rem; font-weight:600;
-  border:1px solid var(--border); opacity:0; transition:all .2s;
-  z-index:400; pointer-events:none; white-space:nowrap;
-  max-width:86vw; overflow:hidden; text-overflow:ellipsis;
-  backdrop-filter:blur(6px);
+  border:1px solid var(--border); opacity:0; transition:opacity .2s, transform .2s;
+  z-index:600; pointer-events:none; white-space:nowrap;
+  max-width:88vw; overflow:hidden; text-overflow:ellipsis;
+  backdrop-filter:blur(8px);
 }
 #toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
-#toast.ok   { background:rgba(61,214,140,.18); border-color:var(--green); color:var(--green); }
-#toast.warn { background:rgba(224,85,85,.18);  border-color:var(--red);   color:var(--red); }
+#toast.ok   { background:rgba(61,214,140,.15); border-color:var(--green); color:var(--green); }
+#toast.warn { background:rgba(224,85,85,.15);  border-color:var(--red);   color:var(--red); }
 
-/* ── Round result overlay ── */
+/* ── Overlays ── */
 #round-overlay {
   position:fixed; inset:0; background:rgba(0,0,0,.88);
   display:none; align-items:center; justify-content:center;
-  z-index:500; backdrop-filter:blur(10px);
+  z-index:700; backdrop-filter:blur(10px);
 }
 #round-overlay.show { display:flex; }
 #round-box {
-  background:var(--surface); border:1px solid var(--border); border-radius:20px;
+  background:var(--surface); border:1px solid var(--border); border-radius:22px;
   padding:28px 22px; text-align:center; width:min(300px,90vw);
   animation:popUp .3s cubic-bezier(.17,.67,.41,1.4);
 }
@@ -326,30 +346,27 @@ html, body {
 .re-word  { font-size:1.4rem; font-weight:800; color:var(--btn-active); margin:8px 0; }
 .re-sub   { color:var(--text2); font-size:.84rem; margin-bottom:14px; }
 #re-newround {
-  background:var(--btn-bg); color:#fff; border:none; padding:11px;
+  background:var(--btn-bg); color:#fff; border:none; padding:12px;
   border-radius:var(--r); font-size:.9rem; font-weight:700; cursor:pointer;
   font-family:'Syne',sans-serif; width:100%;
 }
 
-/* ── Join overlay ── */
 #join-overlay {
   position:fixed; inset:0; background:rgba(15,22,23,.97);
   display:flex; align-items:center; justify-content:center;
-  z-index:600; backdrop-filter:blur(14px);
+  z-index:800; backdrop-filter:blur(14px);
 }
 #join-box {
   background:var(--surface); border:1px solid var(--border); border-radius:22px;
   padding:28px 22px; width:min(320px,92vw);
   display:flex; flex-direction:column; gap:12px;
 }
-#join-box h2 {
-  text-align:center; font-family:'Syne',sans-serif; font-size:1.5rem; font-weight:800;
-  color:var(--btn-active);
-}
+#join-box h2 { text-align:center; font-family:'Syne',sans-serif; font-size:1.5rem; font-weight:800; color:var(--btn-active); }
 #join-box input {
   background:var(--surface2); border:1.5px solid var(--border);
   border-radius:var(--r); color:var(--text); padding:11px 14px;
   font-size:.9rem; outline:none; font-family:'DM Sans',sans-serif;
+  -webkit-user-select:text; user-select:text;
 }
 #join-box input:focus { border-color:var(--btn-bg); }
 #join-btn {
@@ -358,11 +375,34 @@ html, body {
   font-family:'Syne',sans-serif;
 }
 
+/* ── Fit-to-screen button (floating, canvas only) ── */
+#btn-fit-canvas {
+  position:absolute; bottom:12px; right:12px; z-index:15;
+  width:36px; height:36px; border-radius:10px; border:none;
+  background:rgba(29,40,41,.8); color:var(--text2);
+  font-size:.9rem; cursor:pointer; display:none;
+  align-items:center; justify-content:center;
+  backdrop-filter:blur(4px); border:1px solid var(--border);
+  transition:opacity .2s;
+}
+#btn-fit-canvas.visible { display:flex; }
+#btn-fit-canvas:active { opacity:.6; }
+
+/* ── Zoom indicator (floating) ── */
+#zoom-indicator {
+  position:absolute; bottom:12px; left:12px; z-index:15;
+  font-size:.7rem; font-weight:700; color:var(--text2);
+  background:rgba(29,40,41,.7); padding:4px 8px; border-radius:8px;
+  pointer-events:none; opacity:0; transition:opacity .3s;
+  backdrop-filter:blur(4px);
+}
+#zoom-indicator.show { opacity:1; }
+
 /* ── Replay ── */
 #replay-overlay {
-  position:fixed; inset:0; background:rgba(0,0,0,.9);
+  position:fixed; inset:0; background:rgba(0,0,0,.92);
   display:none; align-items:center; justify-content:center;
-  z-index:450; backdrop-filter:blur(6px); flex-direction:column; gap:14px;
+  z-index:650; backdrop-filter:blur(6px); flex-direction:column; gap:14px;
 }
 #replay-overlay.show { display:flex; }
 #replay-canvas { border-radius:12px; max-width:90vw; max-height:56vh; background:#fff; }
@@ -371,16 +411,21 @@ html, body {
   padding:8px 18px; border-radius:20px; cursor:pointer; font-size:.84rem;
 }
 
-@media(min-width:640px){
-  :root{ --topbar-h:50px; --toolbar-h:80px; }
-  #toolbar{ flex-direction:row; padding:0 20px; gap:14px; }
-  .tb-row{ gap:12px; }
-  .tbtn{ width:52px; height:52px; font-size:1.25rem; }
+/* ── Responsive ── */
+@media (max-width:380px) {
+  :root { --toolbar-h:68px; }
+  .tbtn { width:44px; height:44px; font-size:1.15rem; border-radius:12px; }
+  #toolbar { gap:6px; padding:8px 10px calc(8px + var(--safe-b)); }
 }
-@media(max-width:380px){
-  .tbtn{ width:48px; height:48px; font-size:1.15rem; }
-  #toolbar{ gap:7px; padding:8px 10px; }
-  .tb-row{ gap:7px; }
+@media (min-width:768px) {
+  :root { --topbar-h:52px; --toolbar-h:72px; }
+  .tbtn { width:54px; height:54px; font-size:1.35rem; }
+  #toolbar { gap:12px; }
+}
+@media (min-width:1024px) {
+  :root { --toolbar-h:76px; }
+  .tbtn { width:56px; height:56px; }
+  #toolbar { gap:14px; }
 }
 </style>
 </head>
@@ -552,20 +597,23 @@ html, body {
     </div>
   </div>
 
-  <!-- Canvas area (canvases only — chat panel is OUTSIDE this div) -->
+  <!-- Canvas area -->
   <div id="canvas-area">
     <div id="canvas-wrap">
       <canvas id="cv-bg"      class="cvl"></canvas>
       <canvas id="cv-main"    class="cvl"></canvas>
       <canvas id="cv-preview" class="cvl"></canvas>
     </div>
-    <!-- Waiting / start button overlay -->
     <div id="waiting-overlay">
       <button id="start-btn">▶ NEW ROUND</button>
     </div>
+    <!-- Floating zoom % indicator -->
+    <div id="zoom-indicator">100%</div>
+    <!-- Fit-to-screen floating button — appears when zoomed -->
+    <button id="btn-fit-canvas" title="Fit screen">⊡</button>
   </div>
 
-  <!-- ✅ FIX: chat-panel is OUTSIDE canvas-area so it doesn't collapse canvas height -->
+  <!-- Chat panel (guesser only) -->
   <div id="chat-panel">
     <div id="chat-log"></div>
     <div id="guess-row">
@@ -574,26 +622,19 @@ html, body {
     </div>
   </div>
 
-  <!-- Toolbar (drawer only) -->
+  <!-- Toolbar (drawer only) — single row, 6 buttons -->
   <div id="toolbar">
-    <div class="tb-row">
-      <button class="tbtn on" id="btn-brush"   title="Brush">✏️<div class="color-dot" id="color-dot"></div></button>
-      <button class="tbtn"    id="btn-color"   title="Color">🎨</button>
-      <button class="tbtn"    id="btn-opacity" title="Size & Opacity">💧</button>
-      <button class="tbtn"    id="btn-layers"  title="Layers">📋</button>
-    </div>
-    <div class="tb-row">
-      <button class="tbtn"       id="btn-undo"  title="Undo">↩</button>
-      <button class="tbtn"       id="btn-redo"  title="Redo">↪</button>
-      <button class="tbtn tred"  id="btn-clear" title="Clear">✕</button>
-      <button class="tbtn"       id="btn-zoom-in"  title="Zoom In">＋</button>
-      <button class="tbtn"       id="btn-zoom-out" title="Zoom Out">－</button>
-      <button class="tbtn"       id="btn-zoom-fit" title="Fit Screen">⊡</button>
-      <button class="tbtn"       id="btn-menu2" title="More">⋯</button>
-      <div id="sz-op-label">
-        <div id="sz-op-size">5px</div>
-        <div id="sz-op-opacity">100%</div>
-      </div>
+    <button class="tbtn on" id="btn-brush"   title="Brush">🖊<div class="color-dot" id="color-dot"></div></button>
+    <button class="tbtn"    id="btn-color"   title="Color">🎨</button>
+    <button class="tbtn"    id="btn-opacity" title="Size & Opacity">💧</button>
+    <button class="tbtn"    id="btn-layers"  title="Layers">📋</button>
+    <button class="tbtn"    id="btn-undo"    title="Undo">↩</button>
+    <button class="tbtn"    id="btn-redo"    title="Redo">↪</button>
+    <button class="tbtn tred" id="btn-clear" title="Clear">✕</button>
+    <button class="tbtn"    id="btn-menu2"   title="More">⋯</button>
+    <div id="sz-op-label">
+      <div id="sz-op-size">8px</div>
+      <div id="sz-op-opacity">100%</div>
     </div>
   </div>
 
@@ -669,31 +710,147 @@ function initCanvases() {
 function activeLayer() { return layers[activeLayerIdx]; }
 function activeCtx()   { return activeLayer()?.ctx || mainCtx; }
 
-// ── Zoom / pan ────────────────────────────────────────────────────────────────
+// ── Smooth zoom / pan ─────────────────────────────────────────────────────────
 let zoom=1, panX=0, panY=0;
+let _targetZoom=1, _targetPanX=0, _targetPanY=0;
+let _rafId=null;
+
 const canvasWrap = document.getElementById('canvas-wrap');
 const canvasArea = document.getElementById('canvas-area');
+const zoomIndicator = document.getElementById('zoom-indicator');
+const btnFit = document.getElementById('btn-fit-canvas');
+let _zoomIndicatorTimer=null;
 
 function applyTransform() {
   canvasWrap.style.transform = `translate(${panX}px,${panY}px) scale(${zoom})`;
 }
 
+function _animateZoom() {
+  const ease = 0.18; // lower = smoother/slower
+  const dz = _targetZoom - zoom;
+  const dx = _targetPanX - panX;
+  const dy = _targetPanY - panY;
+  if (Math.abs(dz)<0.0004 && Math.abs(dx)<0.2 && Math.abs(dy)<0.2) {
+    zoom=_targetZoom; panX=_targetPanX; panY=_targetPanY;
+    applyTransform(); _rafId=null;
+    return;
+  }
+  zoom  += dz * ease;
+  panX  += dx * ease;
+  panY  += dy * ease;
+  applyTransform();
+  _rafId = requestAnimationFrame(_animateZoom);
+}
+
+function _startAnim() {
+  if (!_rafId) _rafId = requestAnimationFrame(_animateZoom);
+}
+
+// Zoom toward a focal point (ox,oy) in canvas-area coordinates
+function zoomTo(newZoom, ox, oy) {
+  newZoom = Math.max(0.15, Math.min(10, newZoom));
+  _targetPanX = ox - (ox - _targetPanX) * (newZoom / _targetZoom);
+  _targetPanY = oy - (oy - _targetPanY) * (newZoom / _targetZoom);
+  _targetZoom = newZoom;
+  _startAnim();
+  _showZoomHUD(newZoom);
+}
+
+function _showZoomHUD(z) {
+  const pct = Math.round(z*100)+'%';
+  zoomIndicator.textContent = pct;
+  zoomIndicator.classList.add('show');
+  clearTimeout(_zoomIndicatorTimer);
+  _zoomIndicatorTimer = setTimeout(()=>zoomIndicator.classList.remove('show'), 1200);
+  // Show fit button only when zoomed away from fit
+  btnFit.classList.toggle('visible', Math.abs(z - _fitZoom) > 0.04);
+}
+
+let _fitZoom = 1;
 function fitCanvas() {
   const rect = canvasArea.getBoundingClientRect();
   const aw = rect.width  || canvasArea.offsetWidth  || window.innerWidth;
-  const ah = rect.height || canvasArea.offsetHeight || (window.innerHeight - 44);
-  if (aw < 10 || ah < 10) { setTimeout(fitCanvas, 100); return; }
-  zoom = Math.min(aw/CW, ah/CH, 1);
-  panX = (aw - CW*zoom)/2;
-  panY = Math.max(0,(ah - CH*zoom)/2);
+  const ah = rect.height || canvasArea.offsetHeight || (window.innerHeight - 48);
+  if (aw < 10 || ah < 10) { requestAnimationFrame(fitCanvas); return; }
+  const fz = Math.min(aw/CW, ah/CH, 1);
+  _fitZoom = fz;
+  _targetZoom = fz;
+  _targetPanX = (aw - CW*fz) / 2;
+  _targetPanY = Math.max(0, (ah - CH*fz) / 2);
+  // snap immediately on first load, animate on user-triggered fit
+  zoom=_targetZoom; panX=_targetPanX; panY=_targetPanY;
   applyTransform();
+  btnFit.classList.remove('visible');
 }
-window.addEventListener('resize', fitCanvas);
+
+// Wait until layout is fully painted before fitting
+requestAnimationFrame(()=>requestAnimationFrame(()=>{ fitCanvas(); }));
+window.addEventListener('resize', ()=>{ fitCanvas(); });
 
 function clientToCanvas(cx, cy) {
   const rect = canvasArea.getBoundingClientRect();
   return [(cx-rect.left-panX)/zoom, (cy-rect.top-panY)/zoom];
 }
+
+// ── Pinch zoom — smooth, toward finger midpoint ───────────────────────────────
+let _pinchActive=false, _pinchDist=0, _pinchMidX=0, _pinchMidY=0, _pinchStartZoom=1;
+
+canvasArea.addEventListener('touchstart', e=>{
+  if (e.touches.length === 2) {
+    e.preventDefault(); e.stopPropagation();
+    isDrawing = false;
+    _pinchActive = true;
+    const t = e.touches;
+    _pinchDist = Math.hypot(t[0].clientX-t[1].clientX, t[0].clientY-t[1].clientY);
+    _pinchStartZoom = zoom;
+    const rect = canvasArea.getBoundingClientRect();
+    _pinchMidX = (t[0].clientX+t[1].clientX)/2 - rect.left;
+    _pinchMidY = (t[0].clientY+t[1].clientY)/2 - rect.top;
+  } else if (e.touches.length === 1 && isDrawer) {
+    e.preventDefault();
+  }
+},{passive:false});
+
+canvasArea.addEventListener('touchmove', e=>{
+  e.preventDefault(); e.stopPropagation();
+  if (e.touches.length === 2 && _pinchActive) {
+    const t = e.touches;
+    const d = Math.hypot(t[0].clientX-t[1].clientX, t[0].clientY-t[1].clientY);
+    const newZoom = Math.max(0.15, Math.min(10, _pinchStartZoom * (d / _pinchDist)));
+    // Zoom directly (no animation during active pinch — feels more natural)
+    _targetZoom = newZoom;
+    _targetPanX = _pinchMidX - (_pinchMidX - panX) * (newZoom / zoom);
+    _targetPanY = _pinchMidY - (_pinchMidY - panY) * (newZoom / zoom);
+    zoom = newZoom; panX = _targetPanX; panY = _targetPanY;
+    applyTransform();
+    _showZoomHUD(newZoom);
+  }
+},{passive:false});
+
+canvasArea.addEventListener('touchend', e=>{
+  if (e.touches.length < 2) _pinchActive = false;
+},{passive:true});
+
+// ── Mouse wheel zoom — no modifier key needed, toward cursor ──────────────────
+canvasArea.addEventListener('wheel', e=>{
+  e.preventDefault();
+  const rect = canvasArea.getBoundingClientRect();
+  const ox = e.clientX - rect.left;
+  const oy = e.clientY - rect.top;
+  const factor = e.deltaY < 0 ? 1.1 : 0.91;
+  zoomTo(_targetZoom * factor, ox, oy);
+},{passive:false});
+
+// Fit button (floating, appears when zoomed)
+document.getElementById('btn-fit-canvas')?.addEventListener('click', ()=>{
+  const rect = canvasArea.getBoundingClientRect();
+  const cx = rect.width/2, cy = rect.height/2;
+  _targetZoom = _fitZoom;
+  _targetPanX = (rect.width  - CW*_fitZoom) / 2;
+  _targetPanY = Math.max(0, (rect.height - CH*_fitZoom) / 2);
+  _startAnim();
+  _showZoomHUD(_fitZoom);
+});
 
 // ── Drawing tools ─────────────────────────────────────────────────────────────
 let brushType='pen', brushSize=8, brushOpacity=1.0;
@@ -1029,80 +1186,6 @@ canvasArea.addEventListener('pointerdown',  onPointerDown,  {passive:false});
 canvasArea.addEventListener('pointermove',  onPointerMove,  {passive:false});
 canvasArea.addEventListener('pointerup',    onPointerUp);
 canvasArea.addEventListener('pointercancel',onPointerUp);
-
-// ── Pinch zoom (fixed for mobile — prevents page scroll/dismiss) ──────────────
-let pinchDist=0, pinchZoom=1, pinchActive=false;
-
-canvasArea.addEventListener('touchstart', e=>{
-  if (e.touches.length===2) {
-    e.preventDefault(); // stop page scroll/dismiss
-    e.stopPropagation();
-    isDrawing=false; pinchActive=true;
-    const t=e.touches;
-    pinchDist=Math.hypot(t[0].clientX-t[1].clientX,t[0].clientY-t[1].clientY);
-    pinchZoom=zoom;
-  } else if (e.touches.length===1 && isDrawer) {
-    // Single finger — prevent page scroll only when on canvas area
-    e.preventDefault();
-  }
-},{passive:false});
-
-canvasArea.addEventListener('touchmove', e=>{
-  e.preventDefault(); // always prevent — stops Telegram dismiss gesture
-  e.stopPropagation();
-  if (e.touches.length===2 && pinchActive) {
-    const t=e.touches;
-    const d=Math.hypot(t[0].clientX-t[1].clientX,t[0].clientY-t[1].clientY);
-    zoom=Math.max(.2,Math.min(8,pinchZoom*(d/pinchDist)));
-    // Keep canvas centered during zoom
-    const rect=canvasArea.getBoundingClientRect();
-    const cx=(t[0].clientX+t[1].clientX)/2-rect.left;
-    const cy=(t[0].clientY+t[1].clientY)/2-rect.top;
-    const oldZ=pinchZoom*(pinchDist/pinchDist); // recalc relative
-    panX=cx-(cx-panX)*(zoom/pinchZoom);
-    panY=cy-(cy-panY)*(zoom/pinchZoom);
-    pinchZoom=zoom; pinchDist=d; // update so next frame is relative
-    applyTransform();
-  }
-},{passive:false});
-
-canvasArea.addEventListener('touchend', e=>{
-  if(e.touches.length<2) pinchActive=false;
-},{passive:true});
-
-// Zoom buttons
-document.getElementById('btn-zoom-in')?.addEventListener('click',()=>{
-  const rect=canvasArea.getBoundingClientRect();
-  const cx=rect.width/2, cy=rect.height/2;
-  const nz=Math.min(8, zoom*1.3);
-  panX=cx-(cx-panX)*(nz/zoom);
-  panY=cy-(cy-panY)*(nz/zoom);
-  zoom=nz; applyTransform();
-  showToast(`${Math.round(zoom*100)}%`);
-});
-document.getElementById('btn-zoom-out')?.addEventListener('click',()=>{
-  const rect=canvasArea.getBoundingClientRect();
-  const cx=rect.width/2, cy=rect.height/2;
-  const nz=Math.max(.2, zoom/1.3);
-  panX=cx-(cx-panX)*(nz/zoom);
-  panY=cy-(cy-panY)*(nz/zoom);
-  zoom=nz; applyTransform();
-  showToast(`${Math.round(zoom*100)}%`);
-});
-document.getElementById('btn-zoom-fit')?.addEventListener('click',()=>{
-  fitCanvas();
-  showToast('Fit screen');
-});
-canvasArea.addEventListener('wheel',e=>{
-  e.preventDefault(); // always prevent — stops Telegram scroll-to-dismiss
-  if(e.ctrlKey||e.metaKey){
-    const rect=canvasArea.getBoundingClientRect();
-    const ox=e.clientX-rect.left, oy=e.clientY-rect.top;
-    const nz=Math.max(.15,Math.min(8,zoom*(e.deltaY<0?1.12:.89)));
-    panX=ox-(ox-panX)*(nz/zoom); panY=oy-(oy-panY)*(nz/zoom);
-    zoom=nz; applyTransform();
-  }
-},{passive:false});
 
 // ── Render incoming strokes (from server replay) ──────────────────────────────
 function renderStroke(s, ctx) {

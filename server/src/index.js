@@ -318,7 +318,8 @@ async function endGame(game, guesserName, reason) {
     }
   } catch(e) { console.error('[endGame send]', e.message); }
 
-  // Reset for next game
+  // Reset for next game — delay 'idle' by 3s so stray Telegram
+  // messages from the just-ended game don't trigger the new one
   game.word            = null;
   game.hintRevealed    = [];
   game.strokes         = [];
@@ -327,7 +328,7 @@ async function endGame(game, guesserName, reason) {
   game.drawerWsId      = null;
   game.inviteMessageId = null;
   game.liveMessageId   = null;
-  game.phase           = 'idle';
+  setTimeout(() => { game.phase = 'idle'; }, 3000);
 }
 
 // ── Bot commands ──────────────────────────────────────────────────────────────
@@ -484,7 +485,7 @@ bot.on('text', async (ctx) => {
   const name  = `${fname} ${lname}`.trim() || ctx.from.username || 'Player';
 
   // Drawer cannot guess their own word
-  // if (tgId === game.drawerTgId) return;
+  if (tgId === game.drawerTgId) return;
 
   const correct = text.toLowerCase() === game.word.toLowerCase();
 

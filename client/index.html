@@ -550,8 +550,23 @@ html, body {
       <canvas id="cv-main"    class="cvl"></canvas>
       <canvas id="cv-preview" class="cvl"></canvas>
     </div>
+    <!-- Waiting to start overlay — shown when no round active -->
+    <div id="waiting-overlay" style="
+      position:absolute;inset:0;display:flex;flex-direction:column;
+      align-items:center;justify-content:center;gap:16px;z-index:10;
+      pointer-events:none;
+    ">
+      <button id="start-btn" style="
+        background:var(--btn-bg);color:#fff;border:none;
+        padding:16px 40px;border-radius:16px;font-size:1.1rem;
+        font-family:'Syne',sans-serif;font-weight:800;cursor:pointer;
+        box-shadow:0 6px 24px rgba(196,149,106,.5);
+        pointer-events:all;display:none;letter-spacing:.05em;
+      ">▶ NEW ROUND</button>
+    </div>
+
     <!-- Chat (guesser) -->
-    <div id="chat-panel" class="visible">
+    <div id="chat-panel">
       <div id="chat-log"></div>
       <div id="guess-row">
         <input id="guess-in" placeholder="Type your guess…" autocomplete="off" autocorrect="off" autocapitalize="off"/>
@@ -657,10 +672,12 @@ function applyTransform() {
   canvasWrap.style.transform = `translate(${panX}px,${panY}px) scale(${zoom})`;
 }
 function fitCanvas() {
-  const aw = canvasArea.clientWidth, ah = canvasArea.clientHeight;
+  const aw = canvasArea.clientWidth || window.innerWidth;
+  const ah = canvasArea.clientHeight || window.innerHeight - 44;
+  if (!aw || !ah) { setTimeout(fitCanvas, 50); return; }
   zoom = Math.min(aw/CW, ah/CH, 1);
   panX = (aw - CW*zoom)/2;
-  panY = (ah - CH*zoom)/2;
+  panY = Math.max(0, (ah - CH*zoom)/2);
   applyTransform();
 }
 window.addEventListener('resize', fitCanvas);
@@ -1218,9 +1235,11 @@ function stopTimer(){ setRoundStatus(''); }
 // ── Role ──────────────────────────────────────────────────────────────────────
 let isDrawer=false;
 function setRole(role,wordOrHint,round){
+  showStartBtn(false);
   isDrawer=role==='drawer';
   document.getElementById('toolbar').classList.toggle('visible',isDrawer);
   document.getElementById('chat-panel').classList.add('visible');
+  showStartBtn(false);
   document.getElementById('guess-row').style.display=isDrawer?'none':'flex';
   const pill=document.getElementById('role-pill');
   pill.className='role-pill '+role;
@@ -1322,7 +1341,17 @@ function openGallery(){
 let ws=null, myName='', myRoom='';
 
 function connect(){
-  // Restore name from session if somehow lost
+  // Wire the start-btn in waiting overlay
+function showStartBtn(show) {
+  const btn = document.getElementById('start-btn');
+  if (btn) btn.style.display = show ? 'block' : 'none';
+}
+document.getElementById('start-btn')?.addEventListener('click', () => {
+  ws?.send(JSON.stringify({type:'new_round'}));
+  showStartBtn(false);
+});
+
+// Restore name from session if somehow lost
   if (!myName) try { myName=sessionStorage.getItem('dgName')||myName; myRoom=sessionStorage.getItem('dgRoom')||myRoom; } catch{}
   const proto=location.protocol==='https:'?'wss':'ws';
   ws=new WebSocket(`${proto}://${location.host}/ws?room=${encodeURIComponent(myRoom)}&name=${encodeURIComponent(myName)}`);
@@ -1360,6 +1389,7 @@ function connect(){
         if(m.board){updatePlayerList(m.board);updateLeaderboard(m.board);}
         break;
       case 'round_end':
+        setTimeout(()=>showStartBtn(true), 4000); // show after result overlay
         stopTimer(); sfxRoundEnd();
         savedStrokes=[...(m.strokes||[])];
         showResult(m.guesser?'🎉':(m.reason==='timeout'?'⏰':'😮'),
@@ -1371,8 +1401,11 @@ function connect(){
       case 'leaderboard': if(m.board){updatePlayerList(m.board);updateLeaderboard(m.board);} break;
       case 'logs': renderLogs(m.logs||[]); break;
       case 'status':
-        document.getElementById('word-display').textContent=m.message;
-        addChat('sys',m.message); break;
+        document.getElementById('word-display').textContent=m.message.toUpperCase();
+        addChat('sys',m.message);
+        // Show big start button when waiting for round
+        showStartBtn(m.message.includes('New Round') || m.message.includes('start'));
+        break;
       case 'player_joined': addChat('sys',`${m.name} joined (${m.count})`); sfxPlayerJoin(); break;
       case 'player_left':   addChat('sys',`${m.name} left (${m.count})`); break;
     }
@@ -1455,6 +1488,7 @@ function doJoin(roomId, playerName) {
   console.log('[join] Joining as:', myName, 'room:', myRoom);
   document.getElementById('join-overlay').style.display = 'none';
   initCanvases(); renderPalette(); updateSzOpLabel(); connect();
+  setTimeout(fitCanvas,100); setTimeout(fitCanvas,400); setTimeout(fitCanvas,800);
 }
 
 // Retry until BOTH roomId AND playerName from Telegram are available

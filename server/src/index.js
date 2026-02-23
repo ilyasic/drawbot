@@ -13,13 +13,13 @@ const PUBLIC_URL        = (process.env.PUBLIC_URL || '').replace(/\/$/, '');
 const PORT              = process.env.PORT || 3000;
 const WEBAPP_SHORT_NAME = process.env.WEBAPP_SHORT_NAME || 'draw1';
 const ROUND_DURATION_MS = parseInt(process.env.ROUND_DURATION_MS || '90000');
-const HINT_INTERVAL_MS  = parseInt(process.env.HINT_INTERVAL_MS  || '25000');
+const HINT_COOLDOWN_MS  = parseInt(process.env.HINT_COOLDOWN_MS  || '30000');
 const WEBHOOK_SECRET    = process.env.WEBHOOK_SECRET || 'tgbot';
 
 if (!BOT_TOKEN)  { console.error('BOT_TOKEN missing');  process.exit(1); }
 if (!PUBLIC_URL) { console.error('PUBLIC_URL missing'); process.exit(1); }
 
-console.log(`[config] WEBAPP=${WEBAPP_SHORT_NAME} ROUND=${ROUND_DURATION_MS/1000}s HINT=${HINT_INTERVAL_MS/1000}s`);
+console.log(`[config] WEBAPP=${WEBAPP_SHORT_NAME} ROUND=${ROUND_DURATION_MS/1000}s HINT_COOLDOWN=${HINT_COOLDOWN_MS/1000}s`);
 
 // ── Express / WS / Bot ────────────────────────────────────────────────────────
 const app    = express();
@@ -133,10 +133,12 @@ function makeGame(chatId) {
     drawerWsId:  null,   // WebSocket client id (set when they open Mini App)
 
     // Round data
-    word:           null,
-    hintRevealed:   [],
-    strokes:        [],
-    roundStartTime: 0,
+    word:             null,
+    hintRevealed:     [],
+    strokes:          [],
+    roundStartTime:   0,
+    firstStrokeDrawn: false,  // image hidden until drawer makes first stroke
+    lastHintAt:       0,      // timestamp of last hint reveal (for cooldown)
 
     // Timers
     roundTimer:  null,
@@ -195,22 +197,18 @@ function buildHint(word, revealed) {
   ).join(' ');
 }
 
-// ── Hint reveals ──────────────────────────────────────────────────────────────
+// ── Hint reveals (manual — triggered by button press) ────────────────────────
 function revealNextHint(game) {
-  if (game.phase !== 'drawing' || !game.word) return;
+  if (game.phase !== 'drawing' || !game.word) return null;
   const unrevealed = game.word.split('').map((_,i)=>i)
     .filter(i => game.word[i] !== ' ' && !game.hintRevealed[i]);
-  if (!unrevealed.length) return;
+  if (!unrevealed.length) return null;
   const idx = unrevealed[Math.floor(Math.random()*unrevealed.length)];
   game.hintRevealed[idx] = true;
+  game.lastHintAt = Date.now();
   const hint = buildHint(game.word, game.hintRevealed);
   broadcastToGame(game, { type:'hint', hint });
-  bot.telegram.sendMessage(
-    game.chatId,
-    `💡 Hint: \`${hint}\``,
-    { parse_mode:'Markdown' }
-  ).catch(()=>{});
-  game.hintTimer = setTimeout(() => revealNextHint(game), HINT_INTERVAL_MS);
+  return hint;
 }
 
 // ── Live canvas push to Telegram chat ─────────────────────────────────────────
@@ -226,18 +224,28 @@ async function pushCanvasToChat(game) {
     `🔤 \`${hint}\`  —  ${game.word.length} letters\n\n` +
     `💬 Type your guess in the chat!`;
 
+  // Hint button — shows cooldown remaining if pressed recently
+  const now          = Date.now();
+  const cooldownLeft = Math.ceil((HINT_COOLDOWN_MS - (now - game.lastHintAt)) / 1000);
+  const hintReady    = cooldownLeft <= 0;
+  const hintLabel    = hintReady ? '💡 Hint' : `⏳ Hint (${cooldownLeft}s)`;
+  const keyboard     = Markup.inlineKeyboard([[
+    Markup.button.callback(hintLabel, `hint:${game.chatId}`),
+  ]]);
+
   try {
     if (!game.liveMessageId) {
       const m = await bot.telegram.sendPhoto(
         game.chatId,
         { source: png, filename: 'drawing.png' },
-        { caption, parse_mode:'Markdown' }
+        { caption, parse_mode:'Markdown', ...keyboard }
       );
       game.liveMessageId = m.message_id;
     } else {
       await bot.telegram.editMessageMedia(
         game.chatId, game.liveMessageId, null,
-        { type:'photo', media:{ source:png, filename:'drawing.png' }, caption, parse_mode:'Markdown' }
+        { type:'photo', media:{ source:png, filename:'drawing.png' }, caption, parse_mode:'Markdown' },
+        keyboard
       );
     }
   } catch(e) {
@@ -248,6 +256,8 @@ async function pushCanvasToChat(game) {
 }
 
 function scheduleCanvasUpdate(game) {
+  // Don't push image until drawer makes first stroke
+  if (!game.firstStrokeDrawn) return;
   if (game.updateTimer) return;
   game.updateTimer = setTimeout(async () => {
     game.updateTimer = null;
@@ -320,14 +330,16 @@ async function endGame(game, guesserName, reason) {
 
   // Reset for next game — delay 'idle' by 3s so stray Telegram
   // messages from the just-ended game don't trigger the new one
-  game.word            = null;
-  game.hintRevealed    = [];
-  game.strokes         = [];
-  game.drawerTgId      = null;
-  game.drawerName      = '';
-  game.drawerWsId      = null;
-  game.inviteMessageId = null;
-  game.liveMessageId   = null;
+  game.word             = null;
+  game.hintRevealed     = [];
+  game.strokes          = [];
+  game.firstStrokeDrawn = false;
+  game.lastHintAt       = 0;
+  game.drawerTgId       = null;
+  game.drawerName       = '';
+  game.drawerWsId       = null;
+  game.inviteMessageId  = null;
+  game.liveMessageId    = null;
   setTimeout(() => { game.phase = 'idle'; }, 3000);
 }
 
@@ -389,11 +401,13 @@ bot.command('skipword', async (ctx) => {
   const game   = games.get(chatId);
   if (!game || game.phase !== 'drawing') return ctx.reply('No active round.');
   const newWord = pickWord();
-  game.word         = newWord;
-  game.hintRevealed = new Array(newWord.length).fill(false);
-  game.strokes      = [];
+  game.word             = newWord;
+  game.hintRevealed     = new Array(newWord.length).fill(false);
+  game.strokes          = [];
+  game.firstStrokeDrawn = false;
+  game.lastHintAt       = 0;
   clearTimeout(game.hintTimer);
-  game.hintTimer = setTimeout(() => revealNextHint(game), HINT_INTERVAL_MS);
+  game.hintTimer = null;
   if (game.drawerWsId) sendToWs(game, game.drawerWsId, { type:'role', role:'drawer', word:newWord, round:1 });
   broadcastToGame(game, { type:'clear' }, game.drawerWsId);
   broadcastToGame(game, { type:'word_skipped', hint:buildHint(newWord, game.hintRevealed) }, game.drawerWsId);
@@ -460,12 +474,48 @@ bot.action(/^claim_draw:(.+)$/, async (ctx) => {
     }
   ).catch(e => console.error('[sendCanvasBtn]', e.message));
 
-  // Start timers
+  // Start round timer only — hints are now manual via button
   game.roundTimer = setTimeout(() => endGame(game, null, 'timeout'), ROUND_DURATION_MS);
-  game.hintTimer  = setTimeout(() => revealNextHint(game), HINT_INTERVAL_MS);
 
-  // Push blank canvas to chat after 1s so guessers see it immediately
-  setTimeout(() => pushCanvasToChat(game), 1000);
+  // Do NOT push canvas yet — wait for first stroke
+  console.log(`[game] Waiting for first stroke before showing image in chat`);
+});
+
+// ── Hint button handler ───────────────────────────────────────────────────────
+bot.action(/^hint:(.+)$/, async (ctx) => {
+  const chatId = ctx.match[1];
+  const game   = games.get(chatId);
+
+  if (!game || game.phase !== 'drawing') {
+    return ctx.answerCbQuery('❌ No active game!', { show_alert:false });
+  }
+  if (!game.firstStrokeDrawn) {
+    return ctx.answerCbQuery('⏳ Wait for the drawer to start!', { show_alert:false });
+  }
+
+  // Check cooldown
+  const now          = Date.now();
+  const cooldownLeft = Math.ceil((HINT_COOLDOWN_MS - (now - game.lastHintAt)) / 1000);
+  if (cooldownLeft > 0) {
+    return ctx.answerCbQuery(`⏳ Wait ${cooldownLeft}s before next hint!`, { show_alert:false });
+  }
+
+  // Check if all letters already revealed
+  const unrevealed = game.word.split('').filter((c,i) => c !== ' ' && !game.hintRevealed[i]);
+  if (!unrevealed.length) {
+    return ctx.answerCbQuery('🤷 No more hints available!', { show_alert:false });
+  }
+
+  const hint = revealNextHint(game);
+  if (!hint) return ctx.answerCbQuery('No hints left!', { show_alert:false });
+
+  const presserName = ctx.from.first_name || ctx.from.username || 'Someone';
+  console.log(`[hint] ${presserName} requested hint → ${hint}`);
+
+  await ctx.answerCbQuery(`💡 Hint revealed!`, { show_alert:false });
+
+  // Update the live image caption with new hint + updated button
+  await pushCanvasToChat(game);
 });
 
 // ── Telegram text = guesses ───────────────────────────────────────────────────
@@ -485,7 +535,7 @@ bot.on('text', async (ctx) => {
   const name  = `${fname} ${lname}`.trim() || ctx.from.username || 'Player';
 
   // Drawer cannot guess their own word
-  // if (tgId === game.drawerTgId) return;
+  if (tgId === game.drawerTgId) return;
 
   const correct = text.toLowerCase() === game.word.toLowerCase();
 
@@ -591,14 +641,21 @@ wss.on('connection', (ws, req) => {
         if (wsId !== game.drawerWsId) return;
         game.strokes.push(msg.stroke);
         broadcastToGame(game, { type:'draw', stroke:msg.stroke }, wsId);
-        scheduleCanvasUpdate(game);
+        // First stroke ever — push image to chat immediately
+        if (!game.firstStrokeDrawn) {
+          game.firstStrokeDrawn = true;
+          console.log(`[game] First stroke by ${name} — revealing canvas in chat`);
+          setTimeout(() => pushCanvasToChat(game), 500);
+        } else {
+          scheduleCanvasUpdate(game);
+        }
         break;
 
       case 'clear':
         if (wsId !== game.drawerWsId) return;
         game.strokes = [];
+        game.firstStrokeDrawn = false; // hide image until next stroke
         broadcastToGame(game, { type:'clear' });
-        scheduleCanvasUpdate(game);
         break;
 
       case 'snapshot':
@@ -639,11 +696,13 @@ wss.on('connection', (ws, req) => {
         if (wsId !== game.drawerWsId) return;
         {
           const nw = pickWord();
-          game.word         = nw;
-          game.hintRevealed = new Array(nw.length).fill(false);
-          game.strokes      = [];
+          game.word             = nw;
+          game.hintRevealed     = new Array(nw.length).fill(false);
+          game.strokes          = [];
+          game.firstStrokeDrawn = false; // hide image until drawer starts new word
+          game.lastHintAt       = 0;
           clearTimeout(game.hintTimer);
-          game.hintTimer = setTimeout(() => revealNextHint(game), HINT_INTERVAL_MS);
+          game.hintTimer = null;
           sendToWs(game, wsId, { type:'role', role:'drawer', word:nw, round:1 });
           broadcastToGame(game, { type:'clear' }, wsId);
           broadcastToGame(game, { type:'word_skipped', hint:buildHint(nw,game.hintRevealed) }, wsId);

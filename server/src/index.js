@@ -1,1538 +1,753 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
-<title>Draw & Guess</title>
-<script src="https://telegram.org/js/telegram-web-app.js"></script>
-<link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet"/>
-<style>
-/* ─── Design tokens ─────────────────────────────────────── */
-:root {
-  --bg:        #253334;   /* dark teal background like reference */
-  --bg2:       #1e2a2b;
-  --surface:   #2d3f40;
-  --surface2:  #354849;
-  --border:    #3d5355;
-  --btn-bg:    #c4956a;   /* warm tan/orange buttons like reference */
-  --btn-bg2:   #b8875e;
-  --btn-active:#e0a870;
-  --accent:    #6c63ff;
-  --green:     #3dd68c;
-  --yellow:    #ffd166;
-  --red:       #e05555;
-  --text:      #eef2f2;
-  --text2:     #8aabac;
-  --r:         14px;      /* rounded like reference */
-  --topbar-h:  44px;
-  --toolbar-h: 160px;     /* 2 rows of large buttons */
-}
+require('dotenv').config();
+const express    = require('express');
+const http       = require('http');
+const WebSocket  = require('ws');
+const path       = require('path');
+const { v4: uuidv4 } = require('uuid');
+const { Telegraf, Markup } = require('telegraf');
+const Jimp       = require('jimp');
 
-*,*::before,*::after { box-sizing:border-box; margin:0; padding:0; -webkit-tap-highlight-color:transparent; }
-html, body {
-  width:100%; height:100%; overflow:hidden;
-  background:var(--bg); color:var(--text);
-  font-family:'DM Sans',sans-serif; touch-action:none;
-}
+// ── Config ────────────────────────────────────────────────────────────────────
+const BOT_TOKEN         = process.env.BOT_TOKEN;
+const PUBLIC_URL        = (process.env.PUBLIC_URL || '').replace(/\/$/, '');
+const PORT              = process.env.PORT || 3000;
+const ALLOW_EXTERNAL_URL = process.env.ALLOW_EXTERNAL_URL === 'true';
+const WEBAPP_SHORT_NAME  = process.env.WEBAPP_SHORT_NAME || 'draw1';
+const ROUND_DURATION_MS  = parseInt(process.env.ROUND_DURATION_MS || '90000'); // 90s default
+const HINT_INTERVAL_MS   = parseInt(process.env.HINT_INTERVAL_MS  || '20000'); // reveal a letter every 20s
 
-/* ─── App shell ─────────────────────────────────────────── */
-#app {
-  display:flex; flex-direction:column;
-  position:fixed; inset:0;
-  top: var(--tg-safe-top, 0px);
-  height: var(--tg-viewport-stable-height, 100dvh);
-  overflow:hidden;
-}
+if (!BOT_TOKEN)  { console.error('BOT_TOKEN missing');  process.exit(1); }
+if (!PUBLIC_URL) { console.error('PUBLIC_URL missing'); process.exit(1); }
 
-/* ─── Topbar (minimal — just word + timer) ─────────────── */
-#topbar {
-  height:var(--topbar-h); min-height:var(--topbar-h);
-  display:flex; align-items:center; gap:8px; padding:0 14px;
-  background:transparent; flex-shrink:0; z-index:20;
-}
-#conn-dot {
-  width:7px; height:7px; border-radius:50%;
-  background:var(--green); flex-shrink:0; transition:background .3s;
-}
-#word-display {
-  flex:1; text-align:center; font-family:'Syne',sans-serif;
-  font-size:.9rem; font-weight:700; letter-spacing:.12em;
-  text-transform:uppercase; color:var(--text);
-  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0;
-}
-#role-pill {
-  font-size:.58rem; font-weight:700; padding:3px 8px; border-radius:20px;
-  background:rgba(255,255,255,.1); color:var(--text2);
-  text-transform:uppercase; white-space:nowrap; flex-shrink:0;
-}
-#role-pill.drawer  { background:rgba(108,99,255,.3); color:#b3adff; }
-#role-pill.guesser { background:rgba(61,214,140,.2); color:var(--green); }
-#timer-display {
-  font-family:'Syne',sans-serif; font-size:.88rem; font-weight:700;
-  color:var(--yellow); min-width:34px; text-align:right; flex-shrink:0;
-}
-#timer-display.urgent { color:var(--red); animation:pulse .5s ease-in-out infinite; }
-@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+console.log(`[config] ALLOW_EXTERNAL_URL=${ALLOW_EXTERNAL_URL} WEBAPP=${WEBAPP_SHORT_NAME} ROUND=${ROUND_DURATION_MS/1000}s`);
 
-/* top-right corner icons (like reference 3-dot + X) */
-#top-actions {
-  display:flex; gap:8px; flex-shrink:0;
-}
-.top-icon {
-  width:36px; height:36px; border-radius:50%;
-  background:rgba(0,0,0,.35); border:none; color:var(--text);
-  font-size:1rem; cursor:pointer; display:flex;
-  align-items:center; justify-content:center;
-  backdrop-filter:blur(4px);
-}
-.top-icon:active { background:rgba(0,0,0,.5); transform:scale(.9); }
+// ── Express / WS / Bot ────────────────────────────────────────────────────────
+const app    = express();
+const server = http.createServer(app);
+const wss    = new WebSocket.Server({ server, path: '/ws' });
+const bot    = new Telegraf(BOT_TOKEN);
+let   botUsername = '';
 
-/* ─── Canvas — takes ALL space between topbar and toolbar ─ */
-#canvas-area {
-  flex:1; position:relative; overflow:hidden;
-  background:var(--bg); min-height:0;
-}
-#canvas-wrap { position:absolute; top:0; left:0; transform-origin:0 0; will-change:transform; }
-.cvl { position:absolute; top:0; left:0; }
-#cv-bg { background:#fff; z-index:1; }
-#cv-main { z-index:2; cursor:crosshair; }
-#cv-preview { z-index:3; pointer-events:none; }
+app.use(express.json());
 
-/* ─── Chat strip (guesser view) ─────────────────────────── */
-#chat-panel {
-  flex-shrink:0; display:none; flex-direction:column; gap:4px;
-  padding:6px 12px calc(6px + env(safe-area-inset-bottom,0px));
-  background:var(--surface); border-top:1px solid var(--border); z-index:15;
-}
-#chat-panel.visible { display:flex; }
-#chat-log {
-  max-height:44px; overflow-y:auto; display:flex;
-  flex-direction:column; gap:1px; scrollbar-width:none;
-}
-#chat-log::-webkit-scrollbar { display:none; }
-.cmsg { font-size:.75rem; color:var(--text2); line-height:1.3; }
-.cmsg .cn { color:var(--text); font-weight:600; }
-.cmsg.ok  { color:var(--green); font-weight:700; }
-.cmsg.sys { color:#8abfbf; font-style:italic; }
-#guess-row { display:flex; gap:8px; }
-#guess-in {
-  flex:1; background:var(--surface2); border:1.5px solid var(--border);
-  border-radius:10px; color:var(--text); padding:8px 12px;
-  font-size:.88rem; outline:none; font-family:'DM Sans',sans-serif; min-width:0;
-}
-#guess-in:focus { border-color:var(--accent); }
-#guess-go {
-  background:var(--accent); color:#fff; border:none; padding:8px 18px;
-  border-radius:10px; font-size:.85rem; font-weight:700; cursor:pointer;
-  font-family:'Syne',sans-serif; flex-shrink:0;
-}
-
-/* ─── Toolbar — 2 rows of 4 centered icon buttons ────────
-   Exactly like reference: warm rounded square buttons, centered,
-   with small size/opacity text label at bottom-right of last btn
-──────────────────────────────────────────────────────────── */
-#toolbar {
-  flex-shrink:0; display:none; flex-direction:column;
-  align-items:center; justify-content:center; gap:8px;
-  padding:10px 20px calc(10px + env(safe-area-inset-bottom,0px));
-  background:rgba(30,42,43,0.85);
-  backdrop-filter:blur(12px);
-  -webkit-backdrop-filter:blur(12px);
-  border-top:1px solid rgba(255,255,255,.06);
-  z-index:20;
-}
-#toolbar.visible { display:flex; }
-
-.tb-row {
-  display:flex; gap:10px; align-items:center; justify-content:center;
-}
-
-/* The big rounded icon buttons — exactly like reference */
-.tbtn {
-  width:52px; height:52px; min-width:52px;
-  border-radius:13px; border:none;
-  background:rgba(196,149,106,.9); color:#fff;
-  font-size:1.25rem; cursor:pointer;
-  display:flex; align-items:center; justify-content:center;
-  transition:transform .12s, background .12s; flex-shrink:0;
-  -webkit-user-select:none;
-  box-shadow:0 2px 8px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.15);
-  position:relative;
-  font-family:'DM Sans',sans-serif;
-}
-.tbtn:active { transform:scale(.84); }
-.tbtn.on     { background:rgba(220,175,120,.95); box-shadow:0 3px 12px rgba(196,149,106,.6),inset 0 1px 0 rgba(255,255,255,.2); }
-.tbtn.tred   { background:rgba(180,60,60,.9); }
-.tbtn.tred:active { background:rgba(150,40,40,.9); }
-.tbtn.tgreen { background:rgba(42,156,106,.9); }
-.tbtn.tgreen:active { background:rgba(32,120,82,.9); }
-
-/* Size+opacity label — shown next to last btn in row 2 like reference */
-#sz-op-label {
-  font-size:.7rem; color:var(--text2); font-weight:600;
-  line-height:1.5; text-align:left; min-width:40px;
-}
-
-/* Color indicator dot on brush button */
-.color-dot {
-  position:absolute; bottom:5px; right:5px;
-  width:11px; height:11px; border-radius:50%;
-  border:2px solid rgba(255,255,255,.7);
-  pointer-events:none; background:#1a1a2e;
-}
-
-/* ─── Popups ─────────────────────────────────────────────── */
-.popup {
-  position:fixed;
-  background:var(--surface);
-  border:1px solid var(--border);
-  border-radius:16px;
-  padding:12px;
-  z-index:300;
-  display:none;
-  flex-direction:column; gap:8px;
-  box-shadow:0 16px 50px rgba(0,0,0,.75);
-  animation:popUp .16s cubic-bezier(.17,.67,.41,1.3);
-  max-height:70vh; overflow-y:auto;
-}
-.popup.open { display:flex; }
-@keyframes popUp {
-  from { opacity:0; transform:scale(.88) translateY(10px); }
-  to   { opacity:1; transform:scale(1)   translateY(0); }
-}
-
-/* Anchor positions */
-#brush-popup   { bottom:calc(var(--toolbar-h) + 8px); left:50%; transform:translateX(-50%); min-width:160px; }
-#color-popup   { bottom:calc(var(--toolbar-h) + 8px); left:50%; transform:translateX(-50%); min-width:220px; }
-#opacity-popup { bottom:calc(var(--toolbar-h) + 8px); left:50%; transform:translateX(-50%); min-width:200px; }
-#layer-popup   { bottom:calc(var(--toolbar-h) + 8px); right:14px; min-width:175px; }
-#settings-popup{ top:calc(var(--topbar-h) + 8px); right:14px; min-width:210px; }
-#players-popup { top:calc(var(--topbar-h) + 8px); left:50%; transform:translateX(-50%); min-width:165px; max-height:280px; }
-#lb-popup      { top:calc(var(--topbar-h) + 8px); left:50%; transform:translateX(-50%); min-width:210px; }
-
-.pop-label {
-  font-size:.62rem; color:var(--text2); font-weight:700;
-  letter-spacing:.08em; text-transform:uppercase;
-}
-.pop-divider { height:1px; background:var(--border); margin:2px 0; }
-
-/* Brush options */
-.brush-opt {
-  display:flex; align-items:center; gap:10px; padding:8px 10px;
-  border-radius:9px; cursor:pointer; font-size:.83rem; font-weight:600;
-  border:1.5px solid transparent; transition:all .1s; white-space:nowrap;
-}
-.brush-opt:hover { background:var(--surface2); }
-.brush-opt.on    { border-color:var(--btn-bg); background:rgba(196,149,106,.15); color:var(--btn-active); }
-.brush-icon      { font-size:1rem; width:22px; text-align:center; }
-
-/* Color swatches */
-.color-row { display:flex; gap:7px; flex-wrap:wrap; }
-.cswatch {
-  width:32px; height:32px; min-width:32px;
-  border-radius:50%; border:2px solid transparent;
-  cursor:pointer; flex-shrink:0; transition:transform .1s;
-}
-.cswatch:active { transform:scale(.82); }
-.cswatch.on { border-color:#fff; transform:scale(1.18); box-shadow:0 0 0 2px var(--btn-bg); }
-#custom-color-wrap { display:flex; align-items:center; gap:8px; padding-top:2px; }
-#custom-color { width:30px; height:30px; border-radius:50%; border:2px solid var(--border); cursor:pointer; padding:0; }
-#custom-color-lbl { font-size:.76rem; color:var(--text2); }
-
-/* Opacity popup */
-#op-popup-wrap { display:flex; align-items:center; gap:10px; }
-#op-range {
-  -webkit-appearance:none; flex:1; height:4px;
-  border-radius:2px; background:var(--border); outline:none;
-}
-#op-range::-webkit-slider-thumb {
-  -webkit-appearance:none; width:18px; height:18px;
-  border-radius:50%; background:var(--btn-bg); border:2px solid #fff; cursor:pointer;
-}
-#op-lbl { font-size:.76rem; color:var(--text2); font-weight:700; min-width:36px; text-align:right; }
-
-/* Size popup */
-#sz-popup-wrap { display:flex; align-items:center; gap:10px; }
-#sz-range {
-  -webkit-appearance:none; flex:1; height:4px;
-  border-radius:2px; background:var(--border); outline:none;
-}
-#sz-range::-webkit-slider-thumb {
-  -webkit-appearance:none; width:18px; height:18px;
-  border-radius:50%; background:var(--btn-bg); border:2px solid #fff; cursor:pointer;
-}
-#sz-lbl { font-size:.76rem; color:var(--text2); font-weight:700; min-width:28px; text-align:right; }
-#sz-preview { width:20px; height:20px; display:flex; align-items:center; justify-content:center; }
-
-/* Layer rows */
-.layer-row {
-  display:flex; align-items:center; gap:6px; padding:7px 8px;
-  border-radius:9px; cursor:pointer; font-size:.8rem; font-weight:600;
-  border:1.5px solid transparent;
-}
-.layer-row:hover  { background:var(--surface2); }
-.layer-row.active { border-color:var(--btn-bg); background:rgba(196,149,106,.1); color:var(--btn-active); }
-.layer-vis { font-size:.85rem; opacity:.3; transition:opacity .15s; }
-.layer-vis.on { opacity:1; }
-.layer-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.layer-op-slider {
-  -webkit-appearance:none; width:46px; height:3px;
-  background:var(--border); border-radius:2px; outline:none; flex-shrink:0;
-}
-.layer-op-slider::-webkit-slider-thumb {
-  -webkit-appearance:none; width:12px; height:12px;
-  border-radius:50%; background:var(--text2); cursor:pointer;
-}
-#layer-add { font-size:.76rem; padding:8px 10px; width:100%; border-radius:9px; }
-
-/* Settings popup items */
-.setting-row {
-  display:flex; align-items:center; gap:10px; padding:9px 8px;
-  border-radius:9px; cursor:pointer; font-size:.83rem; font-weight:500;
-  border:1px solid transparent; transition:background .1s;
-}
-.setting-row:hover { background:var(--surface2); }
-.setting-row .s-icon { font-size:1.1rem; width:24px; text-align:center; flex-shrink:0; }
-.setting-row .s-label { flex:1; }
-.setting-row .s-value { font-size:.75rem; color:var(--text2); font-weight:600; }
-.setting-section { font-family:'Syne',sans-serif; font-size:.72rem; font-weight:700; color:var(--btn-bg); letter-spacing:.06em; text-transform:uppercase; padding:2px 4px; }
-
-/* Players / LB */
-.player-row { display:flex; align-items:center; gap:7px; padding:5px 6px; font-size:.8rem; }
-.player-dot  { width:8px; height:8px; border-radius:50%; background:var(--green); flex-shrink:0; }
-.player-name { flex:1; font-weight:500; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.player-score{ color:var(--yellow); font-weight:700; font-size:.75rem; }
-.lb-title { font-family:'Syne',sans-serif; font-size:.82rem; font-weight:700; color:var(--yellow); margin-bottom:4px; }
-.lb-row   { display:flex; align-items:center; gap:8px; padding:5px 6px; font-size:.82rem; border-radius:6px; }
-.lb-row:nth-child(2) { background:rgba(255,209,102,.08); }
-.lb-rank  { font-weight:700; color:var(--text2); min-width:18px; }
-.lb-name  { flex:1; font-weight:500; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.lb-pts   { color:var(--yellow); font-weight:700; white-space:nowrap; }
-
-/* ─── Toast ──────────────────────────────────────────────── */
-#toast {
-  position:fixed; top:calc(var(--topbar-h) + 10px); left:50%;
-  transform:translateX(-50%) translateY(-6px);
-  background:rgba(30,42,43,.92); color:var(--text);
-  padding:8px 18px; border-radius:30px; font-size:.8rem; font-weight:600;
-  border:1px solid var(--border); opacity:0; transition:all .2s;
-  z-index:400; pointer-events:none; white-space:nowrap;
-  max-width:86vw; overflow:hidden; text-overflow:ellipsis;
-  backdrop-filter:blur(6px);
-}
-#toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
-#toast.ok   { background:rgba(61,214,140,.18); border-color:var(--green); color:var(--green); }
-#toast.warn { background:rgba(224,85,85,.18);  border-color:var(--red);   color:var(--red); }
-
-/* ─── Round result ───────────────────────────────────────── */
-#round-overlay {
-  position:fixed; inset:0; background:rgba(0,0,0,.88);
-  display:none; align-items:center; justify-content:center;
-  z-index:500; backdrop-filter:blur(10px);
-}
-#round-overlay.show { display:flex; }
-#round-box {
-  background:var(--surface); border:1px solid var(--border); border-radius:20px;
-  padding:28px 22px; text-align:center; width:min(300px,90vw);
-  animation:popUp .3s cubic-bezier(.17,.67,.41,1.4);
-}
-.re-emoji { font-size:2.8rem; margin-bottom:8px; }
-.re-title { font-family:'Syne',sans-serif; font-size:1.15rem; font-weight:800; margin-bottom:4px; }
-.re-word  { font-size:1.4rem; font-weight:800; color:var(--btn-active); margin:8px 0; }
-.re-sub   { color:var(--text2); font-size:.84rem; margin-bottom:14px; }
-#re-newround {
-  background:var(--btn-bg); color:#fff; border:none; padding:11px;
-  border-radius:var(--r); font-size:.9rem; font-weight:700; cursor:pointer;
-  font-family:'Syne',sans-serif; width:100%;
-}
-
-/* ─── Join overlay ───────────────────────────────────────── */
-#join-overlay {
-  position:fixed; inset:0; background:rgba(15,22,23,.97);
-  display:flex; align-items:center; justify-content:center;
-  z-index:600; backdrop-filter:blur(14px);
-}
-#join-box {
-  background:var(--surface); border:1px solid var(--border); border-radius:22px;
-  padding:28px 22px; width:min(320px,92vw);
-  display:flex; flex-direction:column; gap:12px;
-}
-#join-box h2 {
-  text-align:center; font-family:'Syne',sans-serif; font-size:1.5rem; font-weight:800;
-  color:var(--btn-active);
-}
-#join-box input {
-  background:var(--surface2); border:1.5px solid var(--border);
-  border-radius:var(--r); color:var(--text); padding:11px 14px;
-  font-size:.9rem; outline:none; font-family:'DM Sans',sans-serif;
-}
-#join-box input:focus { border-color:var(--btn-bg); }
-#join-btn {
-  background:var(--btn-bg); color:#fff; border:none; padding:13px;
-  border-radius:var(--r); font-size:.95rem; font-weight:700; cursor:pointer;
-  font-family:'Syne',sans-serif;
-}
-
-/* ─── Replay ─────────────────────────────────────────────── */
-#replay-overlay {
-  position:fixed; inset:0; background:rgba(0,0,0,.9);
-  display:none; align-items:center; justify-content:center;
-  z-index:450; backdrop-filter:blur(6px); flex-direction:column; gap:14px;
-}
-#replay-overlay.show { display:flex; }
-#replay-canvas { border-radius:12px; max-width:90vw; max-height:56vh; background:#fff; }
-#replay-close {
-  background:var(--surface2); border:1px solid var(--border); color:var(--text);
-  padding:8px 18px; border-radius:20px; cursor:pointer; font-size:.84rem;
-}
-
-/* ─── Desktop ────────────────────────────────────────────── */
-@media(min-width:640px){
-  :root{ --topbar-h:50px; --toolbar-h:80px; }
-  #toolbar{ flex-direction:row; padding:0 20px; gap:14px; }
-  .tb-row{ gap:12px; }
-  .tbtn{ width:52px; height:52px; font-size:1.25rem; }
-}
-@media(max-width:380px){
-  .tbtn{ width:48px; height:48px; font-size:1.15rem; }
-  #toolbar{ gap:7px; padding:8px 10px; }
-  .tb-row{ gap:7px; }
-}
-
-/* Logs popup */
-#logs-popup { top:calc(var(--topbar-h) + 8px); left:50%; transform:translateX(-50%); width:min(440px,92vw); max-height:60vh; }
-#log-entries { font-family:'Courier New',monospace; font-size:.7rem; color:#8aabac; overflow-y:auto; max-height:calc(60vh - 80px); }
-.log-entry { padding:2px 4px; border-bottom:1px solid rgba(255,255,255,.04); line-height:1.5; }
-.log-entry.round { color:#c4956a; }
-.log-entry.join  { color:#3dd68c; }
-.log-entry.guess { color:#b3adff; }
-#log-clear-btn { font-size:.72rem; padding:5px 12px; border-radius:8px; background:var(--surface2); border:1px solid var(--border); color:var(--text2); cursor:pointer; }
-</style>
-</head>
-<body>
-<div id="app">
-
-  <!-- Join overlay -->
-  <div id="join-overlay">
-    <div id="join-box">
-      <h2>🎨 Draw & Guess</h2>
-      <input id="name-in" placeholder="Your name" maxlength="24" autocomplete="off"/>
-      <input id="room-in" placeholder="Room ID" maxlength="60" autocomplete="off"/>
-      <button id="join-btn">Join Game →</button>
-    </div>
-  </div>
-
-  <!-- Round result -->
-  <div id="round-overlay">
-    <div id="round-box">
-      <div class="re-emoji" id="re-emoji">🎉</div>
-      <div class="re-title" id="re-title"></div>
-      <div class="re-word"  id="re-word"></div>
-      <div class="re-sub"   id="re-sub"></div>
-      <button id="re-newround">▶ New Round</button>
-    </div>
-  </div>
-
-  <!-- Replay -->
-  <div id="replay-overlay">
-    <canvas id="replay-canvas"></canvas>
-    <button id="replay-close">✕ Close</button>
-  </div>
-
-  <!-- ── Popups ── -->
-  <div class="popup" id="brush-popup">
-    <div class="pop-label">Brush Type</div>
-    <div class="brush-opt on"  data-brush="pen">    <span class="brush-icon">🖊</span>Pen</div>
-    <div class="brush-opt"     data-brush="pencil"> <span class="brush-icon">✏️</span>Pencil</div>
-    <div class="brush-opt"     data-brush="marker"> <span class="brush-icon">🖍</span>Marker</div>
-    <div class="brush-opt"     data-brush="bristle"><span class="brush-icon">🎨</span>Bristle</div>
-    <div class="brush-opt"     data-brush="flat">   <span class="brush-icon">▬</span>Flat</div>
-    <div class="brush-opt"     data-brush="eraser"> <span class="brush-icon">🧽</span>Eraser</div>
-  </div>
-
-  <div class="popup" id="color-popup">
-    <div class="pop-label">Basic</div>
-    <div class="color-row" id="colors-basic"></div>
-    <div class="pop-label">Pastel</div>
-    <div class="color-row" id="colors-pastel"></div>
-    <div class="pop-label">Neon</div>
-    <div class="color-row" id="colors-neon"></div>
-    <div id="custom-color-wrap">
-      <input type="color" id="custom-color" value="#1a1a2e"/>
-      <span id="custom-color-lbl">Custom color</span>
-    </div>
-  </div>
-
-  <div class="popup" id="opacity-popup">
-    <div class="pop-label">Brush Size</div>
-    <div id="sz-popup-wrap">
-      <div id="sz-preview"></div>
-      <input type="range" id="sz-range" min="1" max="60" value="8"/>
-      <span id="sz-lbl">8px</span>
-    </div>
-    <div class="pop-divider"></div>
-    <div class="pop-label">Opacity</div>
-    <div id="op-popup-wrap">
-      <input type="range" id="op-range" min="5" max="100" value="100"/>
-      <span id="op-lbl">100%</span>
-    </div>
-  </div>
-
-  <div class="popup" id="layer-popup">
-    <div class="pop-label">Layers</div>
-    <div id="layer-list"></div>
-    <button class="tbtn" id="layer-add" style="height:36px;font-size:.78rem;border-radius:9px;background:var(--surface2);color:var(--text2)">+ Add Layer</button>
-  </div>
-
-  <!-- Settings popup — 3-dot menu -->
-  <div class="popup" id="settings-popup">
-    <div class="setting-section">Game</div>
-    <div class="setting-row" id="s-players"><span class="s-icon">👥</span><span class="s-label">Players</span></div>
-    <div class="setting-row" id="s-leaderboard"><span class="s-icon">🏆</span><span class="s-label">Leaderboard</span></div>
-    <div class="pop-divider"></div>
-    <div class="setting-section">Drawing</div>
-    <div class="setting-row" id="s-save-drawing"><span class="s-icon">💾</span><span class="s-label">Save drawing</span></div>
-    <div class="setting-row" id="s-send-bot"><span class="s-icon">📤</span><span class="s-label">Send to my Telegram</span></div>
-    <div class="setting-row" id="s-gallery"><span class="s-icon">🖼</span><span class="s-label">Gallery</span></div>
-    <div class="pop-divider"></div>
-    <div class="setting-section">Display</div>
-    <div class="setting-row" id="s-theme"><span class="s-icon">☀️</span><span class="s-label">Light mode</span><span class="s-value" id="s-theme-val">Off</span></div>
-    <div class="setting-row" id="s-sound"><span class="s-icon">🔊</span><span class="s-label">Sound</span><span class="s-value" id="s-sound-val">On</span></div>
-    <div class="pop-divider"></div>
-    <div class="setting-section">Round</div>
-    <div class="setting-row" id="s-skip"><span class="s-icon">⏭</span><span class="s-label">Skip word</span></div>
-    <div class="setting-row" id="s-done"><span class="s-icon">✅</span><span class="s-label">Finish drawing</span></div>
-    <div class="setting-row" id="s-newround"><span class="s-icon">▶</span><span class="s-label">New round</span></div>
-    <div class="pop-divider"></div>
-    <div class="setting-section">Developer</div>
-    <div class="setting-row" id="s-logs"><span class="s-icon">📋</span><span class="s-label">Server logs</span></div>
-  </div>
-
-
-  <!-- Logs popup -->
-  <div class="popup" id="logs-popup">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
-      <div class="pop-label">Server Logs</div>
-      <div style="display:flex;gap:6px">
-        <button id="log-refresh-btn" class="tbtn" style="width:28px;height:28px;font-size:.7rem;border-radius:7px;background:var(--surface2)">↻</button>
-        <button id="log-clear-btn">Clear</button>
-      </div>
-    </div>
-    <div id="log-entries"><div style="color:var(--text2);font-size:.72rem;padding:8px">No logs yet. Connect to load.</div></div>
-  </div>
-  <!-- Players popup -->
-  <div class="popup" id="players-popup">
-    <div class="pop-label">Players</div>
-    <div id="player-list"><div style="font-size:.76rem;color:var(--text2);padding:4px 6px">No players</div></div>
-  </div>
-
-  <!-- Leaderboard popup -->
-  <div class="popup" id="lb-popup">
-    <div class="lb-title">🏆 Leaderboard</div>
-    <div id="lb-list"></div>
-  </div>
-
-  <!-- Topbar -->
-  <div id="topbar">
-    <div id="conn-dot"></div>
-    <div id="word-display">connecting…</div>
-    <span id="role-pill">—</span>
-    <span id="round-status" style="font-size:.7rem;color:var(--text2);font-weight:600;white-space:nowrap;flex-shrink:0"></span>
-    <div id="top-actions">
-      <button class="top-icon" id="btn-menu" title="Settings">⋯</button>
-    </div>
-  </div>
-
-  <!-- Canvas area -->
-  <div id="canvas-area">
-    <div id="canvas-wrap">
-      <canvas id="cv-bg"      class="cvl"></canvas>
-      <canvas id="cv-main"    class="cvl"></canvas>
-      <canvas id="cv-preview" class="cvl"></canvas>
-    </div>
-    <!-- Waiting to start overlay — shown when no round active -->
-    <div id="waiting-overlay" style="
-      position:absolute;inset:0;display:flex;flex-direction:column;
-      align-items:center;justify-content:center;gap:16px;z-index:10;
-      pointer-events:none;
-    ">
-      <button id="start-btn" style="
-        background:var(--btn-bg);color:#fff;border:none;
-        padding:16px 40px;border-radius:16px;font-size:1.1rem;
-        font-family:'Syne',sans-serif;font-weight:800;cursor:pointer;
-        box-shadow:0 6px 24px rgba(196,149,106,.5);
-        pointer-events:all;display:none;letter-spacing:.05em;
-      ">▶ NEW ROUND</button>
-    </div>
-
-    <!-- Chat (guesser) -->
-    <div id="chat-panel">
-      <div id="chat-log"></div>
-      <div id="guess-row">
-        <input id="guess-in" placeholder="Type your guess…" autocomplete="off" autocorrect="off" autocapitalize="off"/>
-        <button id="guess-go">Send</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Toolbar (drawer) — 2×4 icon grid like reference -->
-  <div id="toolbar">
-    <!-- Row 1: brush, color, size/opacity, layers, (filler) -->
-    <div class="tb-row">
-      <button class="tbtn on" id="btn-brush"   title="Brush">✏️<div class="color-dot" id="color-dot"></div></button>
-      <button class="tbtn"    id="btn-color"   title="Color">🎨</button>
-      <button class="tbtn"    id="btn-opacity" title="Size & Opacity">💧</button>
-      <button class="tbtn"    id="btn-layers"  title="Layers">📋</button>
-    </div>
-    <!-- Row 2: undo, redo, clear, settings + size label -->
-    <div class="tb-row">
-      <button class="tbtn"       id="btn-undo"  title="Undo">↩</button>
-      <button class="tbtn"       id="btn-redo"  title="Redo">↪</button>
-      <button class="tbtn tred"  id="btn-clear" title="Clear">✕</button>
-      <button class="tbtn"       id="btn-menu2" title="More">⋯</button>
-      <div id="sz-op-label">
-        <div id="sz-op-size">5px</div>
-        <div id="sz-op-opacity">100%</div>
-      </div>
-    </div>
-  </div>
-
-</div>
-<div id="toast"></div>
-
-<script>
-(function(){
-'use strict';
-
-const tg = window.Telegram?.WebApp;
-if (tg) {
-  try { tg.ready(); } catch(e) {}
-  try { tg.expand(); } catch(e) {}
-  try { if (typeof tg.requestFullscreen === 'function') tg.requestFullscreen(); } catch(e) {}
-  try { tg.onEvent('viewportChanged', () => { try { if (!tg.isExpanded) tg.expand(); } catch(e){} }); } catch(e) {}
-  // Hook Telegram's native SettingsButton (the gear in the 3-dot menu)
-  try {
-    if (tg.SettingsButton) {
-      tg.SettingsButton.show();
-      tg.SettingsButton.onClick(() => togglePanel('settings-popup'));
-    }
-  } catch(e) {}
-}
-
-// ── Canvas setup ──────────────────────────────────────────────────────────────
-let CW = 800, CH = 500;
-const bgCanvas      = document.getElementById('cv-bg');
-const mainCanvas    = document.getElementById('cv-main');
-const previewCanvas = document.getElementById('cv-preview');
-let   bgCtx, mainCtx, previewCtx;
-
-// Layer system
-const MAX_LAYERS = 5;
-let layers = [];
-let activeLayerIdx = 0;
-
-function createLayer(name) {
-  const canvas = document.createElement('canvas');
-  canvas.width = CW; canvas.height = CH;
-  canvas.style.cssText = `position:absolute;top:0;left:0;z-index:${2+layers.length}`;
-  document.getElementById('canvas-wrap').insertBefore(canvas, previewCanvas);
-  const ctx = canvas.getContext('2d');
-  ctx.lineCap = ctx.lineJoin = 'round';
-  return { id:Date.now(), name, canvas, ctx, visible:true, opacity:1.0 };
-}
-
-function initCanvases() {
-  [bgCanvas, mainCanvas, previewCanvas].forEach(c => {
-    c.width = CW; c.height = CH;
-    c.style.width = CW+'px'; c.style.height = CH+'px';
-  });
-  bgCtx = bgCanvas.getContext('2d');
-  mainCtx = mainCanvas.getContext('2d');
-  previewCtx = previewCanvas.getContext('2d');
-  bgCtx.fillStyle = '#fff'; bgCtx.fillRect(0,0,CW,CH);
-  mainCtx.lineCap = mainCtx.lineJoin = 'round';
-
-  layers = [];
-  document.querySelectorAll('#canvas-wrap canvas:not(#cv-bg):not(#cv-main):not(#cv-preview)').forEach(c=>c.remove());
-  layers.push(createLayer('Layer 1'));
-  activeLayerIdx = 0;
-  renderLayerPanel();
-  fitCanvas();
-}
-
-function activeLayer() { return layers[activeLayerIdx]; }
-function activeCtx()   { return activeLayer()?.ctx || mainCtx; }
-
-// ── Zoom / pan ────────────────────────────────────────────────────────────────
-let zoom=1, panX=0, panY=0;
-const canvasWrap = document.getElementById('canvas-wrap');
-const canvasArea = document.getElementById('canvas-area');
-
-function applyTransform() {
-  canvasWrap.style.transform = `translate(${panX}px,${panY}px) scale(${zoom})`;
-}
-function fitCanvas() {
-  const aw = canvasArea.clientWidth || window.innerWidth;
-  const ah = canvasArea.clientHeight || window.innerHeight - 44;
-  if (!aw || !ah) { setTimeout(fitCanvas, 50); return; }
-  zoom = Math.min(aw/CW, ah/CH, 1);
-  panX = (aw - CW*zoom)/2;
-  panY = Math.max(0, (ah - CH*zoom)/2);
-  applyTransform();
-}
-window.addEventListener('resize', fitCanvas);
-
-function clientToCanvas(cx, cy) {
-  const rect = canvasArea.getBoundingClientRect();
-  return [(cx-rect.left-panX)/zoom, (cy-rect.top-panY)/zoom];
-}
-
-// ── Drawing tools ─────────────────────────────────────────────────────────────
-let brushType='pen', brushSize=8, brushOpacity=1.0;
-let currentColor='#1a1a2e';
-let isDrawing=false, currentStroke=null;
-let lastX=0, lastY=0;
-
-const undoStacks = new WeakMap();
-const redoStacks = new WeakMap();
-
-function getStack(layer, map) {
-  if (!map.has(layer)) map.set(layer, []);
-  return map.get(layer);
-}
-function saveUndo() {
-  const l = activeLayer(); if (!l) return;
-  const stack = getStack(l, undoStacks);
-  stack.push(l.ctx.getImageData(0,0,CW,CH));
-  if (stack.length > 20) stack.shift();
-  getStack(l, redoStacks).length = 0;
-}
-function doUndo() {
-  const l=activeLayer(); if (!l) return;
-  const us=getStack(l,undoStacks), rs=getStack(l,redoStacks);
-  if (!us.length) return;
-  rs.push(l.ctx.getImageData(0,0,CW,CH));
-  l.ctx.putImageData(us.pop(),0,0);
-}
-function doRedo() {
-  const l=activeLayer(); if (!l) return;
-  const us=getStack(l,undoStacks), rs=getStack(l,redoStacks);
-  if (!rs.length) return;
-  us.push(l.ctx.getImageData(0,0,CW,CH));
-  l.ctx.putImageData(rs.pop(),0,0);
-}
-
-function applyBrushSettings(ctx) {
-  ctx.globalAlpha = brushOpacity;
-  ctx.globalCompositeOperation = brushType==='eraser' ? 'destination-out' : 'source-over';
-  ctx.lineWidth = brushSize;
-  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-  ctx.strokeStyle = brushType==='eraser' ? 'rgba(0,0,0,1)' : currentColor;
-}
-
-function drawSegment(ctx, x0, y0, x1, y1) {
-  applyBrushSettings(ctx);
-  switch(brushType) {
-    case 'pencil': {
-      ctx.setLineDash([brushSize*.6, brushSize*.3]);
-      ctx.globalAlpha = brushOpacity * .75;
-      ctx.lineWidth = brushSize * .8;
-      for (let i=0;i<2;i++) {
-        ctx.beginPath();
-        ctx.moveTo(x0+(Math.random()-.5)*1.2, y0+(Math.random()-.5)*1.2);
-        ctx.lineTo(x1+(Math.random()-.5)*1.2, y1+(Math.random()-.5)*1.2);
-        ctx.stroke();
-      }
-      ctx.setLineDash([]);
-      break;
-    }
-    case 'marker': {
-      ctx.globalAlpha = brushOpacity * .6;
-      ctx.lineWidth = brushSize * 1.4;
-      ctx.beginPath(); ctx.moveTo(x0,y0); ctx.lineTo(x1,y1); ctx.stroke();
-      break;
-    }
-    case 'bristle': {
-      const bristles = Math.max(3, Math.floor(brushSize/2));
-      ctx.globalAlpha = brushOpacity / bristles * 2;
-      ctx.lineWidth = Math.max(1, brushSize/bristles);
-      for (let i=0;i<bristles;i++) {
-        const r = brushSize*.6;
-        ctx.beginPath();
-        ctx.moveTo(x0+(Math.random()-.5)*r, y0+(Math.random()-.5)*r);
-        ctx.lineTo(x1+(Math.random()-.5)*r, y1+(Math.random()-.5)*r);
-        ctx.stroke();
-      }
-      break;
-    }
-    case 'flat': {
-      ctx.lineWidth = brushSize*2.5; ctx.lineCap='square';
-      ctx.beginPath(); ctx.moveTo(x0,y0); ctx.lineTo(x1,y1); ctx.stroke();
-      break;
-    }
-    default: {
-      ctx.beginPath(); ctx.moveTo(x0,y0); ctx.lineTo(x1,y1); ctx.stroke();
-    }
+// Log every incoming request BEFORE static so we see everything
+app.use((req, res, next) => {
+  if (req.path !== '/ping') {
+    console.log(`[http] ${req.method} ${req.path}`);
   }
-  ctx.globalAlpha=1; ctx.globalCompositeOperation='source-over'; ctx.lineCap='round';
-}
-
-// ── Pointer events ────────────────────────────────────────────────────────────
-let pointerId=null;
-
-function onPointerDown(e) {
-  if (!isDrawer) return;
-  if (e.pointerType==='touch' && e.touches?.length>1) return;
-  e.preventDefault();
-  pointerId=e.pointerId;
-  canvasArea.setPointerCapture?.(e.pointerId);
-  const [x,y]=clientToCanvas(e.clientX,e.clientY);
-  saveUndo();
-  isDrawing=true; lastX=x; lastY=y;
-  currentStroke={color:currentColor,size:brushSize,opacity:brushOpacity,brushType,points:[[x,y]]};
-}
-function onPointerMove(e) {
-  if (!isDrawing||!isDrawer||e.pointerId!==pointerId) return;
-  e.preventDefault();
-  const [x,y]=clientToCanvas(e.clientX,e.clientY);
-  currentStroke.points.push([x,y]);
-  drawSegment(activeCtx(),lastX,lastY,x,y);
-  lastX=x; lastY=y;
-  if (currentStroke.points.length%4===0) ws?.send(JSON.stringify({type:'draw',stroke:{...currentStroke}}));
-}
-function onPointerUp(e) {
-  if (!isDrawing||!isDrawer) return;
-  isDrawing=false; pointerId=null;
-  if (currentStroke?.points.length>0) ws?.send(JSON.stringify({type:'draw',stroke:currentStroke}));
-  currentStroke=null;
-}
-
-canvasArea.addEventListener('pointerdown', onPointerDown, {passive:false});
-canvasArea.addEventListener('pointermove', onPointerMove, {passive:false});
-canvasArea.addEventListener('pointerup',   onPointerUp);
-canvasArea.addEventListener('pointercancel', onPointerUp);
-
-// Pinch zoom
-let pinchDist=0, pinchZoom=1;
-canvasArea.addEventListener('touchstart', e=>{
-  if (e.touches.length===2) {
-    isDrawing=false;
-    const t=e.touches;
-    pinchDist=Math.hypot(t[0].clientX-t[1].clientX,t[0].clientY-t[1].clientY);
-    pinchZoom=zoom; e.preventDefault();
-  }
-},{passive:false});
-canvasArea.addEventListener('touchmove', e=>{
-  if (e.touches.length===2) {
-    e.preventDefault();
-    const t=e.touches;
-    const d=Math.hypot(t[0].clientX-t[1].clientX,t[0].clientY-t[1].clientY);
-    zoom=Math.max(.2,Math.min(8,pinchZoom*(d/pinchDist)));
-    applyTransform();
-  }
-},{passive:false});
-canvasArea.addEventListener('wheel',e=>{
-  if(e.ctrlKey||e.metaKey){
-    e.preventDefault();
-    const rect=canvasArea.getBoundingClientRect();
-    const ox=e.clientX-rect.left,oy=e.clientY-rect.top;
-    const nz=Math.max(.15,Math.min(8,zoom*(e.deltaY<0?1.12:.89)));
-    panX=ox-(ox-panX)*(nz/zoom); panY=oy-(oy-panY)*(nz/zoom);
-    zoom=nz; applyTransform();
-  }
-},{passive:false});
-
-// ── Render incoming strokes ────────────────────────────────────────────────────
-function renderStroke(s, ctx) {
-  if (!ctx) return;
-  const pts=s.points||[]; if (pts.length<2) return;
-  ctx.globalAlpha=s.opacity||1;
-  ctx.globalCompositeOperation=(s.brushType==='eraser')?'destination-out':'source-over';
-  ctx.strokeStyle=(s.brushType==='eraser')?'rgba(0,0,0,1)':(s.color||'#000');
-  ctx.lineWidth=s.size||4; ctx.lineCap=ctx.lineJoin='round';
-  ctx.beginPath(); ctx.moveTo(pts[0][0],pts[0][1]);
-  for(let i=1;i<pts.length;i++) ctx.lineTo(pts[i][0],pts[i][1]);
-  ctx.stroke();
-  ctx.globalAlpha=1; ctx.globalCompositeOperation='source-over';
-}
-function clearAll() {
-  layers.forEach(l=>l.ctx.clearRect(0,0,CW,CH));
-  bgCtx.fillStyle='#fff'; bgCtx.fillRect(0,0,CW,CH);
-}
-
-// ── Layer panel ───────────────────────────────────────────────────────────────
-function renderLayerPanel() {
-  const list=document.getElementById('layer-list'); list.innerHTML='';
-  layers.forEach((l,i)=>{
-    const row=document.createElement('div');
-    row.className='layer-row'+(i===activeLayerIdx?' active':'');
-    row.innerHTML=`
-      <span class="layer-vis ${l.visible?'on':''}" data-li="${i}">👁</span>
-      <span class="layer-name">${l.name}</span>
-      <input type="range" class="layer-op-slider" min="5" max="100" value="${Math.round(l.opacity*100)}" data-li="${i}"/>
-      ${layers.length>1?`<span style="cursor:pointer;font-size:.78rem;color:var(--red)" data-del="${i}">🗑</span>`:''}
-    `;
-    row.addEventListener('click',ev=>{
-      if(ev.target.dataset.del!==undefined){layers.splice(+ev.target.dataset.del,1);if(activeLayerIdx>=layers.length)activeLayerIdx=layers.length-1;renderLayerPanel();return;}
-      if(ev.target.classList.contains('layer-vis')){layers[+ev.target.dataset.li].visible=!layers[+ev.target.dataset.li].visible;layers[+ev.target.dataset.li].canvas.style.opacity=layers[+ev.target.dataset.li].visible?layers[+ev.target.dataset.li].opacity:0;renderLayerPanel();return;}
-      activeLayerIdx=i; renderLayerPanel();
-    });
-    row.querySelector('.layer-op-slider')?.addEventListener('input',ev=>{const li=+ev.target.dataset.li;layers[li].opacity=+ev.target.value/100;if(layers[li].visible)layers[li].canvas.style.opacity=layers[li].opacity;});
-    list.appendChild(row);
-  });
-}
-document.getElementById('layer-add').addEventListener('click',()=>{
-  if(layers.length>=MAX_LAYERS){showToast('Max layers reached','warn');return;}
-  layers.push(createLayer(`Layer ${layers.length+1}`));
-  activeLayerIdx=layers.length-1; renderLayerPanel();
+  next();
 });
 
-// ── Color palette ─────────────────────────────────────────────────────────────
-const PALETTE = {
-  basic:  ['#1a1a2e','#ffffff','#e63946','#f4842d','#ffd166','#3dd68c','#118ab2','#7c6ff7'],
-  pastel: ['#ffb3ba','#ffdfba','#ffffba','#baffc9','#bae1ff','#e8baff','#ffd4ba','#c9ffba'],
-  neon:   ['#ff0090','#ff6600','#ffee00','#00ff41','#00cfff','#7b00ff','#ff00ff','#00ffcc'],
+// Static files AFTER logging and webhook routes
+// (registered below after webhook route)
+
+app.get('/ping', (req, res) => res.send('pong'));
+
+app.get('/', (req, res, next) => {
+  if (ALLOW_EXTERNAL_URL) return next(); // dev mode — allow all
+
+  const ua      = req.headers['user-agent'] || '';
+  const referer = req.headers['referer']    || '';
+  const origin  = req.headers['origin']     || '';
+
+  // Telegram Desktop: UA contains "Telegram"
+  // Telegram Mobile WebView: UA is a normal browser UA but Referer/Origin is t.me or telegram
+  // Telegram Web: opens from web.telegram.org
+  const isTelegram =
+    /Telegram/i.test(ua) ||
+    /t.me|telegram.org|web.telegram.org/i.test(referer + origin);
+
+  // Allow if it looks like Telegram, or if no Accept header (API/curl calls)
+  const acceptsHtml = (req.headers['accept']||'').includes('text/html');
+
+  if (!isTelegram && acceptsHtml) {
+    return res.status(403).send(
+      '<h2 style="font-family:sans-serif;padding:2rem;color:#eee;background:#1c2526;min-height:100vh;margin:0">' +
+      '🎨 Open inside Telegram only — use /startgame in your group</h2>'
+    );
+  }
+  next();
+});
+
+// Fixed webhook path — set WEBHOOK_SECRET in Railway env vars to customize
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || 'tgbot';
+const WEBHOOK_PATH   = `/webhook/${WEBHOOK_SECRET}`;
+const WEBHOOK_URL    = `${PUBLIC_URL}${WEBHOOK_PATH}`;
+console.log('[config] Webhook path:', WEBHOOK_PATH);
+
+// Telegram POSTs updates to this endpoint
+app.post(WEBHOOK_PATH, async (req, res) => {
+  console.log('[webhook] ← received update:', JSON.stringify(req.body).slice(0, 120));
+  try {
+    if (!req.body || !req.body.update_id) {
+      console.warn('[webhook] Invalid body — missing update_id');
+      return res.sendStatus(400);
+    }
+    await bot.handleUpdate(req.body);
+    console.log('[webhook] ✅ handled update_id:', req.body.update_id);
+    res.sendStatus(200);
+  } catch(e) {
+    console.error('[webhook] handleUpdate error:', e.message, e.stack?.split('\n')[1]);
+    res.sendStatus(500);
+  }
+});
+
+// Quick test endpoint to confirm webhook path is reachable
+app.get(WEBHOOK_PATH, (req, res) => res.send('Webhook endpoint active ✅'));
+
+// Static files served last — after all API/webhook routes
+app.use(express.static(path.join(__dirname, '../../client')));
+
+
+// ── Canvas render (PNG for Telegram) ─────────────────────────────────────────
+const RENDER_W = 1600, RENDER_H = 1000;
+
+function hexToInt(hex) {
+  try {
+    const c = (hex || '#000').replace('#', '').padEnd(6, '0');
+    return Jimp.rgbaToInt(
+      parseInt(c.slice(0,2),16), parseInt(c.slice(2,4),16),
+      parseInt(c.slice(4,6),16), 255);
+  } catch { return 0x000000FF; }
+}
+
+function plotLine(img, x0,y0,x1,y1, col, r) {
+  x0=Math.round(x0); y0=Math.round(y0); x1=Math.round(x1); y1=Math.round(y1);
+  const dx=Math.abs(x1-x0), dy=Math.abs(y1-y0);
+  const sx=x0<x1?1:-1, sy=y0<y1?1:-1;
+  let err=dx-dy;
+  for(;;) {
+    for(let tx=-r;tx<=r;tx++) for(let ty=-r;ty<=r;ty++) {
+      if(tx*tx+ty*ty<=r*r){
+        const px=x0+tx,py=y0+ty;
+        if(px>=0&&px<RENDER_W&&py>=0&&py<RENDER_H) img.setPixelColor(col,px,py);
+      }
+    }
+    if(x0===x1&&y0===y1) break;
+    const e2=2*err;
+    if(e2>-dy){err-=dy;x0+=sx;}
+    if(e2<dx ){err+=dx;y0+=sy;}
+  }
+}
+
+async function renderPNG(strokes, done) {
+  const img = new Jimp(RENDER_W, RENDER_H, 0xFFFFFFFF);
+  for (const s of strokes) {
+    const pts = s.points || [];
+    if (pts.length < 2) continue;
+    const col = hexToInt(s.color);
+    const r   = Math.max(1, Math.round((s.size || 4) * 0.9));
+    for (let i=1; i<pts.length; i++)
+      plotLine(img, pts[i-1][0]*2, pts[i-1][1]*2, pts[i][0]*2, pts[i][1]*2, col, r*2);
+  }
+  const barCol = done ? 0x2dc653FF : 0x1a1a2eFF;
+  for (let x=0;x<RENDER_W;x++) for(let y=RENDER_H-46;y<RENDER_H;y++) img.setPixelColor(barCol,x,y);
+  return img.getBufferAsync(Jimp.MIME_PNG);
+}
+
+// ── Word list ─────────────────────────────────────────────────────────────────
+const WORDS = {
+  easy: ['cat','dog','sun','car','fish','bird','moon','tree','house','flower',
+         'apple','pizza','smile','heart','star','cake','boat','rain','snow','book'],
+  medium: ['guitar','elephant','rainbow','castle','dragon','piano','volcano','butterfly',
+           'telescope','snowman','dinosaur','waterfall','helicopter','cactus','penguin',
+           'banana','scissors','telephone','umbrella','bicycle'],
+  hard: ['submarine','tornado','lighthouse','compass','anchor','mermaid','unicorn',
+         'wizard','knight','ninja','pirate','robot','alien','crown','bridge',
+         'glasses','rocket','glasses','crown','compass'],
 };
+const ALL_WORDS = [...WORDS.easy, ...WORDS.medium, ...WORDS.hard];
 
-function renderPalette() {
-  ['basic','pastel','neon'].forEach(group=>{
-    const row=document.getElementById('colors-'+group); if(!row) return;
-    PALETTE[group].forEach(hex=>{
-      const d=document.createElement('div');
-      d.className='cswatch'; d.style.background=hex;
-      if(hex===currentColor) d.classList.add('on');
-      d.addEventListener('click',()=>setColor(hex));
-      row.appendChild(d);
-    });
+function pickWord() { return ALL_WORDS[Math.floor(Math.random() * ALL_WORDS.length)]; }
+
+// ── State ─────────────────────────────────────────────────────────────────────
+const rooms = new Map();
+const MIN_PLAYERS = 1;
+
+function makeRoom(id, chatId) {
+  return {
+    id, chatId,
+    clients:       new Map(),   // clientId → { ws, name, userId, score }
+    strokes:       [],
+    currentDrawer: null,
+    drawerName:    '',
+    word:          null,
+    hintRevealed:  [],          // array of booleans per letter
+    guesses:       new Set(),   // userIds who guessed correctly
+    roundActive:   false,
+    roundTimer:    null,
+    hintTimer:     null,
+    updateTimer:   null,
+    liveMessageId: null,
+    scores:        new Map(),   // name → total score
+    roundNumber:   0,
+    roundStartTime:0,
+    drawerQueue:   [],          // rotation queue of clientIds
+  };
+}
+
+function bcast(room, msg, skip=null) {
+  const d = JSON.stringify(msg);
+  room.clients.forEach((c,id) => {
+    if (id !== skip && c.ws.readyState === WebSocket.OPEN) c.ws.send(d);
   });
-  updateColorDot(currentColor);
 }
 
-function hexToRgb(hex) {
-  const r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16);
-  return `rgb(${r}, ${g}, ${b})`;
+function sendTo(room, clientId, msg) {
+  const c = room.clients.get(clientId);
+  if (c && c.ws.readyState === WebSocket.OPEN) c.ws.send(JSON.stringify(msg));
 }
 
-function updateColorDot(hex) {
-  const dot=document.getElementById('color-dot'); if(dot) dot.style.background=hex;
-  const szDot=document.querySelector('#sz-preview div'); if(szDot) szDot.style.background=hex;
+// ── Hint system ───────────────────────────────────────────────────────────────
+function buildHint(word, revealed) {
+  return word.split('').map((ch,i) => ch===' ' ? ' ' : (revealed[i] ? ch : '_')).join(' ');
 }
 
-function setColor(hex) {
-  currentColor=hex;
-  document.querySelectorAll('.cswatch').forEach(s=>s.classList.toggle('on',s.style.background===hex||s.style.background===hexToRgb(hex)));
-  document.getElementById('custom-color').value=hex;
-  updateColorDot(hex);
-  if(brushType==='eraser'){brushType='pen'; updateBrushBtn();}
-  closeAllPanels();
-}
-document.getElementById('custom-color').addEventListener('input',e=>setColor(e.target.value));
-
-function updateBrushBtn() {
-  const ICONS={pen:'✏️',pencil:'✏️',marker:'🖍',bristle:'🎨',flat:'▬',eraser:'🧽'};
-  const btn=document.getElementById('btn-brush');
-  btn.innerHTML=(ICONS[brushType]||'✏️')+`<div class="color-dot" id="color-dot" style="background:${currentColor}"></div>`;
+function revealNextHint(room) {
+  if (!room.word || !room.roundActive) return;
+  const unrevealed = room.word.split('').map((_,i)=>i).filter(i => room.word[i]!==' ' && !room.hintRevealed[i]);
+  if (!unrevealed.length) return;
+  const idx = unrevealed[Math.floor(Math.random()*unrevealed.length)];
+  room.hintRevealed[idx] = true;
+  const hint = buildHint(room.word, room.hintRevealed);
+  bcast(room, { type:'hint', hint });
+  // Schedule next hint
+  room.hintTimer = setTimeout(() => revealNextHint(room), HINT_INTERVAL_MS);
 }
 
-// ── Brush panel ───────────────────────────────────────────────────────────────
-document.querySelectorAll('.brush-opt').forEach(el=>{
-  el.addEventListener('click',()=>{
-    brushType=el.dataset.brush;
-    document.querySelectorAll('.brush-opt').forEach(b=>b.classList.remove('on'));
-    el.classList.add('on');
-    updateBrushBtn();
-    closeAllPanels();
-  });
-});
-
-// ── Sliders ───────────────────────────────────────────────────────────────────
-function updateSzOpLabel() {
-  const el=document.getElementById('sz-op-size'); if(el) el.textContent=brushSize+'px';
-  const el2=document.getElementById('sz-op-opacity'); if(el2) el2.textContent=Math.round(brushOpacity*100)+'%';
-  const lbl=document.getElementById('sz-lbl'); if(lbl) lbl.textContent=brushSize+'px';
+// ── Leaderboard ───────────────────────────────────────────────────────────────
+function getLeaderboard(room) {
+  return Array.from(room.scores.entries())
+    .sort((a,b) => b[1]-a[1])
+    .map(([name,score],i) => ({ rank:i+1, name, score }));
 }
 
-document.getElementById('sz-range').addEventListener('input',e=>{
-  brushSize=+e.target.value;
-  const sz=Math.max(4,Math.min(20,brushSize));
-  const dot=document.getElementById('sz-preview');
-  dot.innerHTML=`<div style="width:${sz}px;height:${sz}px;border-radius:50%;background:${currentColor}"></div>`;
-  updateSzOpLabel();
-});
-document.getElementById('op-range').addEventListener('input',e=>{
-  brushOpacity=+e.target.value/100;
-  document.getElementById('op-lbl').textContent=e.target.value+'%';
-  updateSzOpLabel();
-});
-
-// ── Panel management ──────────────────────────────────────────────────────────
-function closeAllPanels() {
-  document.querySelectorAll('.popup').forEach(p=>p.classList.remove('open'));
-}
-function togglePanel(id) {
-  const el=document.getElementById(id);
-  const was=el.classList.contains('open');
-  closeAllPanels();
-  if(!was) el.classList.add('open');
+function formatLeaderboard(room) {
+  const lb = getLeaderboard(room);
+  if (!lb.length) return 'No scores yet.';
+  const medals = ['🥇','🥈','🥉'];
+  return lb.slice(0,10).map(({rank,name,score}) =>
+    `${medals[rank-1]||`${rank}.`} *${name}* — ${score} pts`).join('\n');
 }
 
-document.getElementById('btn-brush').addEventListener('click',()=>togglePanel('brush-popup'));
-document.getElementById('btn-color').addEventListener('click',()=>togglePanel('color-popup'));
-document.getElementById('btn-opacity').addEventListener('click',()=>togglePanel('opacity-popup'));
-document.getElementById('btn-layers').addEventListener('click',()=>togglePanel('layer-popup'));
-document.getElementById('btn-menu').addEventListener('click',()=>togglePanel('settings-popup'));
-document.getElementById('btn-menu2').addEventListener('click',()=>togglePanel('settings-popup'));
-document.getElementById('btn-undo').addEventListener('click',doUndo);
-document.getElementById('btn-redo').addEventListener('click',doRedo);
-document.getElementById('btn-clear').addEventListener('click',()=>{
-  if(!isDrawer) return;
-  saveUndo(); clearAll();
-  ws?.send(JSON.stringify({type:'clear'}));
-});
+// ── Canvas push ───────────────────────────────────────────────────────────────
+async function pushCanvas(room) {
+  if (!room.chatId || !room.roundActive || !room.word) return;
+  let png;
+  try { png = await renderPNG(room.strokes, false); }
+  catch(e) { console.error('renderPNG:', e.message); return; }
 
-document.addEventListener('pointerdown',e=>{
-  if(!e.target.closest('.tbtn')&&!e.target.closest('.top-icon')&&!e.target.closest('.popup')) closeAllPanels();
-});
+  const hint      = buildHint(room.word, room.hintRevealed);
+  const caption   = `🎨 *${room.drawerName}* is drawing!\n🔤 \`${hint}\` — ${room.word.length} letters\n\n💬 Guess in the chat!`;
+  const canvasUrl = `${PUBLIC_URL}/?room=${encodeURIComponent(room.id)}`;
 
-// ── Settings panel actions ────────────────────────────────────────────────────
-let isDark=true, soundEnabled=true;
-
-document.getElementById('s-players').addEventListener('click',()=>{togglePanel('players-popup');});
-document.getElementById('s-leaderboard').addEventListener('click',()=>{togglePanel('lb-popup');});
-
-document.getElementById('s-skip').addEventListener('click',()=>{
-  if(!isDrawer){showToast('Only the drawer can skip','warn');return;}
-  if(confirm('Skip this word?')) ws?.send(JSON.stringify({type:'skip_word'}));
-  closeAllPanels();
-});
-document.getElementById('s-done').addEventListener('click',()=>{
-  if(!isDrawer){showToast('Only the drawer can finish','warn');return;}
-  if(confirm('Finish drawing?')) ws?.send(JSON.stringify({type:'done_drawing'}));
-  closeAllPanels();
-});
-document.getElementById('s-newround').addEventListener('click',()=>{
-  ws?.send(JSON.stringify({type:'new_round'}));
-  closeAllPanels();
-});
-
-document.getElementById('s-theme').addEventListener('click',()=>{
-  isDark=!isDark; applyTheme(isDark);
-  document.getElementById('s-theme-val').textContent=isDark?'Off':'On';
-  document.getElementById('s-theme').querySelector('.s-icon').textContent=isDark?'☀️':'🌙';
-});
-document.getElementById('s-sound').addEventListener('click',()=>{
-  soundEnabled=!soundEnabled;
-  document.getElementById('s-sound-val').textContent=soundEnabled?'On':'Off';
-  showToast(soundEnabled?'Sound on 🔊':'Sound off 🔇');
-});
-document.getElementById('s-save-drawing').addEventListener('click',()=>{
-  saveToGallery(currentWord||'drawing', myName);
-  showToast('Drawing saved to gallery ✅','ok');
-  closeAllPanels();
-});
-document.getElementById('s-send-bot').addEventListener('click',()=>{
-  sendDrawingToTelegram();
-  closeAllPanels();
-});
-document.getElementById('s-logs').addEventListener('click',()=>{togglePanel('logs-popup');requestLogs();closeAllPanels();setTimeout(()=>document.getElementById('logs-popup').classList.add('open'),10);});
-document.getElementById('s-gallery').addEventListener('click',()=>{
-  openGallery(); closeAllPanels();
-});
-
-// Send current canvas as image to user's private Telegram chat via bot
-function sendDrawingToTelegram() {
   try {
-    const temp=document.createElement('canvas');
-    temp.width=CW; temp.height=CH;
-    const tctx=temp.getContext('2d');
-    tctx.fillStyle='#fff'; tctx.fillRect(0,0,CW,CH);
-    layers.forEach(l=>{if(l.visible) tctx.drawImage(l.canvas,0,0);});
-    const dataUrl=temp.toDataURL('image/png');
-    if(ws&&ws.readyState===1){
-      ws.send(JSON.stringify({type:'snapshot',data:dataUrl,sendToUser:true,userName:myName}));
-      showToast('Sent to your Telegram ✅','ok');
+    if (!room.liveMessageId) {
+      const m = await bot.telegram.sendPhoto(room.chatId,
+        { source:png, filename:'drawing.png' },
+        { caption, parse_mode:'Markdown',
+          ...Markup.inlineKeyboard([[Markup.button.url('🖌 Open Canvas', canvasUrl)]]) });
+      room.liveMessageId = m.message_id;
     } else {
-      showToast('Not connected','warn');
+      await bot.telegram.editMessageMedia(room.chatId, room.liveMessageId, null,
+        { type:'photo', media:{ source:png, filename:'drawing.png' }, caption, parse_mode:'Markdown' });
     }
-  } catch(e){ showToast('Failed to send','warn'); }
-}
-
-// ── Scroll on toolbar buttons to adjust values ───────────────────────────────
-// Scroll on brush button = change brush type
-// Scroll on color button = cycle colors  
-// Scroll on opacity button = change size OR opacity
-const BRUSH_ORDER = ['pen','pencil','marker','bristle','flat','eraser'];
-document.getElementById('btn-brush')?.addEventListener('wheel', e => {
-  e.preventDefault();
-  const cur = BRUSH_ORDER.indexOf(brushType);
-  const next = (cur + (e.deltaY > 0 ? 1 : -1) + BRUSH_ORDER.length) % BRUSH_ORDER.length;
-  brushType = BRUSH_ORDER[next];
-  document.querySelectorAll('.brush-opt').forEach(b => b.classList.toggle('on', b.dataset.brush === brushType));
-  updateBrushBtn();
-  showToast(brushType.charAt(0).toUpperCase() + brushType.slice(1));
-}, {passive:false});
-
-document.getElementById('btn-opacity')?.addEventListener('wheel', e => {
-  e.preventDefault();
-  if (e.shiftKey) {
-    // Shift+scroll = opacity
-    brushOpacity = Math.min(1, Math.max(0.05, brushOpacity + (e.deltaY < 0 ? 0.05 : -0.05)));
-    document.getElementById('op-range').value = Math.round(brushOpacity*100);
-    document.getElementById('op-lbl').textContent = Math.round(brushOpacity*100)+'%';
-  } else {
-    // scroll = size
-    brushSize = Math.min(60, Math.max(1, brushSize + (e.deltaY < 0 ? 1 : -1)));
-    document.getElementById('sz-range').value = brushSize;
+  } catch(e) {
+    if (/not modified/i.test(e.message)) return;
+    console.error('pushCanvas:', e.message);
+    if (/not found|deleted|no message|message to edit/i.test(e.message)) room.liveMessageId = null;
   }
-  updateSzOpLabel();
-  const sz = Math.max(4,Math.min(20,brushSize));
-  const dot = document.getElementById('sz-preview');
-  if(dot) dot.innerHTML = `<div style="width:${sz}px;height:${sz}px;border-radius:50%;background:${currentColor}"></div>`;
-}, {passive:false});
-
-// Also: long-press + drag up/down on mobile for size
-let touchSizeStart = null, touchSizeY = null;
-document.getElementById('btn-opacity')?.addEventListener('touchstart', e => {
-  touchSizeY = e.touches[0].clientY; touchSizeStart = brushSize; e.preventDefault();
-}, {passive:false});
-document.getElementById('btn-opacity')?.addEventListener('touchmove', e => {
-  if (touchSizeY === null) return; e.preventDefault();
-  const dy = touchSizeY - e.touches[0].clientY; // up = increase
-  brushSize = Math.min(60, Math.max(1, Math.round(touchSizeStart + dy * 0.3)));
-  document.getElementById('sz-range').value = brushSize;
-  updateSzOpLabel();
-  const sz = Math.max(4,Math.min(20,brushSize));
-  const dot = document.getElementById('sz-preview');
-  if(dot) dot.innerHTML = `<div style="width:${sz}px;height:${sz}px;border-radius:50%;background:${currentColor}"></div>`;
-  showToast(brushSize+'px');
-}, {passive:false});
-document.getElementById('btn-opacity')?.addEventListener('touchend', () => { touchSizeY=null; });
-
-// ── Server logs panel ────────────────────────────────────────────────────────
-function requestLogs() {
-  if (ws && ws.readyState === 1) ws.send(JSON.stringify({type:'get_logs'}));
-}
-function renderLogs(logs) {
-  const el = document.getElementById('log-entries'); if (!el) return;
-  if (!logs.length) { el.innerHTML='<div style="color:var(--text2);font-size:.72rem;padding:8px">No logs yet.</div>'; return; }
-  el.innerHTML = logs.map(({t,msg}) => {
-    const time = new Date(t).toLocaleTimeString();
-    let cls = '';
-    if (msg.includes('[round]')) cls = 'round';
-    else if (msg.includes('joined') || msg.includes('left')) cls = 'join';
-    else if (msg.includes('guess') || msg.includes('word')) cls = 'guess';
-    return `<div class="log-entry ${cls}"><span style="color:var(--text2)">[${time}]</span> ${msg}</div>`;
-  }).join('');
-  el.scrollTop = el.scrollHeight;
 }
 
-document.getElementById('log-refresh-btn')?.addEventListener('click', requestLogs);
-document.getElementById('log-clear-btn')?.addEventListener('click', () => {
-  const el = document.getElementById('log-entries');
-  if (el) el.innerHTML = '<div style="color:var(--text2);font-size:.72rem;padding:8px">Cleared.</div>';
+function scheduleUpdate(room) {
+  if (room.updateTimer) return;
+  room.updateTimer = setTimeout(async () => { room.updateTimer=null; await pushCanvas(room); }, 1500);
+}
+
+async function saveFinal(room, guesserName) {
+  if (!room.chatId) return;
+  let png;
+  try { png = await renderPNG(room.strokes, true); }
+  catch(e) { console.error('saveFinal render:', e.message); return; }
+  if (room.liveMessageId) {
+    try { await bot.telegram.deleteMessage(room.chatId, room.liveMessageId); } catch{}
+    room.liveMessageId = null;
+  }
+  const lb = formatLeaderboard(room);
+  const caption = [
+    `✅ *Round ${room.roundNumber} Complete!*`, ``,
+    `🖌 Artist: *${room.drawerName}*`,
+    `🎯 Word: *${room.word}*`,
+    guesserName ? `🏆 First guess: *${guesserName}*` : `😔 Nobody guessed!`,
+    ``, `📊 *Leaderboard:*`, lb,
+    ``, `_Next round in 5 seconds..._`
+  ].join('\n');
+  try {
+    await bot.telegram.sendPhoto(room.chatId,
+      { source:png, filename:`${room.word}.png` },
+      { caption, parse_mode:'Markdown' });
+  } catch(e) { console.error('saveFinal send:', e.message); }
+}
+
+// ── Round logic ───────────────────────────────────────────────────────────────
+function pickDrawer(room) {
+  const ids = Array.from(room.clients.keys());
+  if (!ids.length) return null;
+  // Rotate through queue
+  while (room.drawerQueue.length) {
+    const next = room.drawerQueue.shift();
+    if (room.clients.has(next)) return next;
+  }
+  // Refill queue (shuffle)
+  room.drawerQueue = [...ids].sort(() => Math.random()-0.5);
+  return room.drawerQueue.shift();
+}
+
+function startRound(room) {
+  const ids = Array.from(room.clients.keys());
+  if (ids.length < MIN_PLAYERS) {
+    bcast(room, { type:'status', message:`Waiting for players… (${ids.length}/${MIN_PLAYERS})` });
+    return;
+  }
+
+  clearRoundTimers(room);
+
+  room.strokes       = [];
+  room.guesses       = new Set();
+  room.roundActive   = true;
+  room.liveMessageId = null;
+  room.roundNumber  += 1;
+  room.roundStartTime = Date.now(); // for time-based scoring
+  room.currentDrawer = pickDrawer(room);
+  room.drawerName    = room.clients.get(room.currentDrawer)?.name || 'Someone';
+  room.word          = pickWord();
+  room.hintRevealed  = new Array(room.word.length).fill(false);
+
+  console.log(`[round] #${room.roundNumber} START room=${room.id} drawer=${room.drawerName} word=${room.word}`);
+
+  // Send roles
+  room.clients.forEach((c,id) => {
+    const isDrawer = id === room.currentDrawer;
+    c.ws.send(JSON.stringify(isDrawer
+      ? { type:'role', role:'drawer', word:room.word, round:room.roundNumber }
+      : { type:'role', role:'guesser', hint:buildHint(room.word, room.hintRevealed), round:room.roundNumber }
+    ));
+  });
+
+  bcast(room, { type:'clear' });
+  bcast(room, { type:'status', message:`Round ${room.roundNumber} — ${room.drawerName} is drawing!` });
+  bcast(room, { type:'leaderboard', board: getLeaderboard(room) });
+
+  if (room.chatId) {
+    bot.telegram.sendMessage(room.chatId,
+      `🎮 *Round ${room.roundNumber}!*\n\n✏️ *${room.drawerName}* is drawing...\n💬 Guess here!`,
+      { parse_mode:'Markdown' }).catch(()=>{});
+  }
+
+  // Round timer
+  room.roundTimer = setTimeout(() => endRound(room, null, 'timeout'), ROUND_DURATION_MS);
+  // First hint after HINT_INTERVAL_MS
+  room.hintTimer = setTimeout(() => revealNextHint(room), HINT_INTERVAL_MS);
+
+  setTimeout(() => pushCanvas(room), 400);
+}
+
+function clearRoundTimers(room) {
+  if (room.roundTimer)  { clearTimeout(room.roundTimer);  room.roundTimer  = null; }
+  if (room.hintTimer)   { clearTimeout(room.hintTimer);   room.hintTimer   = null; }
+  if (room.updateTimer) { clearTimeout(room.updateTimer); room.updateTimer = null; }
+}
+
+async function endRound(room, guesserName, reason='guess') {
+  if (!room.roundActive) return;
+  room.roundActive   = false;
+  room.currentDrawer = null;
+  clearRoundTimers(room);
+
+  console.log(`[round] #${room.roundNumber} END word=${room.word} guesser=${guesserName||'none'} reason=${reason}`);
+
+  bcast(room, { type:'round_end', word:room.word, drawerName:room.drawerName,
+                guesser:guesserName||null, reason,
+                board: getLeaderboard(room) });
+
+  await saveFinal(room, guesserName);
+  // Round ended — do NOT auto-start next round.
+  // Players must click "New Round" manually. This makes it feel like a real game session.
+  console.log('[round] Waiting for players to start next round...');
+}
+
+function skipWord(room, requesterId) {
+  if (!room.roundActive) return false;
+  if (requesterId !== room.currentDrawer) return false;
+  const newWord = pickWord();
+  room.word = newWord;
+  room.hintRevealed = new Array(newWord.length).fill(false);
+  room.strokes = [];
+  if (room.hintTimer) { clearTimeout(room.hintTimer); }
+  room.hintTimer = setTimeout(() => revealNextHint(room), HINT_INTERVAL_MS);
+
+  sendTo(room, room.currentDrawer, { type:'role', role:'drawer', word:newWord, round:room.roundNumber });
+  bcast(room, { type:'clear' }, room.currentDrawer);
+  bcast(room, { type:'word_skipped', hint: buildHint(newWord, room.hintRevealed) }, room.currentDrawer);
+  bcast(room, { type:'status', message:`Word skipped! ${room.drawerName} is drawing a new word.` });
+  console.log(`[round] Word skipped → ${newWord}`);
+  return true;
+}
+
+// ── Bot commands ──────────────────────────────────────────────────────────────
+bot.command('startgame', async (ctx) => {
+  if (ctx.chat.type === 'private') {
+    const roomId    = `solo_${ctx.from.id}`;
+    const canvasUrl = `${PUBLIC_URL}/?room=${encodeURIComponent(roomId)}`;
+    return ctx.reply(`🎨 *Draw & Guess* — Solo mode:`,
+      { parse_mode:'Markdown',
+        ...Markup.inlineKeyboard([[Markup.button.webApp('🖌 Open Canvas', canvasUrl)]]) });
+  }
+
+  const roomId = String(ctx.chat.id);
+  const chatId = ctx.chat.id;
+  if (!rooms.has(roomId)) rooms.set(roomId, makeRoom(roomId, chatId));
+  else rooms.get(roomId).chatId = chatId;
+
+  if (!botUsername) {
+    try { const me = await bot.telegram.getMe(); botUsername = me.username; }
+    catch(e) { return ctx.reply('Bot still starting, try again.'); }
+  }
+
+  // In supergroups, only url buttons are allowed (webApp buttons = BUTTON_TYPE_INVALID)
+  // We pass name via URL so frontend gets it without needing initDataUnsafe
+  const userName = [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' ').trim() || ctx.from.username || 'Artist';
+  // Encode both roomId and userName into startapp param separated by __ 
+  // t.me deep links only support the startapp param, not arbitrary query strings
+  const startappData = encodeURIComponent(roomId + '__' + userName);
+  const startappLink = `https://t.me/${botUsername}/${WEBAPP_SHORT_NAME}?startapp=${startappData}`;
+  console.log(`[bot] /startgame room=${roomId} user=${userName} link=${startappLink}`);
+
+  await ctx.reply(
+    `🎨 *Draw & Guess* — tap to join and draw!`,
+    { parse_mode:'Markdown',
+      ...Markup.inlineKeyboard([
+        [Markup.button.url('🖌 Open Canvas', startappLink)],
+      ]) });
 });
 
-// ── Toast ─────────────────────────────────────────────────────────────────────
-let toastTimer=null;
-const toastEl=document.getElementById('toast');
-function showToast(msg,cls=''){
-  toastEl.textContent=msg; toastEl.className='show '+cls;
-  clearTimeout(toastTimer);
-  toastTimer=setTimeout(()=>toastEl.className='',3200);
-}
-
-// ── Chat / Guess ──────────────────────────────────────────────────────────────
-const chatLog=document.getElementById('chat-log');
-function addChat(cls,html){
-  const d=document.createElement('div'); d.className='cmsg '+cls; d.innerHTML=html;
-  chatLog.appendChild(d); chatLog.scrollTop=chatLog.scrollHeight;
-}
-function sendGuess(){
-  const t=document.getElementById('guess-in').value.trim();
-  if(!t||!ws||ws.readyState!==1) return;
-  ws.send(JSON.stringify({type:'guess',text:t}));
-  document.getElementById('guess-in').value='';
-}
-document.getElementById('guess-go').addEventListener('click',sendGuess);
-document.getElementById('guess-in').addEventListener('keydown',e=>{if(e.key==='Enter')sendGuess();});
-
-// ── Round overlay ─────────────────────────────────────────────────────────────
-const roundOverlay=document.getElementById('round-overlay');
-let savedStrokes=[], currentWord='';
-
-function showResult(emoji,title,word,sub){
-  document.getElementById('re-emoji').textContent=emoji;
-  document.getElementById('re-title').textContent=title;
-  document.getElementById('re-word').textContent=word;
-  document.getElementById('re-sub').textContent=sub;
-  roundOverlay.classList.add('show');
-  setTimeout(()=>roundOverlay.classList.remove('show'),7000);
-}
-document.getElementById('re-newround').addEventListener('click',()=>{
-  roundOverlay.classList.remove('show');
-  ws?.send(JSON.stringify({type:'new_round'}));
+bot.command('stopgame', async (ctx) => {
+  const roomId = String(ctx.chat.id);
+  if (!rooms.has(roomId)) return ctx.reply('No active game.');
+  const room = rooms.get(roomId);
+  clearRoundTimers(room);
+  rooms.delete(roomId);
+  ctx.reply('🛑 Game stopped.');
 });
 
-// ── Replay ────────────────────────────────────────────────────────────────────
-function playReplay(strokes){
-  const overlay=document.getElementById('replay-overlay');
-  const rc=document.getElementById('replay-canvas');
-  overlay.classList.add('show');
-  rc.width=480; rc.height=300;
-  const ctx=rc.getContext('2d');
-  ctx.fillStyle='#fff'; ctx.fillRect(0,0,480,300);
-  const scale=480/CW; let i=0;
-  function nextStroke(){
-    if(i>=strokes.length) return;
-    const s=strokes[i++];
-    const pts=(s.points||[]).map(p=>[p[0]*scale,p[1]*scale]);
-    if(pts.length<2){nextStroke();return;}
-    ctx.strokeStyle=s.color||'#000'; ctx.lineWidth=Math.max(1,(s.size||4)*scale);
-    ctx.lineCap=ctx.lineJoin='round'; ctx.globalAlpha=s.opacity||1;
-    ctx.beginPath(); ctx.moveTo(pts[0][0],pts[0][1]);
-    pts.slice(1).forEach(p=>ctx.lineTo(p[0],p[1])); ctx.stroke();
-    ctx.globalAlpha=1; setTimeout(nextStroke,20);
-  }
-  nextStroke();
-}
-document.getElementById('replay-close').addEventListener('click',()=>{
-  document.getElementById('replay-overlay').classList.remove('show');
+bot.command('newround', async (ctx) => {
+  const room = rooms.get(String(ctx.chat.id));
+  if (!room) return ctx.reply('No game. Use /startgame first.');
+  if (!room.clients.size) return ctx.reply('No players connected yet!');
+  await endRound(room, null, 'manual');
 });
 
-// ── Players & Leaderboard ─────────────────────────────────────────────────────
-function updatePlayerList(board){
-  const list=document.getElementById('player-list');
-  if(!board?.length){list.innerHTML='<div style="font-size:.76rem;color:var(--text2);padding:4px 6px">No players</div>';return;}
-  const medals=['🥇','🥈','🥉'];
-  list.innerHTML=board.map(({rank,name,score})=>`
-    <div class="player-row">
-      <div class="player-dot"></div>
-      <div class="player-name">${name}</div>
-      <div class="player-score">${score}pts</div>
-      ${rank===1?'<span>👑</span>':''}
-    </div>`).join('');
-}
-function updateLeaderboard(board){
-  const list=document.getElementById('lb-list');
-  const medals=['🥇','🥈','🥉'];
-  list.innerHTML=(board||[]).slice(0,8).map(({rank,name,score})=>`
-    <div class="lb-row">
-      <span class="lb-rank">${medals[rank-1]||rank}</span>
-      <span class="lb-name">${name}</span>
-      <span class="lb-pts">${score}pts</span>
-    </div>`).join('');
-}
+bot.command('skipword', async (ctx) => {
+  const room = rooms.get(String(ctx.chat.id));
+  if (!room || !room.roundActive) return ctx.reply('No active round.');
+  // Any admin can skip from Telegram
+  const newWord = pickWord();
+  room.word = newWord;
+  room.hintRevealed = new Array(newWord.length).fill(false);
+  room.strokes = [];
+  sendTo(room, room.currentDrawer, { type:'role', role:'drawer', word:newWord, round:room.roundNumber });
+  bcast(room, { type:'clear' });
+  bcast(room, { type:'status', message:`Word skipped by admin!` });
+  ctx.reply(`✅ Word skipped!`);
+});
 
-// ── Timer ─────────────────────────────────────────────────────────────────────
-function setRoundStatus(msg) {
-  const el = document.getElementById('round-status');
-  if (el) el.textContent = msg;
-}
-// Keep these as no-ops for any remaining calls
-function startTimer(s){ setRoundStatus(''); }
-function stopTimer(){ setRoundStatus(''); }
+bot.command('leaderboard', async (ctx) => {
+  const room = rooms.get(String(ctx.chat.id));
+  if (!room) return ctx.reply('No active game.');
+  ctx.reply(`📊 *Leaderboard*\n\n${formatLeaderboard(room)}`, { parse_mode:'Markdown' });
+});
 
-// ── Role ──────────────────────────────────────────────────────────────────────
-let isDrawer=false;
-function setRole(role,wordOrHint,round){
-  showStartBtn(false);
-  isDrawer=role==='drawer';
-  document.getElementById('toolbar').classList.toggle('visible',isDrawer);
-  document.getElementById('chat-panel').classList.add('visible');
-  showStartBtn(false);
-  document.getElementById('guess-row').style.display=isDrawer?'none':'flex';
-  const pill=document.getElementById('role-pill');
-  pill.className='role-pill '+role;
-  pill.textContent=isDrawer?'DRAWING':'GUESSING';
-  const wd=document.getElementById('word-display');
-  if(isDrawer){
-    currentWord=wordOrHint;
-    wd.textContent=`✏️ ${wordOrHint}`;
-    showToast(`Your word: ${wordOrHint}`,'ok');
-    setRoundStatus('You are drawing');
-    sfxRoundStart();
-  } else {
-    currentWord='';
-    const hint=typeof wordOrHint==='number'?'_ '.repeat(wordOrHint).trim():wordOrHint;
-    wd.textContent=hint;
-    setRoundStatus('Guess the word!');
+bot.command('start', async (ctx) => {
+  if (ctx.chat.type !== 'private') return;
+  const parts  = ctx.message.text.split(' ');
+  const roomId = parts[1] ? decodeURIComponent(parts[1]) : null;
+  if (!roomId) return ctx.reply('👋 Add me to a group and use /startgame!');
+  if (!rooms.has(roomId)) rooms.set(roomId, makeRoom(roomId, null));
+  const canvasUrl = `${PUBLIC_URL}/?room=${encodeURIComponent(roomId)}`;
+  await ctx.reply(`🎨 *Draw & Guess* — tap to open:`,
+    { parse_mode:'Markdown',
+      ...Markup.inlineKeyboard([[Markup.button.webApp('🖌 Open Canvas', canvasUrl)]]) });
+});
+
+// Group text = guesses
+bot.on('text', async (ctx) => {
+  if (ctx.chat.type === 'private') return;
+  const room = rooms.get(String(ctx.chat.id));
+  if (!room || !room.roundActive || !room.word) return;
+  const text = (ctx.message.text||'').trim();
+  if (text.startsWith('/')) return;
+  const userId   = String(ctx.from.id);
+  if (userId === room.currentDrawer) return;
+  if (room.guesses.has(userId)) return;
+  const name    = [ctx.from.first_name,ctx.from.last_name].filter(Boolean).join(' ')||ctx.from.username||'Player';
+  const correct = text.toLowerCase() === room.word.toLowerCase();
+  bcast(room, { type:'guess', name, text, correct });
+  if (correct) {
+    room.guesses.add(userId);
+    // Score: 100 - 10 per hint revealed
+    const hintsRevealed = room.hintRevealed.filter(Boolean).length;
+    const elapsed   = (Date.now() - (room.roundStartTime||Date.now())) / 1000;
+    const timeBonus = Math.max(0, Math.floor((ROUND_DURATION_MS/1000 - elapsed) / 10));
+    const pts = Math.max(10, 100 - hintsRevealed*10 + timeBonus);
+    room.scores.set(name, (room.scores.get(name)||0) + pts);
+    room.scores.set(room.drawerName, (room.scores.get(room.drawerName)||0) + 50);
+    bcast(room, { type:'score_update', name, pts, timeBonus, board: getLeaderboard(room) });
+    await endRound(room, name);
   }
-  if(round) addChat('sys',`Round ${round} — let\'s go!`);
-}
-
-// ── Sound effects ─────────────────────────────────────────────────────────────
-const AudioCtx=window.AudioContext||window.webkitAudioContext;
-let audioCtx=null;
-function getAudioCtx(){if(!audioCtx)audioCtx=new AudioCtx();if(audioCtx.state==='suspended')audioCtx.resume();return audioCtx;}
-function playTone(freq,type,duration,vol=.15){
-  if(!soundEnabled) return;
-  try{
-    const ctx=getAudioCtx(),osc=ctx.createOscillator(),gain=ctx.createGain();
-    osc.connect(gain);gain.connect(ctx.destination);
-    osc.type=type;osc.frequency.value=freq;
-    gain.gain.setValueAtTime(vol,ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(.001,ctx.currentTime+duration);
-    osc.start(ctx.currentTime);osc.stop(ctx.currentTime+duration);
-  }catch(e){}
-}
-function sfxCorrectGuess(){[523,659,784].forEach((f,i)=>setTimeout(()=>playTone(f,'sine',.4,.14),i*80));}
-function sfxRoundStart(){playTone(440,'triangle',.15,.1);setTimeout(()=>playTone(660,'triangle',.2,.12),120);}
-function sfxRoundEnd(){[392,349,294].forEach((f,i)=>setTimeout(()=>playTone(f,'sine',.35,.12),i*100));}
-function sfxHint(){playTone(880,'sine',.12,.08);}
-function sfxPlayerJoin(){playTone(600,'sine',.1,.06);}
-
-// ── Theme ─────────────────────────────────────────────────────────────────────
-function applyTheme(dark){
-  isDark=dark;
-  const r=document.documentElement.style;
-  if(dark){
-    r.setProperty('--bg','#253334');r.setProperty('--surface','#2d3f40');
-    r.setProperty('--surface2','#354849');r.setProperty('--border','#3d5355');
-    r.setProperty('--text','#eef2f2');r.setProperty('--text2','#8aabac');
-  } else {
-    r.setProperty('--bg','#f0f0f0');r.setProperty('--surface','#ffffff');
-    r.setProperty('--surface2','#f5f5f5');r.setProperty('--border','#dddddd');
-    r.setProperty('--text','#111111');r.setProperty('--text2','#666666');
-  }
-  localStorage.setItem('theme',dark?'dark':'light');
-}
-applyTheme(localStorage.getItem('theme')!=='light');
-
-// ── Gallery ───────────────────────────────────────────────────────────────────
-const GALLERY_KEY='drawguess_gallery';
-function saveToGallery(word,drawerName){
-  try{
-    const temp=document.createElement('canvas');temp.width=CW;temp.height=CH;
-    const tctx=temp.getContext('2d');tctx.fillStyle='#fff';tctx.fillRect(0,0,CW,CH);
-    layers.forEach(l=>{if(l.visible)tctx.drawImage(l.canvas,0,0);});
-    const dataUrl=temp.toDataURL('image/png');
-    const gallery=JSON.parse(localStorage.getItem(GALLERY_KEY)||'[]');
-    gallery.unshift({word,drawerName,date:new Date().toISOString(),img:dataUrl});
-    localStorage.setItem(GALLERY_KEY,JSON.stringify(gallery.slice(0,20)));
-  }catch(e){console.warn('[gallery]',e.message);}
-}
-function openGallery(){
-  const gallery=JSON.parse(localStorage.getItem(GALLERY_KEY)||'[]');
-  if(!gallery.length){showToast('Gallery is empty','warn');return;}
-  const overlay=document.createElement('div');
-  overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:600;overflow-y:auto;padding:16px;backdrop-filter:blur(8px)';
-  overlay.innerHTML=`
-    <div style="max-width:560px;margin:0 auto">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-        <h2 style="font-family:Syne,sans-serif;color:var(--btn-active);font-size:1.1rem">🖼 Gallery</h2>
-        <button id="gc" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:6px 14px;border-radius:20px;cursor:pointer">✕ Close</button>
-      </div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px">
-        ${gallery.map(g=>`
-          <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden">
-            <img src="${g.img}" style="width:100%;display:block"/>
-            <div style="padding:6px 8px">
-              <div style="font-weight:700;font-size:.8rem;color:var(--btn-active)">${g.word}</div>
-              <div style="font-size:.7rem;color:var(--text2)">${g.drawerName} · ${new Date(g.date).toLocaleDateString()}</div>
-            </div>
-          </div>`).join('')}
-      </div>
-    </div>`;
-  document.body.appendChild(overlay);
-  document.getElementById('gc').addEventListener('click',()=>overlay.remove());
-}
+});
 
 // ── WebSocket ─────────────────────────────────────────────────────────────────
-let ws=null, myName='', myRoom='';
+wss.on('connection', (ws, req) => {
+  const clientId = uuidv4();
+  const url      = new URL(req.url, 'http://localhost');
+  const roomId   = url.searchParams.get('room') || 'default';
+  const name     = url.searchParams.get('name') || `Player${Math.floor(Math.random()*1000)}`;
+  const userId   = url.searchParams.get('userId') || clientId;
 
-function connect(){
-  // Wire the start-btn in waiting overlay
-function showStartBtn(show) {
-  const btn = document.getElementById('start-btn');
-  if (btn) btn.style.display = show ? 'block' : 'none';
-}
-document.getElementById('start-btn')?.addEventListener('click', () => {
-  ws?.send(JSON.stringify({type:'new_round'}));
-  showStartBtn(false);
-});
+  if (!rooms.has(roomId)) rooms.set(roomId, makeRoom(roomId, null));
+  const room = rooms.get(roomId);
+  room.clients.set(clientId, { ws, name, userId, score: 0 });
 
-// Restore name from session if somehow lost
-  if (!myName) try { myName=sessionStorage.getItem('dgName')||myName; myRoom=sessionStorage.getItem('dgRoom')||myRoom; } catch{}
-  const proto=location.protocol==='https:'?'wss':'ws';
-  ws=new WebSocket(`${proto}://${location.host}/ws?room=${encodeURIComponent(myRoom)}&name=${encodeURIComponent(myName)}`);
-  ws.onopen=()=>{document.getElementById('conn-dot').style.background='var(--green)';};
-  ws.onmessage=({data})=>{
-    let m; try{m=JSON.parse(data);}catch{return;}
-    switch(m.type){
-      case 'init':
-        clearAll();
-        (m.strokes||[]).forEach(s=>renderStroke(s,activeCtx()));
-        document.getElementById('word-display').textContent=`${m.players} player${m.players!==1?'s':''}`;
-        if(m.board){updatePlayerList(m.board);updateLeaderboard(m.board);}
+  console.log(`[ws] +${name} → room=${roomId} total=${room.clients.size}`);
+
+  // Send full state to new client
+  ws.send(JSON.stringify({
+    type: 'init',
+    strokes:  room.strokes,
+    players:  room.clients.size,
+    board:    getLeaderboard(room),
+    round:    room.roundNumber,
+  }));
+  bcast(room, { type:'player_joined', name, count:room.clients.size }, clientId);
+  bcast(room, { type:'leaderboard', board: getLeaderboard(room) });
+
+  if (!room.roundActive && !room.currentDrawer) {
+    // Never auto-start — wait for someone to press New Round
+    ws.send(JSON.stringify({ type:'status', message:`${room.clients.size} player${room.clients.size!==1?'s':''} ready. Tap ▶ New Round to start!` }));
+  } else if (room.roundActive) {
+    // Late joiner — send current state
+    ws.send(JSON.stringify({ type:'role', role:'guesser',
+      hint: buildHint(room.word, room.hintRevealed), round: room.roundNumber }));
+    ws.send(JSON.stringify({ type:'status', message:`${room.drawerName} is drawing!` }));
+  }
+
+  ws.on('message', data => {
+    let msg; try { msg=JSON.parse(data); } catch { return; }
+
+    switch (msg.type) {
+      case 'draw':
+        if (clientId !== room.currentDrawer) return;
+        room.strokes.push(msg.stroke);
+        bcast(room, { type:'draw', stroke:msg.stroke }, clientId);
+        scheduleUpdate(room);
         break;
-      case 'draw': renderStroke(m.stroke,activeCtx()); break;
+
       case 'clear':
-        clearAll();
-        getStack(activeLayer(),undoStacks).length=0;
-        getStack(activeLayer(),redoStacks).length=0;
+        if (clientId !== room.currentDrawer) return;
+        room.strokes = [];
+        bcast(room, { type:'clear' });
+        scheduleUpdate(room);
         break;
-      case 'snapshot':{const img=new Image();img.onload=()=>{clearAll();activeCtx().drawImage(img,0,0,CW,CH);};img.src=m.data;break;}
-      case 'role': clearAll();savedStrokes=[];setRole(m.role,m.role==='drawer'?m.word:m.hint,m.round); break;
-      case 'hint':
-        document.getElementById('word-display').textContent=m.hint;
-        addChat('sys',`💡 Hint: ${m.hint}`);
-        showToast('💡 Hint!'); sfxHint(); break;
-      case 'word_skipped':
-        document.getElementById('word-display').textContent=m.hint;
-        addChat('sys','Word skipped!'); clearAll(); break;
-      case 'guess':
-        addChat(m.correct?'ok':'',`<span class="cn">${m.name}:</span> ${m.text}${m.correct?' ✅':''}`);
-        if(m.correct){showToast(`🎉 ${m.name} got it!`,'ok');sfxCorrectGuess();}
+
+      case 'snapshot':
+        if (clientId !== room.currentDrawer) return;
+        bcast(room, { type:'snapshot', data:msg.data }, clientId);
         break;
-      case 'score_update':
-        addChat('ok',`🏆 ${m.name} +${m.pts}pts${m.timeBonus?' ⚡+'+m.timeBonus:''}`);
-        if(m.board){updatePlayerList(m.board);updateLeaderboard(m.board);}
+
+      case 'skip_word':
+        skipWord(room, clientId);
         break;
-      case 'round_end':
-        setTimeout(()=>showStartBtn(true), 4000); // show after result overlay
-        stopTimer(); sfxRoundEnd();
-        savedStrokes=[...(m.strokes||[])];
-        showResult(m.guesser?'🎉':(m.reason==='timeout'?'⏰':'😮'),
-          m.guesser?`${m.guesser} got it!`:(m.reason==='timeout'?"Time's up!":'Round over'),
-          m.word, m.guesser?`Artist: ${m.drawerName}`:`The word was: ${m.word}`);
-        if(m.board){updatePlayerList(m.board);updateLeaderboard(m.board);}
-        if(m.word&&m.drawerName) saveToGallery(m.word,m.drawerName);
+
+      case 'guess': {
+        if (clientId === room.currentDrawer) return;
+        const t  = (msg.text||'').trim();
+        if (!t) return;
+        const ok = !!room.word && t.toLowerCase()===room.word.toLowerCase();
+        bcast(room, { type:'guess', name, text:t, correct:ok });
+        if (ok) {
+          room.guesses.add(userId);
+          const hintsRevealed = room.hintRevealed.filter(Boolean).length;
+          const elapsed   = (Date.now() - (room.roundStartTime||Date.now())) / 1000;
+          const timeBonus = Math.max(0, Math.floor((ROUND_DURATION_MS/1000 - elapsed) / 10));
+          const pts = Math.max(10, 100 - hintsRevealed*10 + timeBonus);
+          room.scores.set(name, (room.scores.get(name)||0) + pts);
+          room.scores.set(room.drawerName, (room.scores.get(room.drawerName)||0) + 50);
+          bcast(room, { type:'score_update', name, pts, timeBonus, board: getLeaderboard(room) });
+          endRound(room, name);
+        }
         break;
-      case 'leaderboard': if(m.board){updatePlayerList(m.board);updateLeaderboard(m.board);} break;
-      case 'logs': renderLogs(m.logs||[]); break;
-      case 'status':
-        document.getElementById('word-display').textContent=m.message.toUpperCase();
-        addChat('sys',m.message);
-        // Show big start button when waiting for round
-        showStartBtn(m.message.includes('New Round') || m.message.includes('start'));
+      }
+
+      case 'done_drawing':
+        if (clientId !== room.currentDrawer) return;
+        endRound(room, null, 'done');
         break;
-      case 'player_joined': addChat('sys',`${m.name} joined (${m.count})`); sfxPlayerJoin(); break;
-      case 'player_left':   addChat('sys',`${m.name} left (${m.count})`); break;
+
+      case 'new_round':
+        // Any player can start a new round as long as there's at least 1 player
+        if (!room.roundActive) {
+          if (room.clients.size >= 1) startRound(room);
+          else ws.send(JSON.stringify({type:'status',message:'No players connected!'}));
+        } else {
+          ws.send(JSON.stringify({type:'status',message:'Round already in progress!'}));
+        }
+        break;
     }
-  };
-  ws.onclose=()=>{
-    document.getElementById('conn-dot').style.background='var(--red)';
-    // Reconnect immediately when page becomes visible again (Telegram minimized/restored)
-    scheduleReconnect();
-  };
-  ws.onerror=()=>ws.close();
+  });
+
+  ws.on('close', () => {
+    room.clients.delete(clientId);
+    console.log(`[ws] -${name} left room=${roomId} remaining=${room.clients.size}`);
+    bcast(room, { type:'player_left', name, count:room.clients.size });
+    if (room.currentDrawer === clientId) {
+      room.currentDrawer = null;
+      if (room.roundActive) {
+        room.roundActive = false;
+        clearRoundTimers(room);
+        bcast(room, { type:'status', message:`${name} (drawer) left. New round soon…` });
+      }
+      if (room.clients.size >= MIN_PLAYERS) setTimeout(() => startRound(room), 2000);
+    }
+  });
+
+  ws.on('error', err => { console.error(`[ws] ${name}:`, err.message); ws.close(); });
+});
+
+// ── Bot launch — WEBHOOK mode (no polling, no 409 ever) ─────────────────────
+//
+// WHY WEBHOOK instead of polling:
+//   Polling (bot.launch()) causes 409 Conflict on every redeploy because the
+//   new container starts before Railway fully kills the old one. Telegram sees
+//   two getUpdates requests simultaneously and rejects one with 409.
+//
+//   Webhook = Telegram PUSHES updates to our URL. No competing connections,
+//   no 409, works perfectly with Railway's rolling deploys.
+//
+// HOW IT WORKS:
+//   1. On startup we call setWebhook(PUBLIC_URL/webhook/SECRET)
+//   2. Express handles POST /webhook/:secret → bot.handleUpdate()
+//   3. On SIGTERM we delete the webhook so the next deploy starts clean
+//
+// SECRET_TOKEN: random string to prevent unauthorized posts to our webhook URL.
+//   Set WEBHOOK_SECRET in Railway env vars (any random string ≥ 16 chars).
+//   If not set, we derive one from BOT_TOKEN automatically.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// (webhook route moved to top — see route definitions above)
+
+// Call Telegram API directly with raw HTTPS — bypasses any Telegraf wrapper bugs
+function telegramPost(method, body) {
+  return new Promise((resolve, reject) => {
+    const https   = require('https');
+    const payload = JSON.stringify(body);
+    const req = https.request({
+      hostname: 'api.telegram.org',
+      path:     `/bot${BOT_TOKEN}/${method}`,
+      method:   'POST',
+      headers:  { 'Content-Type':'application/json', 'Content-Length':Buffer.byteLength(payload) },
+    }, res => {
+      let data = '';
+      res.on('data', d => data += d);
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)); }
+        catch(e) { reject(new Error('Bad JSON: ' + data)); }
+      });
+    });
+    req.on('error', reject);
+    req.write(payload);
+    req.end();
+  });
 }
 
-let reconnectTimer=null;
-function scheduleReconnect(){
-  clearTimeout(reconnectTimer);
-  reconnectTimer=setTimeout(()=>{
-    if(!myName||!myRoom) return; // not joined yet
-    if(ws&&ws.readyState===WebSocket.CONNECTING) return; // already trying
-    connect();
-  }, 1500);
-}
-// Reconnect immediately when tab/app becomes visible
-document.addEventListener('visibilitychange',()=>{
-  if(document.visibilityState==='visible'&&myRoom){
-    if(!ws||ws.readyState===WebSocket.CLOSED||ws.readyState===WebSocket.CLOSING){
-      connect();
+async function launchBot() {
+  try {
+    const me = await bot.telegram.getMe();
+    botUsername = me.username;
+
+    await bot.telegram.setMyCommands([
+      { command:'startgame',   description:'Start Draw & Guess' },
+      { command:'stopgame',    description:'Stop the game' },
+      { command:'newround',    description:'Skip to next round' },
+      { command:'skipword',    description:'Skip current word' },
+      { command:'leaderboard', description:'Show scores' },
+    ]);
+
+    // Check current webhook and auto-register if missing or wrong
+    const infoResult = await telegramPost('getWebhookInfo', {});
+    const info = infoResult.result || {};
+    console.log(`🤖 @${botUsername} ready`);
+    console.log(`[bot] pending=${info.pending_update_count} last_error=${info.last_error_message||'none'}`);
+
+    if (info.url === WEBHOOK_URL) {
+      console.log('[bot] ✅ Webhook already active');
+    } else {
+      // Not set or wrong URL — register it now
+      console.log(`[bot] Registering webhook (current="${info.url||'none'}")...`);
+      const result = await telegramPost('setWebhook', {
+        url: WEBHOOK_URL,
+        drop_pending_updates: true,
+        allowed_updates: ['message', 'callback_query'],
+      });
+      console.log(`[bot] setWebhook: ${result.description||JSON.stringify(result)}`);
+      // Verify
+      const check = (await telegramPost('getWebhookInfo', {})).result || {};
+      if (check.url === WEBHOOK_URL) {
+        console.log('[bot] ✅ Webhook registered successfully');
+      } else {
+        console.error(`[bot] ❌ Webhook failed. Got: "${check.url||'empty'}"`);
+      }
     }
+  } catch(e) {
+    console.error('[bot] launchBot error:', e.message);
+    setTimeout(launchBot, 5000);
+  }
+}
+server.listen(PORT, () => {
+  console.log(`✅ http://localhost:${PORT}  |  📡 ${PUBLIC_URL}`);
+  setTimeout(() => launchBot(), 1000);
+
+  // ── Keep-alive: self-ping every 4 min to prevent Railway sleep ──────────
+  // Railway free tier sleeps containers after ~10min of no inbound requests.
+  // Pinging our own health endpoint keeps the process alive 24/7.
+  if (PUBLIC_URL) {
+    setInterval(() => {
+      const https = require('https');
+      const http2  = require('http');
+      const url    = new URL(PUBLIC_URL + '/ping');
+      const lib    = url.protocol === 'https:' ? https : http2;
+      lib.get(url.toString(), res => {
+        console.log(`[keepalive] ping → ${res.statusCode}`);
+      }).on('error', e => console.warn('[keepalive] ping failed:', e.message));
+    }, 4 * 60 * 1000); // every 4 minutes
+    console.log('[keepalive] Self-ping enabled every 4 min');
   }
 });
 
-// ── Auto-join ─────────────────────────────────────────────────────────────────
-function getTgUser() {
-  if (!tg) return null;
-  const u = tg.initDataUnsafe?.user;
-  if (!u) return null;
-  return [u.first_name, u.last_name].filter(Boolean).join(' ').trim() || u.username || null;
+async function gracefulShutdown(signal) {
+  // DO NOT delete webhook — Railway starts new instance before killing old one.
+  // Deleting webhook on shutdown would break the already-running new instance.
+  console.log(`[shutdown] ${signal} — keeping webhook alive for new instance`);
+  server.close(() => { console.log('[shutdown] Server closed'); process.exit(0); });
+  setTimeout(() => process.exit(1), 5000);
 }
 
-function parseStartParam() {
-  // startapp format: ROOMID__NAME (encoded together since t.me only supports startapp param)
-  let raw = '';
-  if (tg) {
-    const sp = tg.initDataUnsafe?.start_param;
-    if (sp) try { raw = decodeURIComponent(sp); } catch { raw = sp; }
-  }
-  if (!raw) {
-    const usp = new URLSearchParams(location.search);
-    raw = usp.get('startapp') || usp.get('room') || '';
-    try { raw = decodeURIComponent(raw); } catch {}
-  }
-  // Split on __ separator
-  const parts = raw.split('__');
-  const roomId = parts[0] || '';
-  const name   = parts.length > 1 ? parts.slice(1).join('__') : '';
-  return { roomId, name };
-}
-
-function getRoomId() {
-  return parseStartParam().roomId;
-}
-
-function getUrlName() {
-  // From startapp param OR from ?name= query (fallback)
-  const n = parseStartParam().name;
-  if (n) return n;
-  const usp = new URLSearchParams(location.search);
-  return usp.get('name') || null;
-}
-
-// Log what we see on load — helps debug name issues
-console.log('[join] URL:', location.href);
-console.log('[join] search:', location.search);
-console.log('[join] tg.initData:', tg?.initData?.slice(0,80)||'none');
-console.log('[join] tg.initDataUnsafe:', JSON.stringify(tg?.initDataUnsafe||{}).slice(0,120));
-
-function doJoin(roomId, playerName) {
-  myName = playerName; myRoom = roomId;
-  // Persist so page refreshes / reconnects keep the same name
-  try { sessionStorage.setItem('dgName', myName); sessionStorage.setItem('dgRoom', myRoom); } catch{}
-  console.log('[join] Joining as:', myName, 'room:', myRoom);
-  document.getElementById('join-overlay').style.display = 'none';
-  initCanvases(); renderPalette(); updateSzOpLabel(); connect();
-  setTimeout(fitCanvas,100); setTimeout(fitCanvas,400); setTimeout(fitCanvas,800);
-}
-
-// Retry until BOTH roomId AND playerName from Telegram are available
-// Telegram can take up to ~800ms to inject initDataUnsafe on some devices
-(function tryAutoJoin(attempt) {
-  const roomId    = getRoomId();
-  const tgName    = getTgUser();
-
-  // Parse startapp which contains both room and name
-  const parsed = parseStartParam();
-  const urlName = parsed.name || getUrlName();
-  const tgName2 = getTgUser();
-  // Best name: Telegram user > startapp name > url param
-  const bestName = tgName2 || urlName;
-  if (parsed.roomId && bestName) { doJoin(parsed.roomId, bestName); return; }
-  if (parsed.roomId && attempt >= 8) { doJoin(parsed.roomId, urlName || ('Artist'+Math.floor(Math.random()*900+100))); return; }
-  // Legacy: roomId from URL
-  const urlRoomId = getRoomId();
-  if (urlRoomId && bestName) { doJoin(urlRoomId, bestName); return; }
-
-  // Still waiting — retry for up to 2 seconds (20 × 100ms)
-  if (attempt < 20) { setTimeout(() => tryAutoJoin(attempt + 1), 100); return; }
-
-  // Timed out — use what we have
-  if (roomId) {
-    // Priority: Telegram user > URL name param > random
-    const fallbackName = tgName || getUrlName() || ('Artist' + Math.floor(Math.random()*900+100));
-    doJoin(roomId, fallbackName);
-  } else {
-    // No room ID — show manual join form with Telegram name pre-filled
-    const name = tgName || '';
-    if (name) document.getElementById('name-in').value = name;
-  }
-})(0);
-
-document.getElementById('join-btn').addEventListener('click',()=>{
-  const name=document.getElementById('name-in').value.trim()||`Player${Math.floor(Math.random()*1000)}`;
-  const roomId=document.getElementById('room-in').value.trim()||'default';
-  doJoin(roomId,name);
+process.on('unhandledRejection', reason => {
+  console.error('[process] unhandledRejection:', reason?.message || reason);
 });
-document.getElementById('name-in').addEventListener('keydown',e=>{if(e.key==='Enter')document.getElementById('room-in').focus();});
-document.getElementById('room-in').addEventListener('keydown',e=>{if(e.key==='Enter')document.getElementById('join-btn').click();});
+process.on('uncaughtException', err => {
+  console.error('[process] uncaughtException:', err.message);
+  // Don't exit — Railway will restart if needed
+});
 
-})();
-</script>
-</body>
-</html>
+process.once('SIGINT',  () => gracefulShutdown('SIGINT'));
+process.once('SIGTERM', () => gracefulShutdown('SIGTERM'));

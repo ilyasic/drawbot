@@ -1,25 +1,25 @@
 require('dotenv').config();
-const express    = require('express');
-const http       = require('http');
-const WebSocket  = require('ws');
-const path       = require('path');
+const express   = require('express');
+const http      = require('http');
+const WebSocket = require('ws');
+const path      = require('path');
 const { v4: uuidv4 } = require('uuid');
 const { Telegraf, Markup } = require('telegraf');
-const Jimp       = require('jimp');
+const Jimp      = require('jimp');
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const BOT_TOKEN         = process.env.BOT_TOKEN;
 const PUBLIC_URL        = (process.env.PUBLIC_URL || '').replace(/\/$/, '');
 const PORT              = process.env.PORT || 3000;
-const ALLOW_EXTERNAL_URL = process.env.ALLOW_EXTERNAL_URL === 'true';
-const WEBAPP_SHORT_NAME  = process.env.WEBAPP_SHORT_NAME || 'draw1';
-const ROUND_DURATION_MS  = parseInt(process.env.ROUND_DURATION_MS || '90000'); // 90s default
-const HINT_INTERVAL_MS   = parseInt(process.env.HINT_INTERVAL_MS  || '20000'); // reveal a letter every 20s
+const WEBAPP_SHORT_NAME = process.env.WEBAPP_SHORT_NAME || 'draw1';
+const ROUND_DURATION_MS = parseInt(process.env.ROUND_DURATION_MS || '90000');
+const HINT_INTERVAL_MS  = parseInt(process.env.HINT_INTERVAL_MS  || '25000');
+const WEBHOOK_SECRET    = process.env.WEBHOOK_SECRET || 'tgbot';
 
 if (!BOT_TOKEN)  { console.error('BOT_TOKEN missing');  process.exit(1); }
 if (!PUBLIC_URL) { console.error('PUBLIC_URL missing'); process.exit(1); }
 
-console.log(`[config] ALLOW_EXTERNAL_URL=${ALLOW_EXTERNAL_URL} WEBAPP=${WEBAPP_SHORT_NAME} ROUND=${ROUND_DURATION_MS/1000}s`);
+console.log(`[config] WEBAPP=${WEBAPP_SHORT_NAME} ROUND=${ROUND_DURATION_MS/1000}s HINT=${HINT_INTERVAL_MS/1000}s`);
 
 // ── Express / WS / Bot ────────────────────────────────────────────────────────
 const app    = express();
@@ -29,89 +29,59 @@ const bot    = new Telegraf(BOT_TOKEN);
 let   botUsername = '';
 
 app.use(express.json());
-
-// Log every incoming request BEFORE static so we see everything
 app.use((req, res, next) => {
-  if (req.path !== '/ping') {
-    console.log(`[http] ${req.method} ${req.path}`);
-  }
+  if (req.path !== '/ping') console.log(`[http] ${req.method} ${req.path}`);
   next();
 });
+app.get('/ping', (_req, res) => res.send('pong'));
 
-// Static files AFTER logging and webhook routes
-// (registered below after webhook route)
+// ── Webhook ───────────────────────────────────────────────────────────────────
+const WEBHOOK_PATH = `/webhook/${WEBHOOK_SECRET}`;
+const WEBHOOK_URL  = `${PUBLIC_URL}${WEBHOOK_PATH}`;
 
-app.get('/ping', (req, res) => res.send('pong'));
-
-app.get('/', (req, res, next) => {
-  if (ALLOW_EXTERNAL_URL) return next(); // dev mode — allow all
-
-  const ua      = req.headers['user-agent'] || '';
-  const referer = req.headers['referer']    || '';
-  const origin  = req.headers['origin']     || '';
-
-  // Telegram Desktop: UA contains "Telegram"
-  // Telegram Mobile WebView: UA is a normal browser UA but Referer/Origin is t.me or telegram
-  // Telegram Web: opens from web.telegram.org
-  const isTelegram =
-    /Telegram/i.test(ua) ||
-    /t.me|telegram.org|web.telegram.org/i.test(referer + origin);
-
-  // Allow if it looks like Telegram, or if no Accept header (API/curl calls)
-  const acceptsHtml = (req.headers['accept']||'').includes('text/html');
-
-  if (!isTelegram && acceptsHtml) {
-    return res.status(403).send(
-      '<h2 style="font-family:sans-serif;padding:2rem;color:#eee;background:#1c2526;min-height:100vh;margin:0">' +
-      '🎨 Open inside Telegram only — use /startgame in your group</h2>'
-    );
-  }
-  next();
-});
-
-// Fixed webhook path — set WEBHOOK_SECRET in Railway env vars to customize
-const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || 'tgbot';
-const WEBHOOK_PATH   = `/webhook/${WEBHOOK_SECRET}`;
-const WEBHOOK_URL    = `${PUBLIC_URL}${WEBHOOK_PATH}`;
-console.log('[config] Webhook path:', WEBHOOK_PATH);
-
-// Telegram POSTs updates to this endpoint
 app.post(WEBHOOK_PATH, async (req, res) => {
-  console.log('[webhook] ← received update:', JSON.stringify(req.body).slice(0, 120));
+  console.log('[webhook] update:', JSON.stringify(req.body).slice(0, 100));
   try {
-    if (!req.body || !req.body.update_id) {
-      console.warn('[webhook] Invalid body — missing update_id');
-      return res.sendStatus(400);
-    }
     await bot.handleUpdate(req.body);
-    console.log('[webhook] ✅ handled update_id:', req.body.update_id);
     res.sendStatus(200);
   } catch(e) {
-    console.error('[webhook] handleUpdate error:', e.message, e.stack?.split('\n')[1]);
+    console.error('[webhook] error:', e.message);
     res.sendStatus(500);
   }
 });
+app.get(WEBHOOK_PATH, (_req, res) => res.send('Webhook active ✅'));
 
-// Quick test endpoint to confirm webhook path is reachable
-app.get(WEBHOOK_PATH, (req, res) => res.send('Webhook endpoint active ✅'));
-
-// Static files served last — after all API/webhook routes
+// Static client files served last
 app.use(express.static(path.join(__dirname, '../../client')));
 
+// ── Word list ─────────────────────────────────────────────────────────────────
+const WORDS = [
+  'cat','dog','sun','car','fish','bird','moon','tree','house','flower',
+  'apple','pizza','smile','heart','star','cake','boat','rain','snow','book',
+  'guitar','elephant','rainbow','castle','dragon','piano','volcano','butterfly',
+  'telescope','snowman','dinosaur','waterfall','helicopter','cactus','penguin',
+  'banana','scissors','telephone','umbrella','bicycle',
+  'submarine','tornado','lighthouse','compass','anchor','mermaid','unicorn',
+  'wizard','knight','ninja','pirate','robot','alien','crown','bridge',
+];
+function pickWord() { return WORDS[Math.floor(Math.random() * WORDS.length)]; }
 
-// ── Canvas render (PNG for Telegram) ─────────────────────────────────────────
+// ── Canvas render (PNG for Telegram chat) ─────────────────────────────────────
 const RENDER_W = 1600, RENDER_H = 1000;
 
 function hexToInt(hex) {
   try {
     const c = (hex || '#000').replace('#', '').padEnd(6, '0');
     return Jimp.rgbaToInt(
-      parseInt(c.slice(0,2),16), parseInt(c.slice(2,4),16),
-      parseInt(c.slice(4,6),16), 255);
+      parseInt(c.slice(0,2),16),
+      parseInt(c.slice(2,4),16),
+      parseInt(c.slice(4,6),16),
+      255
+    );
   } catch { return 0x000000FF; }
 }
 
-function plotLine(img, x0,y0,x1,y1, col, r) {
+function plotLine(img, x0, y0, x1, y1, col, r) {
   x0=Math.round(x0); y0=Math.round(y0); x1=Math.round(x1); y1=Math.round(y1);
   const dx=Math.abs(x1-x0), dy=Math.abs(y1-y0);
   const sx=x0<x1?1:-1, sy=y0<y1?1:-1;
@@ -119,533 +89,576 @@ function plotLine(img, x0,y0,x1,y1, col, r) {
   for(;;) {
     for(let tx=-r;tx<=r;tx++) for(let ty=-r;ty<=r;ty++) {
       if(tx*tx+ty*ty<=r*r){
-        const px=x0+tx,py=y0+ty;
+        const px=x0+tx, py=y0+ty;
         if(px>=0&&px<RENDER_W&&py>=0&&py<RENDER_H) img.setPixelColor(col,px,py);
       }
     }
     if(x0===x1&&y0===y1) break;
     const e2=2*err;
     if(e2>-dy){err-=dy;x0+=sx;}
-    if(e2<dx ){err+=dx;y0+=sy;}
+    if(e2< dx){err+=dx;y0+=sy;}
   }
 }
 
-async function renderPNG(strokes, done) {
+async function renderPNG(strokes) {
   const img = new Jimp(RENDER_W, RENDER_H, 0xFFFFFFFF);
-  for (const s of strokes) {
+  for (const s of (strokes||[])) {
     const pts = s.points || [];
     if (pts.length < 2) continue;
     const col = hexToInt(s.color);
     const r   = Math.max(1, Math.round((s.size || 4) * 0.9));
-    for (let i=1; i<pts.length; i++)
-      plotLine(img, pts[i-1][0]*2, pts[i-1][1]*2, pts[i][0]*2, pts[i][1]*2, col, r*2);
+    for (let i=1; i<pts.length; i++) {
+      plotLine(img,
+        pts[i-1][0]*2, pts[i-1][1]*2,
+        pts[i][0]*2,   pts[i][1]*2,
+        col, r*2);
+    }
   }
-  const barCol = done ? 0x2dc653FF : 0x1a1a2eFF;
-  for (let x=0;x<RENDER_W;x++) for(let y=RENDER_H-46;y<RENDER_H;y++) img.setPixelColor(barCol,x,y);
   return img.getBufferAsync(Jimp.MIME_PNG);
 }
 
-// ── Word list ─────────────────────────────────────────────────────────────────
-const WORDS = {
-  easy: ['cat','dog','sun','car','fish','bird','moon','tree','house','flower',
-         'apple','pizza','smile','heart','star','cake','boat','rain','snow','book'],
-  medium: ['guitar','elephant','rainbow','castle','dragon','piano','volcano','butterfly',
-           'telescope','snowman','dinosaur','waterfall','helicopter','cactus','penguin',
-           'banana','scissors','telephone','umbrella','bicycle'],
-  hard: ['submarine','tornado','lighthouse','compass','anchor','mermaid','unicorn',
-         'wizard','knight','ninja','pirate','robot','alien','crown','bridge',
-         'glasses','rocket','glasses','crown','compass'],
-};
-const ALL_WORDS = [...WORDS.easy, ...WORDS.medium, ...WORDS.hard];
+// ── Game state ────────────────────────────────────────────────────────────────
+// One game per Telegram group chat
+const games = new Map(); // chatId (string) → game object
 
-function pickWord() { return ALL_WORDS[Math.floor(Math.random() * ALL_WORDS.length)]; }
-
-// ── State ─────────────────────────────────────────────────────────────────────
-const rooms = new Map();
-const MIN_PLAYERS = 1;
-
-function makeRoom(id, chatId) {
+function makeGame(chatId) {
   return {
-    id, chatId,
-    clients:       new Map(),   // clientId → { ws, name, userId, score }
-    strokes:       [],
-    currentDrawer: null,
-    drawerName:    '',
-    word:          null,
-    hintRevealed:  [],          // array of booleans per letter
-    guesses:       new Set(),   // userIds who guessed correctly
-    roundActive:   false,
-    roundTimer:    null,
-    hintTimer:     null,
-    updateTimer:   null,
-    liveMessageId: null,
-    scores:        new Map(),   // name → total score
-    roundNumber:   0,
-    roundStartTime:0,
-    drawerQueue:   [],          // rotation queue of clientIds
+    chatId,
+    // 'idle' | 'waiting_drawer' | 'drawing' | 'ended'
+    phase: 'idle',
+
+    // Drawer info
+    drawerTgId:  null,   // Telegram user id (string)
+    drawerName:  '',
+    drawerWsId:  null,   // WebSocket client id (set when they open Mini App)
+
+    // Round data
+    word:           null,
+    hintRevealed:   [],
+    strokes:        [],
+    roundStartTime: 0,
+
+    // Timers
+    roundTimer:  null,
+    hintTimer:   null,
+    updateTimer: null,
+
+    // Telegram message ids
+    inviteMessageId: null,
+    liveMessageId:   null,
+
+    // Scores: name → pts
+    scores: new Map(),
+
+    // WebSocket clients (wsId → { ws, name, tgId })
+    clients: new Map(),
   };
 }
 
-function bcast(room, msg, skip=null) {
+function getOrMakeGame(chatId) {
+  const key = String(chatId);
+  if (!games.has(key)) games.set(key, makeGame(key));
+  return games.get(key);
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function broadcastToGame(game, msg, skipWsId=null) {
   const d = JSON.stringify(msg);
-  room.clients.forEach((c,id) => {
-    if (id !== skip && c.ws.readyState === WebSocket.OPEN) c.ws.send(d);
+  game.clients.forEach((c, id) => {
+    if (id !== skipWsId && c.ws.readyState === WebSocket.OPEN) c.ws.send(d);
   });
 }
 
-function sendTo(room, clientId, msg) {
-  const c = room.clients.get(clientId);
+function sendToWs(game, wsId, msg) {
+  const c = game.clients.get(wsId);
   if (c && c.ws.readyState === WebSocket.OPEN) c.ws.send(JSON.stringify(msg));
 }
 
-// ── Hint system ───────────────────────────────────────────────────────────────
-function buildHint(word, revealed) {
-  return word.split('').map((ch,i) => ch===' ' ? ' ' : (revealed[i] ? ch : '_')).join(' ');
-}
-
-function revealNextHint(room) {
-  if (!room.word || !room.roundActive) return;
-  const unrevealed = room.word.split('').map((_,i)=>i).filter(i => room.word[i]!==' ' && !room.hintRevealed[i]);
-  if (!unrevealed.length) return;
-  const idx = unrevealed[Math.floor(Math.random()*unrevealed.length)];
-  room.hintRevealed[idx] = true;
-  const hint = buildHint(room.word, room.hintRevealed);
-  bcast(room, { type:'hint', hint });
-  // Schedule next hint
-  room.hintTimer = setTimeout(() => revealNextHint(room), HINT_INTERVAL_MS);
-}
-
-// ── Leaderboard ───────────────────────────────────────────────────────────────
-function getLeaderboard(room) {
-  return Array.from(room.scores.entries())
+function getLeaderboard(game) {
+  return Array.from(game.scores.entries())
     .sort((a,b) => b[1]-a[1])
     .map(([name,score],i) => ({ rank:i+1, name, score }));
 }
 
-function formatLeaderboard(room) {
-  const lb = getLeaderboard(room);
+function fmtLeaderboard(game) {
+  const lb = getLeaderboard(game);
   if (!lb.length) return 'No scores yet.';
   const medals = ['🥇','🥈','🥉'];
-  return lb.slice(0,10).map(({rank,name,score}) =>
-    `${medals[rank-1]||`${rank}.`} *${name}* — ${score} pts`).join('\n');
+  return lb.slice(0,10)
+    .map(({rank,name,score}) => `${medals[rank-1]||`${rank}.`} *${name}* — ${score} pts`)
+    .join('\n');
 }
 
-// ── Canvas push ───────────────────────────────────────────────────────────────
-async function pushCanvas(room) {
-  if (!room.chatId || !room.roundActive || !room.word) return;
-  let png;
-  try { png = await renderPNG(room.strokes, false); }
-  catch(e) { console.error('renderPNG:', e.message); return; }
+function buildHint(word, revealed) {
+  return word.split('').map((ch,i) =>
+    ch === ' ' ? '  ' : (revealed[i] ? ch : '_')
+  ).join(' ');
+}
 
-  const hint      = buildHint(room.word, room.hintRevealed);
-  const caption   = `🎨 *${room.drawerName}* is drawing!\n🔤 \`${hint}\` — ${room.word.length} letters\n\n💬 Guess in the chat!`;
-  const canvasUrl = `${PUBLIC_URL}/?room=${encodeURIComponent(room.id)}`;
+// ── Hint reveals ──────────────────────────────────────────────────────────────
+function revealNextHint(game) {
+  if (game.phase !== 'drawing' || !game.word) return;
+  const unrevealed = game.word.split('').map((_,i)=>i)
+    .filter(i => game.word[i] !== ' ' && !game.hintRevealed[i]);
+  if (!unrevealed.length) return;
+  const idx = unrevealed[Math.floor(Math.random()*unrevealed.length)];
+  game.hintRevealed[idx] = true;
+  const hint = buildHint(game.word, game.hintRevealed);
+  broadcastToGame(game, { type:'hint', hint });
+  bot.telegram.sendMessage(
+    game.chatId,
+    `💡 Hint: \`${hint}\``,
+    { parse_mode:'Markdown' }
+  ).catch(()=>{});
+  game.hintTimer = setTimeout(() => revealNextHint(game), HINT_INTERVAL_MS);
+}
+
+// ── Live canvas push to Telegram chat ─────────────────────────────────────────
+async function pushCanvasToChat(game) {
+  if (game.phase !== 'drawing' || !game.word) return;
+  let png;
+  try { png = await renderPNG(game.strokes); }
+  catch(e) { console.error('[render]', e.message); return; }
+
+  const hint    = buildHint(game.word, game.hintRevealed);
+  const caption =
+    `🎨 *${game.drawerName}* is drawing!\n` +
+    `🔤 \`${hint}\`  —  ${game.word.length} letters\n\n` +
+    `💬 Type your guess in the chat!`;
 
   try {
-    if (!room.liveMessageId) {
-      const m = await bot.telegram.sendPhoto(room.chatId,
-        { source:png, filename:'drawing.png' },
-        { caption, parse_mode:'Markdown',
-          ...Markup.inlineKeyboard([[Markup.button.url('🖌 Open Canvas', canvasUrl)]]) });
-      room.liveMessageId = m.message_id;
+    if (!game.liveMessageId) {
+      const m = await bot.telegram.sendPhoto(
+        game.chatId,
+        { source: png, filename: 'drawing.png' },
+        { caption, parse_mode:'Markdown' }
+      );
+      game.liveMessageId = m.message_id;
     } else {
-      await bot.telegram.editMessageMedia(room.chatId, room.liveMessageId, null,
-        { type:'photo', media:{ source:png, filename:'drawing.png' }, caption, parse_mode:'Markdown' });
+      await bot.telegram.editMessageMedia(
+        game.chatId, game.liveMessageId, null,
+        { type:'photo', media:{ source:png, filename:'drawing.png' }, caption, parse_mode:'Markdown' }
+      );
     }
   } catch(e) {
     if (/not modified/i.test(e.message)) return;
-    console.error('pushCanvas:', e.message);
-    if (/not found|deleted|no message|message to edit/i.test(e.message)) room.liveMessageId = null;
+    console.error('[pushCanvas]', e.message);
+    if (/not found|deleted|message to edit/i.test(e.message)) game.liveMessageId = null;
   }
 }
 
-function scheduleUpdate(room) {
-  if (room.updateTimer) return;
-  room.updateTimer = setTimeout(async () => { room.updateTimer=null; await pushCanvas(room); }, 1500);
+function scheduleCanvasUpdate(game) {
+  if (game.updateTimer) return;
+  game.updateTimer = setTimeout(async () => {
+    game.updateTimer = null;
+    await pushCanvasToChat(game);
+  }, 1500);
 }
 
-async function saveFinal(room, guesserName) {
-  if (!room.chatId) return;
-  let png;
-  try { png = await renderPNG(room.strokes, true); }
-  catch(e) { console.error('saveFinal render:', e.message); return; }
-  if (room.liveMessageId) {
-    try { await bot.telegram.deleteMessage(room.chatId, room.liveMessageId); } catch{}
-    room.liveMessageId = null;
-  }
-  const lb = formatLeaderboard(room);
-  const caption = [
-    `✅ *Round ${room.roundNumber} Complete!*`, ``,
-    `🖌 Artist: *${room.drawerName}*`,
-    `🎯 Word: *${room.word}*`,
-    guesserName ? `🏆 First guess: *${guesserName}*` : `😔 Nobody guessed!`,
-    ``, `📊 *Leaderboard:*`, lb,
-    ``, `_Next round in 5 seconds..._`
-  ].join('\n');
-  try {
-    await bot.telegram.sendPhoto(room.chatId,
-      { source:png, filename:`${room.word}.png` },
-      { caption, parse_mode:'Markdown' });
-  } catch(e) { console.error('saveFinal send:', e.message); }
-}
+// ── End game ──────────────────────────────────────────────────────────────────
+async function endGame(game, guesserName, reason) {
+  if (game.phase === 'ended' || game.phase === 'idle') return;
+  game.phase = 'ended';
 
-// ── Round logic ───────────────────────────────────────────────────────────────
-function pickDrawer(room) {
-  const ids = Array.from(room.clients.keys());
-  if (!ids.length) return null;
-  // Rotate through queue
-  while (room.drawerQueue.length) {
-    const next = room.drawerQueue.shift();
-    if (room.clients.has(next)) return next;
-  }
-  // Refill queue (shuffle)
-  room.drawerQueue = [...ids].sort(() => Math.random()-0.5);
-  return room.drawerQueue.shift();
-}
+  clearTimeout(game.roundTimer);
+  clearTimeout(game.hintTimer);
+  clearTimeout(game.updateTimer);
+  game.roundTimer = game.hintTimer = game.updateTimer = null;
 
-function startRound(room) {
-  const ids = Array.from(room.clients.keys());
-  if (ids.length < MIN_PLAYERS) {
-    bcast(room, { type:'status', message:`Waiting for players… (${ids.length}/${MIN_PLAYERS})` });
-    return;
-  }
+  console.log(`[game] END chatId=${game.chatId} word=${game.word} guesser=${guesserName||'none'} reason=${reason}`);
 
-  clearRoundTimers(room);
-
-  room.strokes       = [];
-  room.guesses       = new Set();
-  room.roundActive   = true;
-  room.liveMessageId = null;
-  room.roundNumber  += 1;
-  room.roundStartTime = Date.now(); // for time-based scoring
-  room.currentDrawer = pickDrawer(room);
-  room.drawerName    = room.clients.get(room.currentDrawer)?.name || 'Someone';
-  room.word          = pickWord();
-  room.hintRevealed  = new Array(room.word.length).fill(false);
-
-  console.log(`[round] #${room.roundNumber} START room=${room.id} drawer=${room.drawerName} word=${room.word}`);
-
-  // Send roles
-  room.clients.forEach((c,id) => {
-    const isDrawer = id === room.currentDrawer;
-    c.ws.send(JSON.stringify(isDrawer
-      ? { type:'role', role:'drawer', word:room.word, round:room.roundNumber }
-      : { type:'role', role:'guesser', hint:buildHint(room.word, room.hintRevealed), round:room.roundNumber }
-    ));
+  // Tell Mini App clients
+  broadcastToGame(game, {
+    type: 'round_end',
+    word: game.word,
+    drawerName: game.drawerName,
+    guesser: guesserName || null,
+    reason,
+    board: getLeaderboard(game),
   });
 
-  bcast(room, { type:'clear' });
-  bcast(room, { type:'status', message:`Round ${room.roundNumber} — ${room.drawerName} is drawing!` });
-  bcast(room, { type:'leaderboard', board: getLeaderboard(room) });
+  // Render final image
+  let png;
+  try { png = await renderPNG(game.strokes); }
+  catch(e) { console.error('[endGame render]', e.message); }
 
-  if (room.chatId) {
-    bot.telegram.sendMessage(room.chatId,
-      `🎮 *Round ${room.roundNumber}!*\n\n✏️ *${room.drawerName}* is drawing...\n💬 Guess here!`,
-      { parse_mode:'Markdown' }).catch(()=>{});
+  // Delete the live drawing message
+  if (game.liveMessageId) {
+    try { await bot.telegram.deleteMessage(game.chatId, game.liveMessageId); } catch{}
+    game.liveMessageId = null;
   }
 
-  // Round timer
-  room.roundTimer = setTimeout(() => endRound(room, null, 'timeout'), ROUND_DURATION_MS);
-  // First hint after HINT_INTERVAL_MS
-  room.hintTimer = setTimeout(() => revealNextHint(room), HINT_INTERVAL_MS);
+  // Build result message
+  const lines = [
+    `✅ *Game Over!*`,
+    ``,
+    `🖌 Drawer: *${game.drawerName}*`,
+    `🎯 Word: *${game.word}*`,
+    guesserName
+      ? `🏆 Guessed by: *${guesserName}*`
+      : reason === 'timeout'
+        ? `⏰ Time's up! Nobody guessed.`
+        : `😮 Round ended early.`,
+    ``,
+    `📊 *Leaderboard:*`,
+    fmtLeaderboard(game),
+    ``,
+    `_Use /startgame to play again!_`,
+  ].join('\n');
 
-  setTimeout(() => pushCanvas(room), 400);
-}
+  try {
+    if (png) {
+      await bot.telegram.sendPhoto(
+        game.chatId,
+        { source: png, filename: `${game.word}.png` },
+        { caption: lines, parse_mode:'Markdown' }
+      );
+    } else {
+      await bot.telegram.sendMessage(game.chatId, lines, { parse_mode:'Markdown' });
+    }
+  } catch(e) { console.error('[endGame send]', e.message); }
 
-function clearRoundTimers(room) {
-  if (room.roundTimer)  { clearTimeout(room.roundTimer);  room.roundTimer  = null; }
-  if (room.hintTimer)   { clearTimeout(room.hintTimer);   room.hintTimer   = null; }
-  if (room.updateTimer) { clearTimeout(room.updateTimer); room.updateTimer = null; }
-}
-
-async function endRound(room, guesserName, reason='guess') {
-  if (!room.roundActive) return;
-  room.roundActive   = false;
-  room.currentDrawer = null;
-  clearRoundTimers(room);
-
-  console.log(`[round] #${room.roundNumber} END word=${room.word} guesser=${guesserName||'none'} reason=${reason}`);
-
-  bcast(room, { type:'round_end', word:room.word, drawerName:room.drawerName,
-                guesser:guesserName||null, reason,
-                board: getLeaderboard(room) });
-
-  await saveFinal(room, guesserName);
-  // Round ended — do NOT auto-start next round.
-  // Players must click "New Round" manually. This makes it feel like a real game session.
-  console.log('[round] Waiting for players to start next round...');
-}
-
-function skipWord(room, requesterId) {
-  if (!room.roundActive) return false;
-  if (requesterId !== room.currentDrawer) return false;
-  const newWord = pickWord();
-  room.word = newWord;
-  room.hintRevealed = new Array(newWord.length).fill(false);
-  room.strokes = [];
-  if (room.hintTimer) { clearTimeout(room.hintTimer); }
-  room.hintTimer = setTimeout(() => revealNextHint(room), HINT_INTERVAL_MS);
-
-  sendTo(room, room.currentDrawer, { type:'role', role:'drawer', word:newWord, round:room.roundNumber });
-  bcast(room, { type:'clear' }, room.currentDrawer);
-  bcast(room, { type:'word_skipped', hint: buildHint(newWord, room.hintRevealed) }, room.currentDrawer);
-  bcast(room, { type:'status', message:`Word skipped! ${room.drawerName} is drawing a new word.` });
-  console.log(`[round] Word skipped → ${newWord}`);
-  return true;
+  // Reset for next game
+  game.word            = null;
+  game.hintRevealed    = [];
+  game.strokes         = [];
+  game.drawerTgId      = null;
+  game.drawerName      = '';
+  game.drawerWsId      = null;
+  game.inviteMessageId = null;
+  game.liveMessageId   = null;
+  game.phase           = 'idle';
 }
 
 // ── Bot commands ──────────────────────────────────────────────────────────────
+
 bot.command('startgame', async (ctx) => {
   if (ctx.chat.type === 'private') {
-    const roomId    = `solo_${ctx.from.id}`;
-    const canvasUrl = `${PUBLIC_URL}/?room=${encodeURIComponent(roomId)}`;
-    return ctx.reply(`🎨 *Draw & Guess* — Solo mode:`,
-      { parse_mode:'Markdown',
-        ...Markup.inlineKeyboard([[Markup.button.webApp('🖌 Open Canvas', canvasUrl)]]) });
+    return ctx.reply('➕ Add me to a group and use /startgame there!');
   }
 
-  const roomId = String(ctx.chat.id);
-  const chatId = ctx.chat.id;
-  if (!rooms.has(roomId)) rooms.set(roomId, makeRoom(roomId, chatId));
-  else rooms.get(roomId).chatId = chatId;
+  const chatId = String(ctx.chat.id);
+  const game   = getOrMakeGame(chatId);
+
+  if (game.phase === 'waiting_drawer') {
+    return ctx.reply('⏳ Already waiting for someone to press "I Want to Draw"!');
+  }
+  if (game.phase === 'drawing') {
+    return ctx.reply('🎨 A game is already in progress! Type your guess in the chat.');
+  }
+
+  // Fresh game
+  game.phase       = 'waiting_drawer';
+  game.scores      = new Map();
+  game.strokes     = [];
+  game.word        = null;
+  game.drawerTgId  = null;
+  game.drawerName  = '';
+  game.drawerWsId  = null;
+  game.liveMessageId = null;
 
   if (!botUsername) {
     try { const me = await bot.telegram.getMe(); botUsername = me.username; }
-    catch(e) { return ctx.reply('Bot still starting, try again.'); }
+    catch(e) { return ctx.reply('Bot still starting, try again in a moment.'); }
   }
 
-  // In supergroups, only url buttons are allowed (webApp buttons = BUTTON_TYPE_INVALID)
-  // We pass name via URL so frontend gets it without needing initDataUnsafe
-  const userName = [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' ').trim() || ctx.from.username || 'Artist';
-  // Encode both roomId and userName into startapp param separated by __ 
-  // t.me deep links only support the startapp param, not arbitrary query strings
-  const startappData = encodeURIComponent(roomId + '__' + userName);
-  const startappLink = `https://t.me/${botUsername}/${WEBAPP_SHORT_NAME}?startapp=${startappData}`;
-  console.log(`[bot] /startgame room=${roomId} user=${userName} link=${startappLink}`);
-
-  await ctx.reply(
-    `🎨 *Draw & Guess* — tap to join and draw!`,
-    { parse_mode:'Markdown',
-      ...Markup.inlineKeyboard([
-        [Markup.button.url('🖌 Open Canvas', startappLink)],
-      ]) });
+  const msg = await ctx.reply(
+    `🎨 *Draw & Guess!*\n\nWho wants to draw this round?\nPress the button below! ✏️`,
+    {
+      parse_mode: 'Markdown',
+      ...Markup.inlineKeyboard([[
+        Markup.button.callback('✏️ I Want to Draw!', `claim_draw:${chatId}`),
+      ]]),
+    }
+  );
+  game.inviteMessageId = msg.message_id;
+  console.log(`[bot] /startgame chatId=${chatId} — waiting for drawer`);
 });
 
 bot.command('stopgame', async (ctx) => {
-  const roomId = String(ctx.chat.id);
-  if (!rooms.has(roomId)) return ctx.reply('No active game.');
-  const room = rooms.get(roomId);
-  clearRoundTimers(room);
-  rooms.delete(roomId);
+  const chatId = String(ctx.chat.id);
+  const game   = games.get(chatId);
+  if (!game || game.phase === 'idle') return ctx.reply('No active game.');
+  await endGame(game, null, 'stopped');
   ctx.reply('🛑 Game stopped.');
 });
 
-bot.command('newround', async (ctx) => {
-  const room = rooms.get(String(ctx.chat.id));
-  if (!room) return ctx.reply('No game. Use /startgame first.');
-  if (!room.clients.size) return ctx.reply('No players connected yet!');
-  await endRound(room, null, 'manual');
-});
-
 bot.command('skipword', async (ctx) => {
-  const room = rooms.get(String(ctx.chat.id));
-  if (!room || !room.roundActive) return ctx.reply('No active round.');
-  // Any admin can skip from Telegram
+  const chatId = String(ctx.chat.id);
+  const game   = games.get(chatId);
+  if (!game || game.phase !== 'drawing') return ctx.reply('No active round.');
   const newWord = pickWord();
-  room.word = newWord;
-  room.hintRevealed = new Array(newWord.length).fill(false);
-  room.strokes = [];
-  sendTo(room, room.currentDrawer, { type:'role', role:'drawer', word:newWord, round:room.roundNumber });
-  bcast(room, { type:'clear' });
-  bcast(room, { type:'status', message:`Word skipped by admin!` });
-  ctx.reply(`✅ Word skipped!`);
+  game.word         = newWord;
+  game.hintRevealed = new Array(newWord.length).fill(false);
+  game.strokes      = [];
+  clearTimeout(game.hintTimer);
+  game.hintTimer = setTimeout(() => revealNextHint(game), HINT_INTERVAL_MS);
+  if (game.drawerWsId) sendToWs(game, game.drawerWsId, { type:'role', role:'drawer', word:newWord, round:1 });
+  broadcastToGame(game, { type:'clear' }, game.drawerWsId);
+  broadcastToGame(game, { type:'word_skipped', hint:buildHint(newWord, game.hintRevealed) }, game.drawerWsId);
+  ctx.reply('✅ Word skipped!');
 });
 
 bot.command('leaderboard', async (ctx) => {
-  const room = rooms.get(String(ctx.chat.id));
-  if (!room) return ctx.reply('No active game.');
-  ctx.reply(`📊 *Leaderboard*\n\n${formatLeaderboard(room)}`, { parse_mode:'Markdown' });
+  const game = games.get(String(ctx.chat.id));
+  if (!game) return ctx.reply('No game. Use /startgame.');
+  ctx.reply(`📊 *Leaderboard*\n\n${fmtLeaderboard(game)}`, { parse_mode:'Markdown' });
 });
 
-bot.command('start', async (ctx) => {
-  if (ctx.chat.type !== 'private') return;
-  const parts  = ctx.message.text.split(' ');
-  const roomId = parts[1] ? decodeURIComponent(parts[1]) : null;
-  if (!roomId) return ctx.reply('👋 Add me to a group and use /startgame!');
-  if (!rooms.has(roomId)) rooms.set(roomId, makeRoom(roomId, null));
-  const canvasUrl = `${PUBLIC_URL}/?room=${encodeURIComponent(roomId)}`;
-  await ctx.reply(`🎨 *Draw & Guess* — tap to open:`,
-    { parse_mode:'Markdown',
-      ...Markup.inlineKeyboard([[Markup.button.webApp('🖌 Open Canvas', canvasUrl)]]) });
+// ── Callback: "I Want to Draw" button ────────────────────────────────────────
+bot.action(/^claim_draw:(.+)$/, async (ctx) => {
+  const chatId = ctx.match[1];
+  const game   = games.get(chatId);
+
+  if (!game) {
+    return ctx.answerCbQuery('❌ No active game. Use /startgame.', { show_alert:true });
+  }
+  if (game.phase !== 'waiting_drawer') {
+    return ctx.answerCbQuery('❌ A drawer already claimed this round!', { show_alert:true });
+  }
+
+  const tgId   = String(ctx.from.id);
+  const fname  = ctx.from.first_name || '';
+  const lname  = ctx.from.last_name  || '';
+  const uname  = `${fname} ${lname}`.trim() || ctx.from.username || 'Artist';
+
+  game.drawerTgId     = tgId;
+  game.drawerName     = uname;
+  game.phase          = 'drawing';
+  game.word           = pickWord();
+  game.hintRevealed   = new Array(game.word.length).fill(false);
+  game.strokes        = [];
+  game.roundStartTime = Date.now();
+
+  console.log(`[game] Drawer: ${uname} (${tgId}), word=${game.word}, chatId=${chatId}`);
+
+  await ctx.answerCbQuery('✅ You are the drawer! Open your canvas.', { show_alert:false });
+
+  // Update invite message — remove the button, show who is drawing
+  try {
+    await bot.telegram.editMessageText(
+      chatId, game.inviteMessageId, null,
+      `🎨 *${uname}* is drawing!\n🔤 \`${buildHint(game.word, game.hintRevealed)}\`  —  ${game.word.length} letters\n\n💬 Type your guess in the chat!`,
+      { parse_mode:'Markdown' }
+    );
+  } catch(e) { console.error('[editInvite]', e.message); }
+
+  // Build Mini App canvas URL — encodes chatId + tgId + name so frontend knows the room and role
+  const startappParam = encodeURIComponent(`${chatId}__${tgId}__${uname}`);
+  const canvasUrl     = `https://t.me/${botUsername}/${WEBAPP_SHORT_NAME}?startapp=${startappParam}`;
+
+  // Post canvas button in group so the drawer (and only they need to) can open it
+  await bot.telegram.sendMessage(
+    chatId,
+    `✏️ *${uname}*, tap below to open your canvas!`,
+    {
+      parse_mode:'Markdown',
+      ...Markup.inlineKeyboard([[
+        Markup.button.url('🖌 Open Canvas to Draw', canvasUrl),
+      ]]),
+    }
+  ).catch(e => console.error('[sendCanvasBtn]', e.message));
+
+  // Start timers
+  game.roundTimer = setTimeout(() => endGame(game, null, 'timeout'), ROUND_DURATION_MS);
+  game.hintTimer  = setTimeout(() => revealNextHint(game), HINT_INTERVAL_MS);
+
+  // Push blank canvas to chat after 1s so guessers see it immediately
+  setTimeout(() => pushCanvasToChat(game), 1000);
 });
 
-// Group text = guesses
+// ── Telegram text = guesses ───────────────────────────────────────────────────
 bot.on('text', async (ctx) => {
   if (ctx.chat.type === 'private') return;
-  const room = rooms.get(String(ctx.chat.id));
-  if (!room || !room.roundActive || !room.word) return;
-  const text = (ctx.message.text||'').trim();
+
+  const chatId = String(ctx.chat.id);
+  const game   = games.get(chatId);
+  if (!game || game.phase !== 'drawing' || !game.word) return;
+
+  const text = (ctx.message.text || '').trim();
   if (text.startsWith('/')) return;
-  const userId   = String(ctx.from.id);
-  if (userId === room.currentDrawer) return;
-  if (room.guesses.has(userId)) return;
-  const name    = [ctx.from.first_name,ctx.from.last_name].filter(Boolean).join(' ')||ctx.from.username||'Player';
-  const correct = text.toLowerCase() === room.word.toLowerCase();
-  bcast(room, { type:'guess', name, text, correct });
+
+  const tgId  = String(ctx.from.id);
+  const fname = ctx.from.first_name || '';
+  const lname = ctx.from.last_name  || '';
+  const name  = `${fname} ${lname}`.trim() || ctx.from.username || 'Player';
+
+  // Drawer cannot guess their own word
+  if (tgId === game.drawerTgId) return;
+
+  const correct = text.toLowerCase() === game.word.toLowerCase();
+
+  // Send guess to Mini App watchers
+  broadcastToGame(game, { type:'guess', name, text, correct });
+
   if (correct) {
-    room.guesses.add(userId);
-    // Score: 100 - 10 per hint revealed
-    const hintsRevealed = room.hintRevealed.filter(Boolean).length;
-    const elapsed   = (Date.now() - (room.roundStartTime||Date.now())) / 1000;
-    const timeBonus = Math.max(0, Math.floor((ROUND_DURATION_MS/1000 - elapsed) / 10));
-    const pts = Math.max(10, 100 - hintsRevealed*10 + timeBonus);
-    room.scores.set(name, (room.scores.get(name)||0) + pts);
-    room.scores.set(room.drawerName, (room.scores.get(room.drawerName)||0) + 50);
-    bcast(room, { type:'score_update', name, pts, timeBonus, board: getLeaderboard(room) });
-    await endRound(room, name);
+    console.log(`[game] Correct! "${text}" by ${name}`);
+
+    const hintsGiven = game.hintRevealed.filter(Boolean).length;
+    const elapsed    = (Date.now() - game.roundStartTime) / 1000;
+    const timeBonus  = Math.max(0, Math.floor((ROUND_DURATION_MS/1000 - elapsed) / 10));
+    const pts        = Math.max(10, 100 - hintsGiven*10 + timeBonus);
+
+    game.scores.set(name,           (game.scores.get(name)           || 0) + pts);
+    game.scores.set(game.drawerName,(game.scores.get(game.drawerName)|| 0) + 50);
+
+    broadcastToGame(game, {
+      type: 'score_update', name, pts, timeBonus, board: getLeaderboard(game),
+    });
+
+    try {
+      await bot.telegram.sendMessage(
+        chatId,
+        `🎉 *${name}* guessed it!\nThe word was *${game.word}* ✅  +${pts} pts${timeBonus?` ⚡ +${timeBonus} time bonus`:''}`,
+        { parse_mode:'Markdown' }
+      );
+    } catch{}
+
+    await endGame(game, name, 'guess');
   }
 });
 
-// ── WebSocket ─────────────────────────────────────────────────────────────────
+// ── WebSocket — Mini App ──────────────────────────────────────────────────────
 wss.on('connection', (ws, req) => {
-  const clientId = uuidv4();
-  const url      = new URL(req.url, 'http://localhost');
-  const roomId   = url.searchParams.get('room') || 'default';
-  const name     = url.searchParams.get('name') || `Player${Math.floor(Math.random()*1000)}`;
-  const userId   = url.searchParams.get('userId') || clientId;
+  const wsId = uuidv4();
+  const url  = new URL(req.url, 'http://localhost');
 
-  if (!rooms.has(roomId)) rooms.set(roomId, makeRoom(roomId, null));
-  const room = rooms.get(roomId);
-  room.clients.set(clientId, { ws, name, userId, score: 0 });
+  // Frontend sends: ?room=CHATID&name=NAME&userId=TGID
+  const chatId = url.searchParams.get('room') || '';
+  const name   = url.searchParams.get('name') || 'Artist';
+  const tgId   = url.searchParams.get('userId') || '';
 
-  console.log(`[ws] +${name} → room=${roomId} total=${room.clients.size}`);
+  if (!chatId) { ws.close(); return; }
 
-  // Send full state to new client
-  ws.send(JSON.stringify({
-    type: 'init',
-    strokes:  room.strokes,
-    players:  room.clients.size,
-    board:    getLeaderboard(room),
-    round:    room.roundNumber,
-  }));
-  bcast(room, { type:'player_joined', name, count:room.clients.size }, clientId);
-  bcast(room, { type:'leaderboard', board: getLeaderboard(room) });
+  const game = getOrMakeGame(chatId);
+  game.clients.set(wsId, { ws, name, tgId });
 
-  if (!room.roundActive && !room.currentDrawer) {
-    // Never auto-start — wait for someone to press New Round
-    ws.send(JSON.stringify({ type:'status', message:`${room.clients.size} player${room.clients.size!==1?'s':''} ready. Tap ▶ New Round to start!` }));
-  } else if (room.roundActive) {
-    // Late joiner — send current state
-    ws.send(JSON.stringify({ type:'role', role:'guesser',
-      hint: buildHint(room.word, room.hintRevealed), round: room.roundNumber }));
-    ws.send(JSON.stringify({ type:'status', message:`${room.drawerName} is drawing!` }));
+  console.log(`[ws] +${name} tgId=${tgId} chatId=${chatId} clients=${game.clients.size}`);
+
+  // Is this the drawer connecting?
+  const isDrawer = tgId && tgId === game.drawerTgId;
+
+  if (isDrawer && game.phase === 'drawing') {
+    game.drawerWsId = wsId;
+    // Send them their secret word
+    ws.send(JSON.stringify({ type:'role', role:'drawer', word:game.word, round:1 }));
+    console.log(`[ws] ${name} = DRAWER, word=${game.word}`);
+  } else {
+    // Watcher/guesser — send current state
+    ws.send(JSON.stringify({
+      type: 'init',
+      strokes:  game.strokes,
+      players:  game.clients.size,
+      board:    getLeaderboard(game),
+    }));
+    if (game.phase === 'drawing') {
+      ws.send(JSON.stringify({
+        type: 'role', role: 'guesser',
+        hint: buildHint(game.word, game.hintRevealed),
+        round: 1,
+      }));
+      ws.send(JSON.stringify({
+        type: 'status',
+        message: `${game.drawerName} is drawing! Guess in the Telegram chat!`,
+      }));
+    } else {
+      ws.send(JSON.stringify({
+        type: 'status',
+        message: 'No game running. Use /startgame in the group!',
+      }));
+    }
   }
 
+  broadcastToGame(game, { type:'player_joined', name, count:game.clients.size }, wsId);
+
   ws.on('message', data => {
-    let msg; try { msg=JSON.parse(data); } catch { return; }
+    let msg; try { msg = JSON.parse(data); } catch { return; }
 
     switch (msg.type) {
+
       case 'draw':
-        if (clientId !== room.currentDrawer) return;
-        room.strokes.push(msg.stroke);
-        bcast(room, { type:'draw', stroke:msg.stroke }, clientId);
-        scheduleUpdate(room);
+        if (wsId !== game.drawerWsId) return;
+        game.strokes.push(msg.stroke);
+        broadcastToGame(game, { type:'draw', stroke:msg.stroke }, wsId);
+        scheduleCanvasUpdate(game);
         break;
 
       case 'clear':
-        if (clientId !== room.currentDrawer) return;
-        room.strokes = [];
-        bcast(room, { type:'clear' });
-        scheduleUpdate(room);
+        if (wsId !== game.drawerWsId) return;
+        game.strokes = [];
+        broadcastToGame(game, { type:'clear' });
+        scheduleCanvasUpdate(game);
         break;
 
       case 'snapshot':
-        if (clientId !== room.currentDrawer) return;
-        bcast(room, { type:'snapshot', data:msg.data }, clientId);
+        if (wsId !== game.drawerWsId) return;
+        broadcastToGame(game, { type:'snapshot', data:msg.data }, wsId);
         break;
 
-      case 'skip_word':
-        skipWord(room, clientId);
-        break;
-
+      // Guess from Mini App chat panel (mirrors Telegram guesses)
       case 'guess': {
-        if (clientId === room.currentDrawer) return;
-        const t  = (msg.text||'').trim();
-        if (!t) return;
-        const ok = !!room.word && t.toLowerCase()===room.word.toLowerCase();
-        bcast(room, { type:'guess', name, text:t, correct:ok });
+        if (wsId === game.drawerWsId) return;
+        const t = (msg.text||'').trim(); if (!t) return;
+        const ok = game.word && t.toLowerCase() === game.word.toLowerCase();
+        broadcastToGame(game, { type:'guess', name, text:t, correct:ok });
         if (ok) {
-          room.guesses.add(userId);
-          const hintsRevealed = room.hintRevealed.filter(Boolean).length;
-          const elapsed   = (Date.now() - (room.roundStartTime||Date.now())) / 1000;
-          const timeBonus = Math.max(0, Math.floor((ROUND_DURATION_MS/1000 - elapsed) / 10));
-          const pts = Math.max(10, 100 - hintsRevealed*10 + timeBonus);
-          room.scores.set(name, (room.scores.get(name)||0) + pts);
-          room.scores.set(room.drawerName, (room.scores.get(room.drawerName)||0) + 50);
-          bcast(room, { type:'score_update', name, pts, timeBonus, board: getLeaderboard(room) });
-          endRound(room, name);
+          const hintsGiven = game.hintRevealed.filter(Boolean).length;
+          const elapsed    = (Date.now() - game.roundStartTime) / 1000;
+          const timeBonus  = Math.max(0, Math.floor((ROUND_DURATION_MS/1000 - elapsed) / 10));
+          const pts        = Math.max(10, 100 - hintsGiven*10 + timeBonus);
+          game.scores.set(name,           (game.scores.get(name)||0) + pts);
+          game.scores.set(game.drawerName,(game.scores.get(game.drawerName)||0) + 50);
+          broadcastToGame(game, { type:'score_update', name, pts, timeBonus, board:getLeaderboard(game) });
+          bot.telegram.sendMessage(
+            game.chatId,
+            `🎉 *${name}* guessed it! The word was *${game.word}* ✅  +${pts} pts`,
+            { parse_mode:'Markdown' }
+          ).catch(()=>{});
+          endGame(game, name, 'guess');
         }
         break;
       }
 
       case 'done_drawing':
-        if (clientId !== room.currentDrawer) return;
-        endRound(room, null, 'done');
+        if (wsId !== game.drawerWsId) return;
+        endGame(game, null, 'done');
         break;
 
-      case 'new_round':
-        // Any player can start a new round as long as there's at least 1 player
-        if (!room.roundActive) {
-          if (room.clients.size >= 1) startRound(room);
-          else ws.send(JSON.stringify({type:'status',message:'No players connected!'}));
-        } else {
-          ws.send(JSON.stringify({type:'status',message:'Round already in progress!'}));
+      case 'skip_word':
+        if (wsId !== game.drawerWsId) return;
+        {
+          const nw = pickWord();
+          game.word         = nw;
+          game.hintRevealed = new Array(nw.length).fill(false);
+          game.strokes      = [];
+          clearTimeout(game.hintTimer);
+          game.hintTimer = setTimeout(() => revealNextHint(game), HINT_INTERVAL_MS);
+          sendToWs(game, wsId, { type:'role', role:'drawer', word:nw, round:1 });
+          broadcastToGame(game, { type:'clear' }, wsId);
+          broadcastToGame(game, { type:'word_skipped', hint:buildHint(nw,game.hintRevealed) }, wsId);
         }
+        break;
+
+      case 'get_logs':
+        ws.send(JSON.stringify({ type:'logs', logs:[] }));
         break;
     }
   });
 
   ws.on('close', () => {
-    room.clients.delete(clientId);
-    console.log(`[ws] -${name} left room=${roomId} remaining=${room.clients.size}`);
-    bcast(room, { type:'player_left', name, count:room.clients.size });
-    if (room.currentDrawer === clientId) {
-      room.currentDrawer = null;
-      if (room.roundActive) {
-        room.roundActive = false;
-        clearRoundTimers(room);
-        bcast(room, { type:'status', message:`${name} (drawer) left. New round soon…` });
-      }
-      if (room.clients.size >= MIN_PLAYERS) setTimeout(() => startRound(room), 2000);
+    game.clients.delete(wsId);
+    console.log(`[ws] -${name} left chatId=${chatId} remaining=${game.clients.size}`);
+    broadcastToGame(game, { type:'player_left', name, count:game.clients.size });
+    if (wsId === game.drawerWsId) {
+      game.drawerWsId = null;
+      console.log(`[ws] Drawer closed Mini App (game still running)`);
     }
   });
 
   ws.on('error', err => { console.error(`[ws] ${name}:`, err.message); ws.close(); });
 });
 
-// ── Bot launch — WEBHOOK mode (no polling, no 409 ever) ─────────────────────
-//
-// WHY WEBHOOK instead of polling:
-//   Polling (bot.launch()) causes 409 Conflict on every redeploy because the
-//   new container starts before Railway fully kills the old one. Telegram sees
-//   two getUpdates requests simultaneously and rejects one with 409.
-//
-//   Webhook = Telegram PUSHES updates to our URL. No competing connections,
-//   no 409, works perfectly with Railway's rolling deploys.
-//
-// HOW IT WORKS:
-//   1. On startup we call setWebhook(PUBLIC_URL/webhook/SECRET)
-//   2. Express handles POST /webhook/:secret → bot.handleUpdate()
-//   3. On SIGTERM we delete the webhook so the next deploy starts clean
-//
-// SECRET_TOKEN: random string to prevent unauthorized posts to our webhook URL.
-//   Set WEBHOOK_SECRET in Railway env vars (any random string ≥ 16 chars).
-//   If not set, we derive one from BOT_TOKEN automatically.
-// ─────────────────────────────────────────────────────────────────────────────
-
-// (webhook route moved to top — see route definitions above)
-
-// Call Telegram API directly with raw HTTPS — bypasses any Telegraf wrapper bugs
+// ── Bot launch (webhook mode) ─────────────────────────────────────────────────
 function telegramPost(method, body) {
   return new Promise((resolve, reject) => {
     const https   = require('https');
@@ -656,16 +669,11 @@ function telegramPost(method, body) {
       method:   'POST',
       headers:  { 'Content-Type':'application/json', 'Content-Length':Buffer.byteLength(payload) },
     }, res => {
-      let data = '';
-      res.on('data', d => data += d);
-      res.on('end', () => {
-        try { resolve(JSON.parse(data)); }
-        catch(e) { reject(new Error('Bad JSON: ' + data)); }
-      });
+      let d=''; res.on('data',c=>d+=c);
+      res.on('end',()=>{ try{resolve(JSON.parse(d));}catch(e){reject(e);} });
     });
     req.on('error', reject);
-    req.write(payload);
-    req.end();
+    req.write(payload); req.end();
   });
 }
 
@@ -673,81 +681,47 @@ async function launchBot() {
   try {
     const me = await bot.telegram.getMe();
     botUsername = me.username;
+    console.log(`🤖 @${botUsername} ready`);
 
     await bot.telegram.setMyCommands([
-      { command:'startgame',   description:'Start Draw & Guess' },
-      { command:'stopgame',    description:'Stop the game' },
-      { command:'newround',    description:'Skip to next round' },
+      { command:'startgame',   description:'Start a new Draw & Guess game' },
+      { command:'stopgame',    description:'Stop the current game' },
       { command:'skipword',    description:'Skip current word' },
       { command:'leaderboard', description:'Show scores' },
     ]);
 
-    // Check current webhook and auto-register if missing or wrong
-    const infoResult = await telegramPost('getWebhookInfo', {});
-    const info = infoResult.result || {};
-    console.log(`🤖 @${botUsername} ready`);
-    console.log(`[bot] pending=${info.pending_update_count} last_error=${info.last_error_message||'none'}`);
-
+    const info = (await telegramPost('getWebhookInfo', {})).result || {};
     if (info.url === WEBHOOK_URL) {
       console.log('[bot] ✅ Webhook already active');
     } else {
-      // Not set or wrong URL — register it now
-      console.log(`[bot] Registering webhook (current="${info.url||'none'}")...`);
-      const result = await telegramPost('setWebhook', {
+      const r = await telegramPost('setWebhook', {
         url: WEBHOOK_URL,
         drop_pending_updates: true,
-        allowed_updates: ['message', 'callback_query'],
+        allowed_updates: ['message','callback_query'],
       });
-      console.log(`[bot] setWebhook: ${result.description||JSON.stringify(result)}`);
-      // Verify
-      const check = (await telegramPost('getWebhookInfo', {})).result || {};
-      if (check.url === WEBHOOK_URL) {
-        console.log('[bot] ✅ Webhook registered successfully');
-      } else {
-        console.error(`[bot] ❌ Webhook failed. Got: "${check.url||'empty'}"`);
-      }
+      console.log('[bot] setWebhook:', r.description || JSON.stringify(r));
     }
   } catch(e) {
     console.error('[bot] launchBot error:', e.message);
     setTimeout(launchBot, 5000);
   }
 }
+
 server.listen(PORT, () => {
   console.log(`✅ http://localhost:${PORT}  |  📡 ${PUBLIC_URL}`);
-  setTimeout(() => launchBot(), 1000);
+  setTimeout(launchBot, 1000);
 
-  // ── Keep-alive: self-ping every 4 min to prevent Railway sleep ──────────
-  // Railway free tier sleeps containers after ~10min of no inbound requests.
-  // Pinging our own health endpoint keeps the process alive 24/7.
+  // Keep-alive ping every 4 min (prevents Railway sleep)
   if (PUBLIC_URL) {
     setInterval(() => {
-      const https = require('https');
-      const http2  = require('http');
-      const url    = new URL(PUBLIC_URL + '/ping');
-      const lib    = url.protocol === 'https:' ? https : http2;
-      lib.get(url.toString(), res => {
-        console.log(`[keepalive] ping → ${res.statusCode}`);
-      }).on('error', e => console.warn('[keepalive] ping failed:', e.message));
-    }, 4 * 60 * 1000); // every 4 minutes
-    console.log('[keepalive] Self-ping enabled every 4 min');
+      const mod = PUBLIC_URL.startsWith('https') ? require('https') : require('http');
+      mod.get(`${PUBLIC_URL}/ping`, r => console.log(`[keepalive] ${r.statusCode}`))
+         .on('error', e => console.warn('[keepalive]', e.message));
+    }, 4 * 60 * 1000);
   }
 });
 
-async function gracefulShutdown(signal) {
-  // DO NOT delete webhook — Railway starts new instance before killing old one.
-  // Deleting webhook on shutdown would break the already-running new instance.
-  console.log(`[shutdown] ${signal} — keeping webhook alive for new instance`);
-  server.close(() => { console.log('[shutdown] Server closed'); process.exit(0); });
-  setTimeout(() => process.exit(1), 5000);
-}
-
-process.on('unhandledRejection', reason => {
-  console.error('[process] unhandledRejection:', reason?.message || reason);
-});
-process.on('uncaughtException', err => {
-  console.error('[process] uncaughtException:', err.message);
-  // Don't exit — Railway will restart if needed
-});
-
-process.once('SIGINT',  () => gracefulShutdown('SIGINT'));
-process.once('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('unhandledRejection', r => console.error('[unhandledRejection]', r?.message||r));
+process.on('uncaughtException',  e => console.error('[uncaughtException]', e.message));
+process.once('SIGINT',  () => { server.close(); process.exit(0); });
+process.once('SIGTERM', () => { server.close(); process.exit(0); });

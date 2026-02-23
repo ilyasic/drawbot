@@ -1271,6 +1271,8 @@ function openGallery(){
 let ws=null, myName='', myRoom='';
 
 function connect(){
+  // Restore name from session if somehow lost
+  if (!myName) try { myName=sessionStorage.getItem('dgName')||myName; myRoom=sessionStorage.getItem('dgRoom')||myRoom; } catch{}
   const proto=location.protocol==='https:'?'wss':'ws';
   ws=new WebSocket(`${proto}://${location.host}/ws?room=${encodeURIComponent(myRoom)}&name=${encodeURIComponent(myName)}`);
   ws.onopen=()=>{document.getElementById('conn-dot').style.background='var(--green)';};
@@ -1324,13 +1326,34 @@ function connect(){
       case 'player_left':   addChat('sys',`${m.name} left (${m.count})`); break;
     }
   };
-  ws.onclose=()=>{document.getElementById('conn-dot').style.background='var(--red)';setTimeout(connect,2500);};
+  ws.onclose=()=>{
+    document.getElementById('conn-dot').style.background='var(--red)';
+    // Reconnect immediately when page becomes visible again (Telegram minimized/restored)
+    scheduleReconnect();
+  };
   ws.onerror=()=>ws.close();
 }
 
+let reconnectTimer=null;
+function scheduleReconnect(){
+  clearTimeout(reconnectTimer);
+  reconnectTimer=setTimeout(()=>{
+    if(!myName||!myRoom) return; // not joined yet
+    if(ws&&ws.readyState===WebSocket.CONNECTING) return; // already trying
+    connect();
+  }, 1500);
+}
+// Reconnect immediately when tab/app becomes visible
+document.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState==='visible'&&myRoom){
+    if(!ws||ws.readyState===WebSocket.CLOSED||ws.readyState===WebSocket.CLOSING){
+      connect();
+    }
+  }
+});
+
 // ── Auto-join ─────────────────────────────────────────────────────────────────
 function getTgUser() {
-  // Telegram injects user data asynchronously — poll until available
   if (!tg) return null;
   const u = tg.initDataUnsafe?.user;
   if (!u) return null;
@@ -1338,23 +1361,33 @@ function getTgUser() {
 }
 
 function getRoomId() {
+  // 1. Telegram start_param (deep link)
   if (tg) {
     const sp = tg.initDataUnsafe?.start_param;
     if (sp) try { return decodeURIComponent(sp); } catch {}
   }
+  // 2. URL query params
   const usp = new URLSearchParams(location.search);
   return usp.get('room') || usp.get('startapp') || '';
 }
 
 function getUrlName() {
-  // Bot passes ?name=ilyas in the URL so we know who clicked Open Canvas
   const usp = new URLSearchParams(location.search);
   const n = usp.get('name');
   return n ? decodeURIComponent(n) : null;
 }
 
+// Log what we see on load — helps debug name issues
+console.log('[join] URL:', location.href);
+console.log('[join] search:', location.search);
+console.log('[join] tg.initData:', tg?.initData?.slice(0,80)||'none');
+console.log('[join] tg.initDataUnsafe:', JSON.stringify(tg?.initDataUnsafe||{}).slice(0,120));
+
 function doJoin(roomId, playerName) {
   myName = playerName; myRoom = roomId;
+  // Persist so page refreshes / reconnects keep the same name
+  try { sessionStorage.setItem('dgName', myName); sessionStorage.setItem('dgRoom', myRoom); } catch{}
+  console.log('[join] Joining as:', myName, 'room:', myRoom);
   document.getElementById('join-overlay').style.display = 'none';
   initCanvases(); renderPalette(); updateSzOpLabel(); connect();
 }

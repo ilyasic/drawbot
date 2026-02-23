@@ -14,7 +14,7 @@ const PUBLIC_URL        = (process.env.PUBLIC_URL || '').replace(/\/$/, '');
 const PORT              = process.env.PORT || 3000;
 const WEBAPP_SHORT_NAME = process.env.WEBAPP_SHORT_NAME || 'draw1';
 const ROUND_DURATION_MS = parseInt(process.env.ROUND_DURATION_MS || '900000');
-const HINT_COOLDOWN_MS  = parseInt(process.env.HINT_COOLDOWN_MS  || '30000');
+const HINT_COOLDOWN_MS  = parseInt(process.env.HINT_COOLDOWN_MS  || '10000');
 const WEBHOOK_SECRET    = process.env.WEBHOOK_SECRET || 'tgbot';
 
 if (!BOT_TOKEN)  { console.error('BOT_TOKEN missing');  process.exit(1); }

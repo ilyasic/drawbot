@@ -547,6 +547,9 @@ html, body {
       <button class="tbtn"       id="btn-undo"  title="Undo">↩</button>
       <button class="tbtn"       id="btn-redo"  title="Redo">↪</button>
       <button class="tbtn tred"  id="btn-clear" title="Clear">✕</button>
+      <button class="tbtn"       id="btn-zoom-in"  title="Zoom In">＋</button>
+      <button class="tbtn"       id="btn-zoom-out" title="Zoom Out">－</button>
+      <button class="tbtn"       id="btn-zoom-fit" title="Fit Screen">⊡</button>
       <button class="tbtn"       id="btn-menu2" title="More">⋯</button>
       <div id="sz-op-label">
         <div id="sz-op-size">5px</div>
@@ -778,28 +781,72 @@ canvasArea.addEventListener('pointermove',  onPointerMove,  {passive:false});
 canvasArea.addEventListener('pointerup',    onPointerUp);
 canvasArea.addEventListener('pointercancel',onPointerUp);
 
-// Pinch zoom
-let pinchDist=0, pinchZoom=1;
+// ── Pinch zoom (fixed for mobile — prevents page scroll/dismiss) ──────────────
+let pinchDist=0, pinchZoom=1, pinchActive=false;
+
 canvasArea.addEventListener('touchstart', e=>{
   if (e.touches.length===2) {
-    isDrawing=false;
+    e.preventDefault(); // stop page scroll/dismiss
+    e.stopPropagation();
+    isDrawing=false; pinchActive=true;
     const t=e.touches;
     pinchDist=Math.hypot(t[0].clientX-t[1].clientX,t[0].clientY-t[1].clientY);
-    pinchZoom=zoom; e.preventDefault();
+    pinchZoom=zoom;
+  } else if (e.touches.length===1 && isDrawer) {
+    // Single finger — prevent page scroll only when on canvas area
+    e.preventDefault();
   }
 },{passive:false});
+
 canvasArea.addEventListener('touchmove', e=>{
-  if (e.touches.length===2) {
-    e.preventDefault();
+  e.preventDefault(); // always prevent — stops Telegram dismiss gesture
+  e.stopPropagation();
+  if (e.touches.length===2 && pinchActive) {
     const t=e.touches;
     const d=Math.hypot(t[0].clientX-t[1].clientX,t[0].clientY-t[1].clientY);
     zoom=Math.max(.2,Math.min(8,pinchZoom*(d/pinchDist)));
+    // Keep canvas centered during zoom
+    const rect=canvasArea.getBoundingClientRect();
+    const cx=(t[0].clientX+t[1].clientX)/2-rect.left;
+    const cy=(t[0].clientY+t[1].clientY)/2-rect.top;
+    const oldZ=pinchZoom*(pinchDist/pinchDist); // recalc relative
+    panX=cx-(cx-panX)*(zoom/pinchZoom);
+    panY=cy-(cy-panY)*(zoom/pinchZoom);
+    pinchZoom=zoom; pinchDist=d; // update so next frame is relative
     applyTransform();
   }
 },{passive:false});
+
+canvasArea.addEventListener('touchend', e=>{
+  if(e.touches.length<2) pinchActive=false;
+},{passive:true});
+
+// Zoom buttons
+document.getElementById('btn-zoom-in')?.addEventListener('click',()=>{
+  const rect=canvasArea.getBoundingClientRect();
+  const cx=rect.width/2, cy=rect.height/2;
+  const nz=Math.min(8, zoom*1.3);
+  panX=cx-(cx-panX)*(nz/zoom);
+  panY=cy-(cy-panY)*(nz/zoom);
+  zoom=nz; applyTransform();
+  showToast(`${Math.round(zoom*100)}%`);
+});
+document.getElementById('btn-zoom-out')?.addEventListener('click',()=>{
+  const rect=canvasArea.getBoundingClientRect();
+  const cx=rect.width/2, cy=rect.height/2;
+  const nz=Math.max(.2, zoom/1.3);
+  panX=cx-(cx-panX)*(nz/zoom);
+  panY=cy-(cy-panY)*(nz/zoom);
+  zoom=nz; applyTransform();
+  showToast(`${Math.round(zoom*100)}%`);
+});
+document.getElementById('btn-zoom-fit')?.addEventListener('click',()=>{
+  fitCanvas();
+  showToast('Fit screen');
+});
 canvasArea.addEventListener('wheel',e=>{
+  e.preventDefault(); // always prevent — stops Telegram scroll-to-dismiss
   if(e.ctrlKey||e.metaKey){
-    e.preventDefault();
     const rect=canvasArea.getBoundingClientRect();
     const ox=e.clientX-rect.left, oy=e.clientY-rect.top;
     const nz=Math.max(.15,Math.min(8,zoom*(e.deltaY<0?1.12:.89)));
@@ -972,6 +1019,16 @@ document.getElementById('btn-clear')  .addEventListener('click',()=>{
   saveUndo(); clearAll();
   ws?.send(JSON.stringify({type:'clear'}));
 });
+
+// Prevent Telegram Mini App dismiss gesture (swipe down to close)
+// by blocking touchmove on the whole document when a touch started on canvas
+let touchStartedOnCanvas = false;
+document.addEventListener('touchstart', e=>{
+  touchStartedOnCanvas = !!e.target.closest('#canvas-area');
+}, {passive:true});
+document.addEventListener('touchmove', e=>{
+  if(touchStartedOnCanvas) e.preventDefault();
+},{passive:false});
 
 document.addEventListener('pointerdown',e=>{
   if(!e.target.closest('.tbtn')&&!e.target.closest('.top-icon')&&!e.target.closest('.popup'))

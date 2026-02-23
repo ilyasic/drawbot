@@ -417,12 +417,22 @@ html, body {
   <!-- ── Popups ── -->
   <div class="popup" id="brush-popup">
     <div class="pop-label">Brush Type</div>
-    <div class="brush-opt on"  data-brush="pen">    <span class="brush-icon">🖊</span>Pen</div>
-    <div class="brush-opt"     data-brush="pencil"> <span class="brush-icon">✏️</span>Pencil</div>
-    <div class="brush-opt"     data-brush="marker"> <span class="brush-icon">🖍</span>Marker</div>
-    <div class="brush-opt"     data-brush="bristle"><span class="brush-icon">🎨</span>Bristle</div>
-    <div class="brush-opt"     data-brush="flat">   <span class="brush-icon">▬</span>Flat</div>
-    <div class="brush-opt"     data-brush="eraser"> <span class="brush-icon">🧽</span>Eraser</div>
+    <div class="brush-opt on"  data-brush="pen">      <span class="brush-icon">🖊</span>Pen</div>
+    <div class="brush-opt"     data-brush="pencil">   <span class="brush-icon">✏️</span>Pencil</div>
+    <div class="brush-opt"     data-brush="marker">   <span class="brush-icon">🖍</span>Marker</div>
+    <div class="brush-opt"     data-brush="bristle">  <span class="brush-icon">🎨</span>Bristle</div>
+    <div class="brush-opt"     data-brush="flat">     <span class="brush-icon">▬</span>Flat</div>
+    <div class="brush-opt"     data-brush="ink">      <span class="brush-icon">🪶</span>Ink</div>
+    <div class="brush-opt"     data-brush="watercolor"><span class="brush-icon">💧</span>Watercolor</div>
+    <div class="brush-opt"     data-brush="spray">    <span class="brush-icon">🌫</span>Spray</div>
+    <div class="brush-opt"     data-brush="eraser">   <span class="brush-icon">🧽</span>Eraser</div>
+    <div class="pop-divider"></div>
+    <div class="pop-label">Smoothing</div>
+    <div style="display:flex;align-items:center;gap:8px;padding:2px 0">
+      <input type="range" id="smooth-range" min="0" max="100" value="50"
+        style="-webkit-appearance:none;flex:1;height:4px;border-radius:2px;background:var(--border);outline:none"/>
+      <span id="smooth-lbl" style="font-size:.76rem;color:var(--text2);font-weight:700;min-width:36px;text-align:right">50%</span>
+    </div>
   </div>
 
   <div class="popup" id="color-popup">
@@ -691,59 +701,246 @@ function doRedo() {
   l.ctx.putImageData(rs.pop(),0,0);
 }
 
-function applyBrushSettings(ctx) {
-  ctx.globalAlpha = brushOpacity;
-  ctx.globalCompositeOperation = brushType==='eraser' ? 'destination-out' : 'source-over';
-  ctx.lineWidth   = brushSize;
-  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-  ctx.strokeStyle = brushType==='eraser' ? 'rgba(0,0,0,1)' : currentColor;
+// ── Pro Drawing Engine ────────────────────────────────────────────────────────
+// Per-brush default settings — user can override smoothing/opacity/size
+const BRUSH_DEFAULTS = {
+  pen:     { smoothing:0.5,  alpha:1.0,  widthMult:1.0,  cap:'round',  dash:[],           pressure:true  },
+  pencil:  { smoothing:0.3,  alpha:0.75, widthMult:0.8,  cap:'round',  dash:'auto',       pressure:true  },
+  marker:  { smoothing:0.6,  alpha:0.55, widthMult:1.6,  cap:'round',  dash:[],           pressure:false },
+  bristle: { smoothing:0.2,  alpha:0.5,  widthMult:1.0,  cap:'round',  dash:[],           pressure:true  },
+  flat:    { smoothing:0.4,  alpha:1.0,  widthMult:2.5,  cap:'square', dash:[],           pressure:false },
+  eraser:  { smoothing:0.5,  alpha:1.0,  widthMult:1.0,  cap:'round',  dash:[],           pressure:false },
+  fill:    { smoothing:1.0,  alpha:1.0,  widthMult:1.0,  cap:'round',  dash:[],           pressure:false },
+  spray:   { smoothing:0.0,  alpha:0.08, widthMult:1.0,  cap:'round',  dash:[],           pressure:false },
+  ink:     { smoothing:0.7,  alpha:1.0,  widthMult:1.0,  cap:'round',  dash:[],           pressure:true  },
+  watercolor:{smoothing:0.6, alpha:0.25, widthMult:2.0,  cap:'round',  dash:[],           pressure:true  },
+};
+
+// Per-brush user-adjustable settings stored here
+const brushSettings = {};
+Object.keys(BRUSH_DEFAULTS).forEach(b => {
+  brushSettings[b] = { ...BRUSH_DEFAULTS[b] };
+});
+
+// ── Catmull-Rom → Bezier curve fitting ────────────────────────────────────────
+// Converts raw points array into smooth bezier path
+// smoothing: 0 = raw lines, 1 = maximum smooth
+function smoothPoints(pts, smoothing) {
+  if (pts.length < 3 || smoothing < 0.05) return null; // use raw lineTo
+  const s = smoothing * 0.4; // scale factor
+  const cp = []; // control points
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[Math.max(0, i-1)];
+    const p1 = pts[i];
+    const p2 = pts[i+1];
+    const p3 = pts[Math.min(pts.length-1, i+2)];
+    cp.push([
+      p1[0] + (p2[0]-p0[0]) * s,
+      p1[1] + (p2[1]-p0[1]) * s,
+      p2[0] - (p3[0]-p1[0]) * s,
+      p2[1] - (p3[1]-p1[1]) * s,
+    ]);
+  }
+  return cp;
 }
 
-function drawSegment(ctx, x0, y0, x1, y1) {
-  applyBrushSettings(ctx);
-  switch(brushType) {
-    case 'pencil': {
-      ctx.setLineDash([brushSize*.6, brushSize*.3]);
-      ctx.globalAlpha = brushOpacity * .75;
-      ctx.lineWidth   = brushSize * .8;
-      for (let i=0;i<2;i++) {
+// ── Speed-based pressure simulation ──────────────────────────────────────────
+function calcPressure(pts, i) {
+  if (i === 0 || i >= pts.length - 1) return 0.8;
+  const dx = pts[i+1][0] - pts[i-1][0];
+  const dy = pts[i+1][1] - pts[i-1][1];
+  const speed = Math.sqrt(dx*dx + dy*dy);
+  // Fast movement = thin line (like a real pen), slow = thick
+  return Math.max(0.3, Math.min(1.2, 1.4 - speed * 0.018));
+}
+
+// ── Core stroke renderer — used by BOTH frontend and server ──────────────────
+// ctx: Canvas 2D context (browser or node-canvas — identical API)
+// s:   stroke object { color, size, opacity, brushType, smoothing, points }
+function renderStrokeProper(ctx, s) {
+  const pts = s.points || [];
+  if (pts.length < 2) return;
+
+  const btype    = s.brushType  || 'pen';
+  const size     = s.size       || 6;
+  const color    = s.color      || '#000000';
+  const opacity  = s.opacity    != null ? s.opacity : 1.0;
+  const smoothing= s.smoothing  != null ? s.smoothing : (BRUSH_DEFAULTS[btype]?.smoothing ?? 0.5);
+  const bd       = BRUSH_DEFAULTS[btype] || BRUSH_DEFAULTS.pen;
+
+  ctx.save();
+
+  // ── Eraser ──
+  if (btype === 'eraser') {
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.globalAlpha  = 1.0;
+    ctx.strokeStyle  = 'rgba(0,0,0,1)';
+    ctx.lineWidth    = size * bd.widthMult;
+    ctx.lineCap      = 'round';
+    ctx.lineJoin     = 'round';
+    ctx.setLineDash([]);
+    _drawPath(ctx, pts, smoothing);
+    ctx.stroke();
+    ctx.restore();
+    return;
+  }
+
+  // ── Spray ──
+  if (btype === 'spray') {
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = color;
+    for (let i = 0; i < pts.length; i++) {
+      const density = Math.floor(size * 1.5);
+      for (let d = 0; d < density; d++) {
+        const angle = Math.random() * Math.PI * 2;
+        const r     = Math.random() * size * 1.2;
+        const px    = pts[i][0] + Math.cos(angle) * r;
+        const py    = pts[i][1] + Math.sin(angle) * r;
+        ctx.globalAlpha = Math.random() * opacity * 0.3;
         ctx.beginPath();
-        ctx.moveTo(x0+(Math.random()-.5)*1.2, y0+(Math.random()-.5)*1.2);
-        ctx.lineTo(x1+(Math.random()-.5)*1.2, y1+(Math.random()-.5)*1.2);
-        ctx.stroke();
+        ctx.arc(px, py, Math.random() * 1.5 + 0.5, 0, Math.PI*2);
+        ctx.fill();
       }
-      ctx.setLineDash([]);
-      break;
     }
-    case 'marker': {
-      ctx.globalAlpha = brushOpacity * .6;
-      ctx.lineWidth   = brushSize * 1.4;
-      ctx.beginPath(); ctx.moveTo(x0,y0); ctx.lineTo(x1,y1); ctx.stroke();
-      break;
-    }
-    case 'bristle': {
-      const bristles = Math.max(3, Math.floor(brushSize/2));
-      ctx.globalAlpha = brushOpacity / bristles * 2;
-      ctx.lineWidth   = Math.max(1, brushSize/bristles);
-      for (let i=0;i<bristles;i++) {
-        const r = brushSize*.6;
-        ctx.beginPath();
-        ctx.moveTo(x0+(Math.random()-.5)*r, y0+(Math.random()-.5)*r);
-        ctx.lineTo(x1+(Math.random()-.5)*r, y1+(Math.random()-.5)*r);
-        ctx.stroke();
+    ctx.restore();
+    return;
+  }
+
+  // ── Watercolor ──
+  if (btype === 'watercolor') {
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.strokeStyle = color;
+    ctx.lineCap     = 'round';
+    ctx.lineJoin    = 'round';
+    const layers = 6;
+    for (let l = 0; l < layers; l++) {
+      ctx.globalAlpha = opacity * bd.alpha / layers;
+      ctx.lineWidth   = size * bd.widthMult * (0.7 + Math.random() * 0.6);
+      ctx.beginPath();
+      ctx.moveTo(pts[0][0] + (Math.random()-.5)*size*.3, pts[0][1] + (Math.random()-.5)*size*.3);
+      for (let i = 1; i < pts.length; i++) {
+        const jx = (Math.random()-.5) * size * 0.4;
+        const jy = (Math.random()-.5) * size * 0.4;
+        ctx.lineTo(pts[i][0]+jx, pts[i][1]+jy);
       }
-      break;
+      ctx.stroke();
     }
-    case 'flat': {
-      ctx.lineWidth = brushSize*2.5; ctx.lineCap='square';
-      ctx.beginPath(); ctx.moveTo(x0,y0); ctx.lineTo(x1,y1); ctx.stroke();
-      break;
+    ctx.restore();
+    return;
+  }
+
+  // ── Bristle ──
+  if (btype === 'bristle') {
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.lineCap  = 'round';
+    ctx.lineJoin = 'round';
+    const bristles = Math.max(4, Math.floor(size * 0.7));
+    ctx.lineWidth  = Math.max(0.8, size / bristles * 1.2);
+    for (let b = 0; b < bristles; b++) {
+      ctx.globalAlpha = opacity * bd.alpha * (0.5 + Math.random()*.5);
+      ctx.strokeStyle  = color;
+      const r = size * 0.55;
+      const offX = (Math.random()-.5) * r * 2;
+      const offY = (Math.random()-.5) * r * 2;
+      ctx.beginPath();
+      ctx.moveTo(pts[0][0]+offX, pts[0][1]+offY);
+      for (let i = 1; i < pts.length; i++) {
+        const ox = offX * (0.85 + Math.random()*.3);
+        const oy = offY * (0.85 + Math.random()*.3);
+        ctx.lineTo(pts[i][0]+ox, pts[i][1]+oy);
+      }
+      ctx.stroke();
     }
-    default: {
-      ctx.beginPath(); ctx.moveTo(x0,y0); ctx.lineTo(x1,y1); ctx.stroke();
+    ctx.restore();
+    return;
+  }
+
+  // ── Ink (pressure-sensitive calligraphy) ──
+  if (btype === 'ink') {
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.strokeStyle = color;
+    ctx.lineCap     = 'round';
+    ctx.lineJoin    = 'round';
+    ctx.setLineDash([]);
+    for (let i = 1; i < pts.length; i++) {
+      const pressure = calcPressure(pts, i);
+      ctx.globalAlpha = opacity * Math.min(1, pressure * 0.9 + 0.1);
+      ctx.lineWidth   = size * pressure * bd.widthMult;
+      ctx.beginPath();
+      ctx.moveTo(pts[i-1][0], pts[i-1][1]);
+      ctx.lineTo(pts[i][0], pts[i][1]);
+      ctx.stroke();
+    }
+    ctx.restore();
+    return;
+  }
+
+  // ── Pencil ──
+  if (btype === 'pencil') {
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.strokeStyle = color;
+    ctx.lineCap     = 'round';
+    ctx.lineJoin    = 'round';
+    const dashLen = size * 0.5;
+    ctx.setLineDash([dashLen, dashLen * 0.4]);
+    ctx.lineWidth   = size * bd.widthMult;
+    ctx.globalAlpha = opacity * bd.alpha;
+    // Two offset passes like real pencil grain
+    for (let pass = 0; pass < 2; pass++) {
+      ctx.beginPath();
+      ctx.moveTo(pts[0][0]+(Math.random()-.5)*1.5, pts[0][1]+(Math.random()-.5)*1.5);
+      for (let i = 1; i < pts.length; i++) {
+        ctx.lineTo(pts[i][0]+(Math.random()-.5)*1.5, pts[i][1]+(Math.random()-.5)*1.5);
+      }
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    ctx.restore();
+    return;
+  }
+
+  // ── Pen / Marker / Flat (standard smooth brush) ──
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha  = opacity * bd.alpha;
+  ctx.strokeStyle  = color;
+  ctx.lineCap      = bd.cap || 'round';
+  ctx.lineJoin     = 'round';
+  ctx.setLineDash([]);
+
+  if (bd.pressure && btype !== 'marker' && btype !== 'flat') {
+    // Pressure-variable width — draw segment by segment
+    for (let i = 1; i < pts.length; i++) {
+      const pressure = calcPressure(pts, i);
+      ctx.lineWidth = size * bd.widthMult * pressure;
+      ctx.beginPath();
+      ctx.moveTo(pts[i-1][0], pts[i-1][1]);
+      ctx.lineTo(pts[i][0], pts[i][1]);
+      ctx.stroke();
+    }
+  } else {
+    // Constant width — draw as single smooth bezier path
+    ctx.lineWidth = size * bd.widthMult;
+    _drawPath(ctx, pts, smoothing);
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+// ── Draw smooth path using Catmull-Rom bezier ─────────────────────────────────
+function _drawPath(ctx, pts, smoothing) {
+  const cp = smoothPoints(pts, smoothing);
+  ctx.beginPath();
+  ctx.moveTo(pts[0][0], pts[0][1]);
+  if (!cp) {
+    // No smoothing — raw lines
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+  } else {
+    // Bezier curves
+    for (let i = 0; i < cp.length; i++) {
+      ctx.bezierCurveTo(cp[i][0], cp[i][1], cp[i][2], cp[i][3], pts[i+1][0], pts[i+1][1]);
     }
   }
-  ctx.globalAlpha=1; ctx.globalCompositeOperation='source-over'; ctx.lineCap='round';
 }
 
 // ── Pointer events ────────────────────────────────────────────────────────────
@@ -758,21 +955,44 @@ function onPointerDown(e) {
   const [x,y]=clientToCanvas(e.clientX,e.clientY);
   saveUndo();
   isDrawing=true; lastX=x; lastY=y;
-  currentStroke={color:currentColor,size:brushSize,opacity:brushOpacity,brushType,points:[[x,y]]};
+  const sm = brushSettings[brushType]?.smoothing ?? BRUSH_DEFAULTS[brushType]?.smoothing ?? 0.5;
+  currentStroke={
+    color:currentColor, size:brushSize, opacity:brushOpacity,
+    brushType, smoothing:sm, points:[[x,y]]
+  };
+  // Draw first point as a dot
+  renderStrokeProper(activeCtx(), {...currentStroke, points:[[x,y],[x+0.01,y+0.01]]});
 }
 function onPointerMove(e) {
   if (!isDrawing||!isDrawer||e.pointerId!==pointerId) return;
   e.preventDefault();
   const [x,y]=clientToCanvas(e.clientX,e.clientY);
+  // Skip if barely moved (reduces jitter on mobile)
+  const dx=x-lastX, dy=y-lastY;
+  if (dx*dx+dy*dy < 0.5) return;
   currentStroke.points.push([x,y]);
-  drawSegment(activeCtx(),lastX,lastY,x,y);
   lastX=x; lastY=y;
-  if (currentStroke.points.length%4===0) ws?.send(JSON.stringify({type:'draw',stroke:{...currentStroke}}));
+  // Redraw whole stroke from scratch for smooth bezier preview
+  activeCtx().clearRect(0,0,CW,CH);
+  // Redraw all committed strokes on this layer first
+  if (activeLayer()?._committed) {
+    activeCtx().putImageData(activeLayer()._committed, 0, 0);
+  }
+  renderStrokeProper(activeCtx(), currentStroke);
+  // Send partial stroke every 8 points
+  if (currentStroke.points.length % 8 === 0) {
+    ws?.send(JSON.stringify({type:'draw', stroke:{...currentStroke}}));
+  }
 }
 function onPointerUp(e) {
   if (!isDrawing||!isDrawer) return;
   isDrawing=false; pointerId=null;
-  if (currentStroke?.points.length>0) ws?.send(JSON.stringify({type:'draw',stroke:currentStroke}));
+  if (currentStroke?.points.length>0) {
+    renderStrokeProper(activeCtx(), currentStroke);
+    // Save committed state for next stroke preview
+    if (activeLayer()) activeLayer()._committed = activeCtx().getImageData(0,0,CW,CH);
+    ws?.send(JSON.stringify({type:'draw', stroke:currentStroke}));
+  }
   currentStroke=null;
 }
 
@@ -855,19 +1075,10 @@ canvasArea.addEventListener('wheel',e=>{
   }
 },{passive:false});
 
-// ── Render incoming strokes ────────────────────────────────────────────────────
+// ── Render incoming strokes (from server replay) ──────────────────────────────
 function renderStroke(s, ctx) {
-  if (!ctx) return;
-  const pts=s.points||[]; if (pts.length<2) return;
-  ctx.globalAlpha = s.opacity||1;
-  ctx.globalCompositeOperation = (s.brushType==='eraser') ? 'destination-out' : 'source-over';
-  ctx.strokeStyle = (s.brushType==='eraser') ? 'rgba(0,0,0,1)' : (s.color||'#000');
-  ctx.lineWidth   = s.size||4;
-  ctx.lineCap = ctx.lineJoin = 'round';
-  ctx.beginPath(); ctx.moveTo(pts[0][0],pts[0][1]);
-  for(let i=1;i<pts.length;i++) ctx.lineTo(pts[i][0],pts[i][1]);
-  ctx.stroke();
-  ctx.globalAlpha=1; ctx.globalCompositeOperation='source-over';
+  if (!ctx || !s?.points?.length) return;
+  renderStrokeProper(ctx, s);
 }
 
 function clearAll() {
@@ -959,20 +1170,36 @@ function setColor(hex) {
 document.getElementById('custom-color').addEventListener('input',e=>setColor(e.target.value));
 
 function updateBrushBtn() {
-  const ICONS={pen:'✏️',pencil:'✏️',marker:'🖍',bristle:'🎨',flat:'▬',eraser:'🧽'};
+  const ICONS={pen:'🖊',pencil:'✏️',marker:'🖍',bristle:'🎨',flat:'▬',ink:'🪶',watercolor:'💧',spray:'🌫',eraser:'🧽'};
   const btn=document.getElementById('btn-brush');
-  btn.innerHTML=(ICONS[brushType]||'✏️')+`<div class="color-dot" id="color-dot" style="background:${currentColor}"></div>`;
+  btn.innerHTML=(ICONS[brushType]||'🖊')+`<div class="color-dot" id="color-dot" style="background:${currentColor}"></div>`;
 }
 
 // ── Brush panel ───────────────────────────────────────────────────────────────
+function updateSmoothSlider() {
+  const sm = brushSettings[brushType]?.smoothing ?? 0.5;
+  const val = Math.round(sm * 100);
+  document.getElementById('smooth-range').value = val;
+  document.getElementById('smooth-lbl').textContent = val + '%';
+}
+
 document.querySelectorAll('.brush-opt').forEach(el=>{
   el.addEventListener('click',()=>{
     brushType=el.dataset.brush;
     document.querySelectorAll('.brush-opt').forEach(b=>b.classList.remove('on'));
     el.classList.add('on');
     updateBrushBtn();
-    closeAllPanels();
+    updateSmoothSlider();
+    // Don't close panel so user can also adjust smoothing
   });
+});
+
+document.getElementById('smooth-range')?.addEventListener('input', e=>{
+  const val = +e.target.value / 100;
+  document.getElementById('smooth-lbl').textContent = e.target.value + '%';
+  if (!brushSettings[brushType]) brushSettings[brushType] = {...BRUSH_DEFAULTS[brushType]};
+  brushSettings[brushType].smoothing = val;
+  showToast(`${brushType} smoothing: ${e.target.value}%`);
 });
 
 // ── Sliders ───────────────────────────────────────────────────────────────────
@@ -1095,7 +1322,7 @@ function sendDrawingToTelegram() {
 }
 
 // Scroll on brush button = cycle brush type
-const BRUSH_ORDER = ['pen','pencil','marker','bristle','flat','eraser'];
+const BRUSH_ORDER = ['pen','pencil','marker','bristle','flat','ink','watercolor','spray','eraser'];
 document.getElementById('btn-brush')?.addEventListener('wheel', e => {
   e.preventDefault();
   const cur  = BRUSH_ORDER.indexOf(brushType);

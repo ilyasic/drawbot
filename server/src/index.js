@@ -44,12 +44,48 @@ app.use((req, res, next) => {
 app.get('/ping', (req, res) => res.send('pong'));
 
 app.get('/', (req, res, next) => {
-  const ua = req.headers['user-agent'] || '';
-  const isTelegram = /TelegramBot|Telegram/i.test(ua);
-  if (!ALLOW_EXTERNAL_URL && !isTelegram && /text\/html/i.test(req.headers['accept'] || '')) {
-    return res.status(403).send('<h2 style="font-family:sans-serif;padding:2rem">Open inside Telegram only 🎨</h2>');
+  if (ALLOW_EXTERNAL_URL) return next(); // dev mode — allow all
+
+  const ua      = req.headers['user-agent'] || '';
+  const referer = req.headers['referer']    || '';
+  const origin  = req.headers['origin']     || '';
+
+  // Telegram Desktop: UA contains "Telegram"
+  // Telegram Mobile WebView: UA is a normal browser UA but Referer/Origin is t.me or telegram
+  // Telegram Web: opens from web.telegram.org
+  const isTelegram =
+    /Telegram/i.test(ua) ||
+    /t.me|telegram.org|web.telegram.org/i.test(referer + origin);
+
+  // Allow if it looks like Telegram, or if no Accept header (API/curl calls)
+  const acceptsHtml = (req.headers['accept']||'').includes('text/html');
+
+  if (!isTelegram && acceptsHtml) {
+    return res.status(403).send(`<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Draw & Guess</title>
+<style>
+  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+    background:#1c2526;font-family:sans-serif;color:#eee;text-align:center;padding:20px}
+  .box{max-width:320px}
+  h1{font-size:2rem;margin-bottom:8px}
+  p{color:#8aabac;margin-bottom:20px;line-height:1.5}
+  a{display:inline-block;background:#c4956a;color:#fff;padding:12px 24px;border-radius:12px;
+    text-decoration:none;font-weight:700}
+</style>
+</head>
+<body>
+<div class="box">
+  <h1>🎨</h1>
+  <h2>Draw & Guess</h2>
+  <p>This app runs inside Telegram.<br>Open it from your Telegram group using <strong>/startgame</strong></p>
+  <a href="https://t.me/drawguess_fast_bot">Open in Telegram →</a>
+</div>
+</body>
+</html>`);
   }
-  next(); // let express.static serve index.html
+  next();
 });
 
 // Fixed webhook path — set WEBHOOK_SECRET in Railway env vars to customize

@@ -446,16 +446,18 @@ bot.command('startgame', async (ctx) => {
 
   // In supergroups, only url buttons are allowed (webApp buttons = BUTTON_TYPE_INVALID)
   // We pass name via URL so frontend gets it without needing initDataUnsafe
-  const userName = [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' ') || ctx.from.username || 'Player';
-  const webappUrl = `${PUBLIC_URL}/?room=${encodeURIComponent(roomId)}&name=${encodeURIComponent(userName)}`;
-  const startappLink = `https://t.me/${botUsername}/${WEBAPP_SHORT_NAME}?startapp=${encodeURIComponent(roomId)}`;
-  console.log(`[bot] /startgame room=${roomId} link=${startappLink}`);
+  const userName = [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' ').trim() || ctx.from.username || 'Artist';
+  // Encode both roomId and userName into startapp param separated by __ 
+  // t.me deep links only support the startapp param, not arbitrary query strings
+  const startappData = encodeURIComponent(roomId + '__' + userName);
+  const startappLink = `https://t.me/${botUsername}/${WEBAPP_SHORT_NAME}?startapp=${startappData}`;
+  console.log(`[bot] /startgame room=${roomId} user=${userName} link=${startappLink}`);
 
   await ctx.reply(
-    `🎨 *Draw & Guess is ready!*\n\n👇 Tap *🖌 Open Canvas* to join!\nEveryone else: type your guesses in this chat.`,
+    `🎨 *Draw & Guess* — tap to join and draw!`,
     { parse_mode:'Markdown',
       ...Markup.inlineKeyboard([
-        [Markup.button.url('🖌 Open Canvas', webappUrl)],
+        [Markup.button.url('🖌 Open Canvas', startappLink)],
       ]) });
 });
 

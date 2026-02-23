@@ -397,8 +397,37 @@ html, body {
     </div>
   </div>
 
-  <!-- Round result overlay -->
-  <div id="round-overlay">
+  <!-- Drawer finish overlay — shown when game ends but drawer is still in Mini App -->
+  <div id="drawer-finish-overlay" style="
+    display:none; position:fixed; inset:0; z-index:550;
+    background:rgba(0,0,0,.7); backdrop-filter:blur(6px);
+    align-items:flex-end; justify-content:center; padding-bottom:40px;
+  ">
+    <div style="
+      background:var(--surface); border:1px solid var(--border);
+      border-radius:20px; padding:24px 20px; width:min(320px,92vw);
+      text-align:center; animation:popUp .3s cubic-bezier(.17,.67,.41,1.4);
+    ">
+      <div id="dfo-emoji" style="font-size:2.4rem;margin-bottom:8px">🎉</div>
+      <div id="dfo-title" style="font-family:'Syne',sans-serif;font-size:1.1rem;font-weight:800;margin-bottom:6px"></div>
+      <div id="dfo-word"  style="font-size:1.3rem;font-weight:800;color:var(--btn-active);margin:8px 0"></div>
+      <div id="dfo-sub"   style="font-size:.82rem;color:var(--text2);margin-bottom:18px"></div>
+      <div style="display:flex;gap:10px">
+        <button id="dfo-keep" style="
+          flex:1; background:var(--surface2); border:1px solid var(--border);
+          color:var(--text); padding:12px; border-radius:12px;
+          font-size:.88rem; font-weight:700; cursor:pointer;
+          font-family:'Syne',sans-serif;
+        ">✏️ Keep Drawing</button>
+        <button id="dfo-close" style="
+          flex:1; background:var(--btn-bg); border:none;
+          color:#fff; padding:12px; border-radius:12px;
+          font-size:.88rem; font-weight:700; cursor:pointer;
+          font-family:'Syne',sans-serif;
+        ">✅ Close Canvas</button>
+      </div>
+    </div>
+  </div>
     <div id="round-box">
       <div class="re-emoji" id="re-emoji">🎉</div>
       <div class="re-title" id="re-title"></div>
@@ -1429,6 +1458,22 @@ document.getElementById('re-newround').addEventListener('click',()=>{
   roundOverlay.classList.remove('show');
 });
 
+// Drawer finish overlay buttons
+document.getElementById('dfo-keep')?.addEventListener('click',()=>{
+  // Hide overlay but keep canvas open — drawer can keep drawing freely
+  document.getElementById('drawer-finish-overlay').style.display='none';
+  showToast('Keep drawing! Close when ready 🎨');
+});
+document.getElementById('dfo-close')?.addEventListener('click',()=>{
+  document.getElementById('drawer-finish-overlay').style.display='none';
+  // Hide toolbar, reset drawer state
+  document.getElementById('toolbar').classList.remove('visible');
+  document.getElementById('toolbar').style.display='none';
+  isDrawer=false;
+  // Close Mini App
+  try { tg?.close(); } catch(e) {}
+});
+
 // ── Players & Leaderboard ─────────────────────────────────────────────────────
 function updatePlayerList(board){
   const list=document.getElementById('player-list');
@@ -1640,22 +1685,36 @@ function connect(){
         break;
       case 'round_end':
         sfxRoundEnd();
-        showResult(
-          m.guesser ? '🎉' : (m.reason==='timeout' ? '⏰' : '😮'),
-          m.guesser ? `${m.guesser} got it!` : (m.reason==='timeout' ? "Time's up!" : 'Game over'),
-          m.word,
-          m.guesser ? `Artist: ${m.drawerName}` : `The word was: ${m.word}`
-        );
-        if(m.board){updatePlayerList(m.board);updateLeaderboard(m.board);}
-        if(m.word&&m.drawerName) saveToGallery(m.word,m.drawerName);
-        // Reset UI to idle state
+        if (m.drawerFinish && isDrawer) {
+          // Show special drawer overlay — they can keep drawing or close
+          const dfo = document.getElementById('drawer-finish-overlay');
+          document.getElementById('dfo-emoji').textContent = m.guesser ? '🎉' : '😮';
+          document.getElementById('dfo-title').textContent = m.guesser
+            ? `${m.guesser} guessed it!`
+            : m.reason === 'all_hints' ? 'All hints revealed!' : 'Game over!';
+          document.getElementById('dfo-word').textContent  = `"${m.word}"`;
+          document.getElementById('dfo-sub').textContent   = 'You can keep drawing or close the canvas.';
+          dfo.style.display = 'flex';
+        } else {
+          showResult(
+            m.guesser ? '🎉' : (m.reason==='all_hints' ? '🔤' : '😮'),
+            m.guesser ? `${m.guesser} got it!` : (m.reason==='all_hints' ? 'All hints shown!' : 'Game over'),
+            m.word,
+            m.guesser ? `Artist: ${m.drawerName}` : `The word was: ${m.word}`
+          );
+        }
+        if (m.board){updatePlayerList(m.board);updateLeaderboard(m.board);}
+        if (m.word&&m.drawerName) saveToGallery(m.word,m.drawerName);
+        // Reset UI
         document.getElementById('word-display').textContent='waiting…';
         document.getElementById('role-pill').className='role-pill';
         document.getElementById('role-pill').textContent='—';
         document.getElementById('round-status').textContent='Use /startgame to play again!';
-        document.getElementById('toolbar').classList.remove('visible');
-        document.getElementById('toolbar').style.display='none';
-        isDrawer=false;
+        if (!m.drawerFinish || !isDrawer) {
+          document.getElementById('toolbar').classList.remove('visible');
+          document.getElementById('toolbar').style.display='none';
+          isDrawer=false;
+        }
         break;
       case 'leaderboard':
         if(m.board){updatePlayerList(m.board);updateLeaderboard(m.board);}

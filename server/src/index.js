@@ -474,9 +474,7 @@ bot.action(/^claim_draw:(.+)$/, async (ctx) => {
     }
   ).catch(e => console.error('[sendCanvasBtn]', e.message));
 
-  // Start round timer only — hints are now manual via button
-  game.roundTimer = setTimeout(() => endGame(game, null, 'timeout'), ROUND_DURATION_MS);
-
+  // Timer starts on first stroke — not here
   // Do NOT push canvas yet — wait for first stroke
   console.log(`[game] Waiting for first stroke before showing image in chat`);
 });
@@ -641,10 +639,12 @@ wss.on('connection', (ws, req) => {
         if (wsId !== game.drawerWsId) return;
         game.strokes.push(msg.stroke);
         broadcastToGame(game, { type:'draw', stroke:msg.stroke }, wsId);
-        // First stroke ever — push image to chat immediately
+        // First stroke — start timer + reveal image in chat
         if (!game.firstStrokeDrawn) {
           game.firstStrokeDrawn = true;
-          console.log(`[game] First stroke by ${name} — revealing canvas in chat`);
+          game.roundStartTime   = Date.now();
+          game.roundTimer       = setTimeout(() => endGame(game, null, 'timeout'), ROUND_DURATION_MS);
+          console.log(`[game] First stroke by ${name} — timer started, revealing canvas in chat`);
           setTimeout(() => pushCanvasToChat(game), 500);
         } else {
           scheduleCanvasUpdate(game);
@@ -701,8 +701,10 @@ wss.on('connection', (ws, req) => {
           game.strokes          = [];
           game.firstStrokeDrawn = false; // hide image until drawer starts new word
           game.lastHintAt       = 0;
+          clearTimeout(game.roundTimer); // timer restarts on next first stroke
           clearTimeout(game.hintTimer);
-          game.hintTimer = null;
+          game.roundTimer = null;
+          game.hintTimer  = null;
           sendToWs(game, wsId, { type:'role', role:'drawer', word:nw, round:1 });
           broadcastToGame(game, { type:'clear' }, wsId);
           broadcastToGame(game, { type:'word_skipped', hint:buildHint(nw,game.hintRevealed) }, wsId);

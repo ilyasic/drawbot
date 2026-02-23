@@ -1,3 +1,4 @@
+
 require('dotenv').config();
 const express   = require('express');
 const http      = require('http');
@@ -12,13 +13,14 @@ const BOT_TOKEN         = process.env.BOT_TOKEN;
 const PUBLIC_URL        = (process.env.PUBLIC_URL || '').replace(/\/$/, '');
 const PORT              = process.env.PORT || 3000;
 const WEBAPP_SHORT_NAME = process.env.WEBAPP_SHORT_NAME || 'draw1';
+const ROUND_DURATION_MS = parseInt(process.env.ROUND_DURATION_MS || '90000');
 const HINT_COOLDOWN_MS  = parseInt(process.env.HINT_COOLDOWN_MS  || '30000');
 const WEBHOOK_SECRET    = process.env.WEBHOOK_SECRET || 'tgbot';
 
 if (!BOT_TOKEN)  { console.error('BOT_TOKEN missing');  process.exit(1); }
 if (!PUBLIC_URL) { console.error('PUBLIC_URL missing'); process.exit(1); }
 
-console.log(`[config] WEBAPP=${WEBAPP_SHORT_NAME} HINT_COOLDOWN=${HINT_COOLDOWN_MS/1000}s`);
+console.log(`[config] WEBAPP=${WEBAPP_SHORT_NAME} ROUND=${ROUND_DURATION_MS/1000}s HINT_COOLDOWN=${HINT_COOLDOWN_MS/1000}s`);
 
 // ── Express / WS / Bot ────────────────────────────────────────────────────────
 const app    = express();
@@ -324,14 +326,6 @@ function revealNextHint(game) {
   game.lastHintAt = Date.now();
   const hint = buildHint(game.word, game.hintRevealed);
   broadcastToGame(game, { type:'hint', hint });
-
-  // Check if ALL letters now revealed → end game
-  const allRevealed = game.word.split('').every((c,i) => c===' ' || game.hintRevealed[i]);
-  if (allRevealed) {
-    console.log(`[game] All hints revealed — ending game`);
-    setTimeout(() => endGame(game, null, 'all_hints'), 2000); // 2s delay so players see the full word
-  }
-
   return hint;
 }
 
@@ -401,49 +395,16 @@ async function endGame(game, guesserName, reason) {
 
   console.log(`[game] END chatId=${game.chatId} word=${game.word} guesser=${guesserName||'none'} reason=${reason}`);
 
-  // ── Notify drawer in Mini App — give them time to finish ──
-  if (game.drawerWsId) {
-    sendToWs(game, game.drawerWsId, {
-      type:       'round_end',
-      word:       game.word,
-      drawerName: game.drawerName,
-      guesser:    guesserName || null,
-      reason,
-      board:      getLeaderboard(game),
-      drawerFinish: true, // tells frontend to show "finish drawing" overlay
-    });
-  }
-
-  // ── Notify guessers in Mini App ──
+  // Tell Mini App clients
   broadcastToGame(game, {
-    type:       'round_end',
-    word:       game.word,
+    type: 'round_end',
+    word: game.word,
     drawerName: game.drawerName,
-    guesser:    guesserName || null,
+    guesser: guesserName || null,
     reason,
-    board:      getLeaderboard(game),
-  }, game.drawerWsId); // skip drawer — already got their own message above
+    board: getLeaderboard(game),
+  });
 
-  // ── Post result to Telegram group immediately ──
-  // Drawer gets their own notification in Mini App
-  // Group sees the result right away
-  await postGameResult(game, guesserName, reason);
-
-  // ── Reset after 30s (gives drawer time to finish and close) ──
-  game.word             = null;
-  game.hintRevealed     = [];
-  game.strokes          = [];
-  game.firstStrokeDrawn = false;
-  game.lastHintAt       = 0;
-  game.drawerTgId       = null;
-  game.drawerName       = '';
-  game.drawerWsId       = null;
-  game.inviteMessageId  = null;
-  game.liveMessageId    = null;
-  setTimeout(() => { game.phase = 'idle'; }, 3000);
-}
-
-async function postGameResult(game, guesserName, reason) {
   // Render final image
   let png;
   try { png = await renderPNG(game.strokes); }
@@ -463,11 +424,9 @@ async function postGameResult(game, guesserName, reason) {
     `🎯 Word: *${game.word}*`,
     guesserName
       ? `🏆 Guessed by: *${guesserName}*`
-      : reason === 'all_hints'
-        ? `🔤 All hints revealed! Nobody guessed.`
-        : reason === 'stopped'
-        ? `🛑 Game stopped by admin.`
-        : `😮 Round ended.`,
+      : reason === 'timeout'
+        ? `⏰ Time's up! Nobody guessed.`
+        : `😮 Round ended early.`,
     ``,
     `📊 *Leaderboard:*`,
     fmtLeaderboard(game),
@@ -486,6 +445,20 @@ async function postGameResult(game, guesserName, reason) {
       await bot.telegram.sendMessage(game.chatId, lines, { parse_mode:'Markdown' });
     }
   } catch(e) { console.error('[endGame send]', e.message); }
+
+  // Reset for next game — delay 'idle' by 3s so stray Telegram
+  // messages from the just-ended game don't trigger the new one
+  game.word             = null;
+  game.hintRevealed     = [];
+  game.strokes          = [];
+  game.firstStrokeDrawn = false;
+  game.lastHintAt       = 0;
+  game.drawerTgId       = null;
+  game.drawerName       = '';
+  game.drawerWsId       = null;
+  game.inviteMessageId  = null;
+  game.liveMessageId    = null;
+  setTimeout(() => { game.phase = 'idle'; }, 3000);
 }
 
 // ── Bot commands ──────────────────────────────────────────────────────────────
@@ -683,7 +656,7 @@ bot.on('text', async (ctx) => {
 
     const hintsGiven = game.hintRevealed.filter(Boolean).length;
     const elapsed    = (Date.now() - game.roundStartTime) / 1000;
-    const timeBonus  = Math.max(0, Math.floor((120 - elapsed) / 10)); // bonus for guessing within 2 min
+    const timeBonus  = Math.max(0, Math.floor((ROUND_DURATION_MS/1000 - elapsed) / 10));
     const pts        = Math.max(10, 100 - hintsGiven*10 + timeBonus);
 
     game.scores.set(name,           (game.scores.get(name)           || 0) + pts);
@@ -777,11 +750,12 @@ wss.on('connection', (ws, req) => {
         if (wsId !== game.drawerWsId) return;
         game.strokes.push(msg.stroke);
         broadcastToGame(game, { type:'draw', stroke:msg.stroke }, wsId);
-        // First stroke — reveal image in chat
+        // First stroke — start timer + reveal image in chat
         if (!game.firstStrokeDrawn) {
           game.firstStrokeDrawn = true;
           game.roundStartTime   = Date.now();
-          console.log(`[game] First stroke by ${name} — revealing canvas in chat`);
+          game.roundTimer       = setTimeout(() => endGame(game, null, 'timeout'), ROUND_DURATION_MS);
+          console.log(`[game] First stroke by ${name} — timer started, revealing canvas in chat`);
           setTimeout(() => pushCanvasToChat(game), 500);
         } else {
           scheduleCanvasUpdate(game);
@@ -809,7 +783,7 @@ wss.on('connection', (ws, req) => {
         if (ok) {
           const hintsGiven = game.hintRevealed.filter(Boolean).length;
           const elapsed    = (Date.now() - game.roundStartTime) / 1000;
-          const timeBonus  = Math.max(0, Math.floor((120 - elapsed) / 10)); // bonus for guessing within 2 min
+          const timeBonus  = Math.max(0, Math.floor((ROUND_DURATION_MS/1000 - elapsed) / 10));
           const pts        = Math.max(10, 100 - hintsGiven*10 + timeBonus);
           game.scores.set(name,           (game.scores.get(name)||0) + pts);
           game.scores.set(game.drawerName,(game.scores.get(game.drawerName)||0) + 50);

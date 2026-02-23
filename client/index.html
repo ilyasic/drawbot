@@ -537,7 +537,7 @@ html, body {
     <div id="conn-dot"></div>
     <div id="word-display">connecting…</div>
     <span id="role-pill">—</span>
-    <span id="timer-display"></span>
+    <span id="round-status" style="font-size:.7rem;color:var(--text2);font-weight:600;white-space:nowrap;flex-shrink:0"></span>
     <div id="top-actions">
       <button class="top-icon" id="btn-menu" title="Settings">⋯</button>
     </div>
@@ -591,9 +591,17 @@ html, body {
 
 const tg = window.Telegram?.WebApp;
 if (tg) {
-  tg.ready(); tg.expand();
-  if (typeof tg.requestFullscreen === 'function') tg.requestFullscreen();
-  tg.onEvent('viewportChanged', () => { if (!tg.isExpanded) tg.expand(); });
+  try { tg.ready(); } catch(e) {}
+  try { tg.expand(); } catch(e) {}
+  try { if (typeof tg.requestFullscreen === 'function') tg.requestFullscreen(); } catch(e) {}
+  try { tg.onEvent('viewportChanged', () => { try { if (!tg.isExpanded) tg.expand(); } catch(e){} }); } catch(e) {}
+  // Hook Telegram's native SettingsButton (the gear in the 3-dot menu)
+  try {
+    if (tg.SettingsButton) {
+      tg.SettingsButton.show();
+      tg.SettingsButton.onClick(() => togglePanel('settings-popup'));
+    }
+  } catch(e) {}
 }
 
 // ── Canvas setup ──────────────────────────────────────────────────────────────
@@ -1032,6 +1040,57 @@ function sendDrawingToTelegram() {
   } catch(e){ showToast('Failed to send','warn'); }
 }
 
+// ── Scroll on toolbar buttons to adjust values ───────────────────────────────
+// Scroll on brush button = change brush type
+// Scroll on color button = cycle colors  
+// Scroll on opacity button = change size OR opacity
+const BRUSH_ORDER = ['pen','pencil','marker','bristle','flat','eraser'];
+document.getElementById('btn-brush')?.addEventListener('wheel', e => {
+  e.preventDefault();
+  const cur = BRUSH_ORDER.indexOf(brushType);
+  const next = (cur + (e.deltaY > 0 ? 1 : -1) + BRUSH_ORDER.length) % BRUSH_ORDER.length;
+  brushType = BRUSH_ORDER[next];
+  document.querySelectorAll('.brush-opt').forEach(b => b.classList.toggle('on', b.dataset.brush === brushType));
+  updateBrushBtn();
+  showToast(brushType.charAt(0).toUpperCase() + brushType.slice(1));
+}, {passive:false});
+
+document.getElementById('btn-opacity')?.addEventListener('wheel', e => {
+  e.preventDefault();
+  if (e.shiftKey) {
+    // Shift+scroll = opacity
+    brushOpacity = Math.min(1, Math.max(0.05, brushOpacity + (e.deltaY < 0 ? 0.05 : -0.05)));
+    document.getElementById('op-range').value = Math.round(brushOpacity*100);
+    document.getElementById('op-lbl').textContent = Math.round(brushOpacity*100)+'%';
+  } else {
+    // scroll = size
+    brushSize = Math.min(60, Math.max(1, brushSize + (e.deltaY < 0 ? 1 : -1)));
+    document.getElementById('sz-range').value = brushSize;
+  }
+  updateSzOpLabel();
+  const sz = Math.max(4,Math.min(20,brushSize));
+  const dot = document.getElementById('sz-preview');
+  if(dot) dot.innerHTML = `<div style="width:${sz}px;height:${sz}px;border-radius:50%;background:${currentColor}"></div>`;
+}, {passive:false});
+
+// Also: long-press + drag up/down on mobile for size
+let touchSizeStart = null, touchSizeY = null;
+document.getElementById('btn-opacity')?.addEventListener('touchstart', e => {
+  touchSizeY = e.touches[0].clientY; touchSizeStart = brushSize; e.preventDefault();
+}, {passive:false});
+document.getElementById('btn-opacity')?.addEventListener('touchmove', e => {
+  if (touchSizeY === null) return; e.preventDefault();
+  const dy = touchSizeY - e.touches[0].clientY; // up = increase
+  brushSize = Math.min(60, Math.max(1, Math.round(touchSizeStart + dy * 0.3)));
+  document.getElementById('sz-range').value = brushSize;
+  updateSzOpLabel();
+  const sz = Math.max(4,Math.min(20,brushSize));
+  const dot = document.getElementById('sz-preview');
+  if(dot) dot.innerHTML = `<div style="width:${sz}px;height:${sz}px;border-radius:50%;background:${currentColor}"></div>`;
+  showToast(brushSize+'px');
+}, {passive:false});
+document.getElementById('btn-opacity')?.addEventListener('touchend', () => { touchSizeY=null; });
+
 // ── Server logs panel ────────────────────────────────────────────────────────
 function requestLogs() {
   if (ws && ws.readyState === 1) ws.send(JSON.stringify({type:'get_logs'}));
@@ -1148,23 +1207,13 @@ function updateLeaderboard(board){
 }
 
 // ── Timer ─────────────────────────────────────────────────────────────────────
-let timerInterval=null, timerSeconds=0;
-function startTimer(seconds){
-  clearInterval(timerInterval); timerSeconds=seconds;
-  const el=document.getElementById('timer-display'); el.classList.remove('urgent');
-  function tick(){
-    el.textContent=timerSeconds>0?timerSeconds+'s':'';
-    if(timerSeconds<=10) el.classList.add('urgent');
-    if(timerSeconds<=0){clearInterval(timerInterval);return;}
-    timerSeconds--;
-  }
-  tick(); timerInterval=setInterval(tick,1000);
+function setRoundStatus(msg) {
+  const el = document.getElementById('round-status');
+  if (el) el.textContent = msg;
 }
-function stopTimer(){
-  clearInterval(timerInterval);
-  document.getElementById('timer-display').textContent='';
-  document.getElementById('timer-display').classList.remove('urgent');
-}
+// Keep these as no-ops for any remaining calls
+function startTimer(s){ setRoundStatus(''); }
+function stopTimer(){ setRoundStatus(''); }
 
 // ── Role ──────────────────────────────────────────────────────────────────────
 let isDrawer=false;
@@ -1179,15 +1228,17 @@ function setRole(role,wordOrHint,round){
   const wd=document.getElementById('word-display');
   if(isDrawer){
     currentWord=wordOrHint;
-    wd.textContent=`Draw: ${wordOrHint}`;
-    showToast(`✏️ Draw: ${wordOrHint}`,'ok');
+    wd.textContent=`✏️ ${wordOrHint}`;
+    showToast(`Your word: ${wordOrHint}`,'ok');
+    setRoundStatus('You are drawing');
     sfxRoundStart();
   } else {
     currentWord='';
-    wd.textContent=typeof wordOrHint==='number'?Array(wordOrHint).fill('_').join(' '):wordOrHint;
+    const hint=typeof wordOrHint==='number'?'_ '.repeat(wordOrHint).trim():wordOrHint;
+    wd.textContent=hint;
+    setRoundStatus('Guess the word!');
   }
-  if(round) addChat('sys',`Round ${round} started!`);
-  startTimer(90);
+  if(round) addChat('sys',`Round ${round} — let\'s go!`);
 }
 
 // ── Sound effects ─────────────────────────────────────────────────────────────
@@ -1360,21 +1411,35 @@ function getTgUser() {
   return [u.first_name, u.last_name].filter(Boolean).join(' ').trim() || u.username || null;
 }
 
-function getRoomId() {
-  // 1. Telegram start_param (deep link)
+function parseStartParam() {
+  // startapp format: ROOMID__NAME (encoded together since t.me only supports startapp param)
+  let raw = '';
   if (tg) {
     const sp = tg.initDataUnsafe?.start_param;
-    if (sp) try { return decodeURIComponent(sp); } catch {}
+    if (sp) try { raw = decodeURIComponent(sp); } catch { raw = sp; }
   }
-  // 2. URL query params
-  const usp = new URLSearchParams(location.search);
-  return usp.get('room') || usp.get('startapp') || '';
+  if (!raw) {
+    const usp = new URLSearchParams(location.search);
+    raw = usp.get('startapp') || usp.get('room') || '';
+    try { raw = decodeURIComponent(raw); } catch {}
+  }
+  // Split on __ separator
+  const parts = raw.split('__');
+  const roomId = parts[0] || '';
+  const name   = parts.length > 1 ? parts.slice(1).join('__') : '';
+  return { roomId, name };
+}
+
+function getRoomId() {
+  return parseStartParam().roomId;
 }
 
 function getUrlName() {
+  // From startapp param OR from ?name= query (fallback)
+  const n = parseStartParam().name;
+  if (n) return n;
   const usp = new URLSearchParams(location.search);
-  const n = usp.get('name');
-  return n ? decodeURIComponent(n) : null;
+  return usp.get('name') || null;
 }
 
 // Log what we see on load — helps debug name issues
@@ -1398,11 +1463,17 @@ function doJoin(roomId, playerName) {
   const roomId    = getRoomId();
   const tgName    = getTgUser();
 
-  // We have both — join immediately
-  const urlName = getUrlName();
-  if (roomId && tgName) { doJoin(roomId, tgName); return; }
-  // URL has name param (set by bot) — use it immediately without waiting
-  if (roomId && urlName) { doJoin(roomId, urlName); return; }
+  // Parse startapp which contains both room and name
+  const parsed = parseStartParam();
+  const urlName = parsed.name || getUrlName();
+  const tgName2 = getTgUser();
+  // Best name: Telegram user > startapp name > url param
+  const bestName = tgName2 || urlName;
+  if (parsed.roomId && bestName) { doJoin(parsed.roomId, bestName); return; }
+  if (parsed.roomId && attempt >= 8) { doJoin(parsed.roomId, urlName || ('Artist'+Math.floor(Math.random()*900+100))); return; }
+  // Legacy: roomId from URL
+  const urlRoomId = getRoomId();
+  if (urlRoomId && bestName) { doJoin(urlRoomId, bestName); return; }
 
   // Still waiting — retry for up to 2 seconds (20 × 100ms)
   if (attempt < 20) { setTimeout(() => tryAutoJoin(attempt + 1), 100); return; }

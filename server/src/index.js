@@ -5,7 +5,43 @@ const WebSocket = require('ws');
 const path      = require('path');
 const { v4: uuidv4 } = require('uuid');
 const { Telegraf, Markup } = require('telegraf');
-const Jimp      = require('jimp');
+// Pure Node.js PNG writer — no external dependencies, works on any version
+const zlib = require('zlib');
+
+function writePNG(width, height, pixels) {
+  // pixels: Uint8Array of RGBA values (width*height*4 bytes)
+  const SIGNATURE = Buffer.from([137,80,78,71,13,10,26,10]);
+  function crc32(buf) {
+    let c=0xFFFFFFFF;
+    const t=new Uint32Array(256);
+    for(let i=0;i<256;i++){let v=i;for(let k=0;k<8;k++)v=v&1?0xEDB88320^(v>>>1):v>>>1;t[i]=v;}
+    for(let b of buf)c=t[(c^b)&0xFF]^(c>>>8);
+    return (c^0xFFFFFFFF)>>>0;
+  }
+  function chunk(type, data) {
+    const len=Buffer.alloc(4); len.writeUInt32BE(data.length);
+    const t=Buffer.from(type,'ascii');
+    const crcBuf=Buffer.concat([t,data]);
+    const crcVal=Buffer.alloc(4); crcVal.writeUInt32BE(crc32(crcBuf));
+    return Buffer.concat([len,t,data,crcVal]);
+  }
+  // IHDR
+  const ihdr=Buffer.alloc(13);
+  ihdr.writeUInt32BE(width,0); ihdr.writeUInt32BE(height,4);
+  ihdr[8]=8; ihdr[9]=2; // bit depth 8, color type 2 (RGB)
+  // Raw scanlines (filter byte 0 + RGB data)
+  const raw=Buffer.alloc(height*(1+width*3));
+  let pos=0;
+  for(let y=0;y<height;y++){
+    raw[pos++]=0; // filter None
+    for(let x=0;x<width;x++){
+      const i=(y*width+x)*4;
+      raw[pos++]=pixels[i]; raw[pos++]=pixels[i+1]; raw[pos++]=pixels[i+2];
+    }
+  }
+  const compressed=zlib.deflateSync(raw,{level:1});
+  return Buffer.concat([SIGNATURE,chunk('IHDR',ihdr),chunk('IDAT',compressed),chunk('IEND',Buffer.alloc(0))]);
+}
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const BOT_TOKEN         = process.env.BOT_TOKEN;
@@ -67,17 +103,16 @@ function pickWord() { return WORDS[Math.floor(Math.random() * WORDS.length)]; }
 // ── Canvas render (PNG for Telegram) ─────────────────────────────────────────
 const RENDER_W = 1600, RENDER_H = 1000;
 
-function hexToInt(hex) {
-  try {
-    const c = (hex||'#000').replace('#','').padEnd(6,'0');
-    return Jimp.rgbaToInt(
-      parseInt(c.slice(0,2),16), parseInt(c.slice(2,4),16),
-      parseInt(c.slice(4,6),16), 255
-    );
-  } catch { return 0x000000FF; }
+function hexToRgb(hex) {
+  const c=(hex||'#000000').replace('#','').padEnd(6,'0');
+  return {
+    r:parseInt(c.slice(0,2),16)||0,
+    g:parseInt(c.slice(2,4),16)||0,
+    b:parseInt(c.slice(4,6),16)||0,
+  };
 }
 
-function plotLine(img, x0, y0, x1, y1, col, r) {
+function plotLine(pixels, x0, y0, x1, y1, rgb, r) {
   x0=Math.round(x0);y0=Math.round(y0);x1=Math.round(x1);y1=Math.round(y1);
   const dx=Math.abs(x1-x0),dy=Math.abs(y1-y0);
   const sx=x0<x1?1:-1,sy=y0<y1?1:-1;
@@ -86,7 +121,10 @@ function plotLine(img, x0, y0, x1, y1, col, r) {
     for(let tx=-r;tx<=r;tx++) for(let ty=-r;ty<=r;ty++){
       if(tx*tx+ty*ty<=r*r){
         const px=x0+tx,py=y0+ty;
-        if(px>=0&&px<RENDER_W&&py>=0&&py<RENDER_H) img.setPixelColor(col,px,py);
+        if(px>=0&&px<RENDER_W&&py>=0&&py<RENDER_H){
+          const i=(py*RENDER_W+px)*4;
+          pixels[i]=rgb.r; pixels[i+1]=rgb.g; pixels[i+2]=rgb.b; pixels[i+3]=255;
+        }
       }
     }
     if(x0===x1&&y0===y1) break;
@@ -96,16 +134,19 @@ function plotLine(img, x0, y0, x1, y1, col, r) {
   }
 }
 
-async function renderPNG(strokes) {
-  const img = new Jimp(RENDER_W, RENDER_H, 0xFFFFFFFF);
+function renderPNG(strokes) {
+  // Pure JS — no external deps, always works
+  const pixels = new Uint8Array(RENDER_W * RENDER_H * 4);
+  // Fill white
+  for(let i=0;i<pixels.length;i+=4){pixels[i]=255;pixels[i+1]=255;pixels[i+2]=255;pixels[i+3]=255;}
   for (const s of (strokes||[])) {
     const pts=s.points||[]; if(pts.length<2) continue;
-    const col=hexToInt(s.color);
+    const rgb=hexToRgb(s.color);
     const r=Math.max(1,Math.round((s.size||4)*0.9));
     for(let i=1;i<pts.length;i++)
-      plotLine(img,pts[i-1][0]*2,pts[i-1][1]*2,pts[i][0]*2,pts[i][1]*2,col,r*2);
+      plotLine(pixels,pts[i-1][0]*2,pts[i-1][1]*2,pts[i][0]*2,pts[i][1]*2,rgb,r*2);
   }
-  return img.getBufferAsync(Jimp.MIME_PNG);
+  return writePNG(RENDER_W, RENDER_H, pixels);
 }
 
 // ── Game state ────────────────────────────────────────────────────────────────
@@ -188,7 +229,7 @@ async function pushCanvasToChat(game) {
   game.lastPushTime = now;
 
   let png;
-  try { png = await renderPNG(game.strokes); }
+  try { png = renderPNG(game.strokes); }
   catch(e) { console.error('[render]', e.message); return; }
 
   const hint    = buildHint(game.word, game.hintRevealed);
@@ -248,7 +289,7 @@ async function endGame(game, guesserName, reason) {
   });
 
   let png;
-  try { png = await renderPNG(game.strokes); } catch(e) {}
+  try { png = renderPNG(game.strokes); } catch(e) {}
 
   if (game.liveMessageId) {
     try { await bot.telegram.deleteMessage(game.chatId, game.liveMessageId); } catch{}

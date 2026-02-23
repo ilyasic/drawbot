@@ -124,6 +124,13 @@ html, body {
   border-radius:10px; font-size:.85rem; font-weight:700; cursor:pointer;
   font-family:'Syne',sans-serif; flex-shrink:0;
 }
+#hint-btn {
+  background:rgba(255,209,102,.2); color:var(--yellow); border:1.5px solid rgba(255,209,102,.3);
+  border-radius:10px; padding:8px 12px; font-size:1rem; cursor:pointer;
+  flex-shrink:0; transition:background .15s;
+}
+#hint-btn:active { background:rgba(255,209,102,.4); transform:scale(.9); }
+#hint-btn:disabled { opacity:.4; cursor:not-allowed; }
 
 /* ─── Toolbar — 2 rows of 4 centered icon buttons ────────
    Exactly like reference: warm rounded square buttons, centered,
@@ -414,9 +421,15 @@ html, body {
   <div id="join-overlay">
     <div id="join-box">
       <h2>🎨 Draw & Guess</h2>
-      <input id="name-in" placeholder="Your name" maxlength="24" autocomplete="off"/>
-      <input id="room-in" placeholder="Room ID" maxlength="60" autocomplete="off"/>
-      <button id="join-btn">Join Game →</button>
+      <div id="join-loading" style="text-align:center;color:var(--text2);font-size:.9rem;padding:8px 0">
+        <div style="font-size:1.8rem;margin-bottom:8px">⏳</div>
+        <div>Connecting to game…</div>
+      </div>
+      <div id="join-manual" style="display:none;flex-direction:column;gap:12px">
+        <input id="name-in" placeholder="Your name" maxlength="24" autocomplete="off"/>
+        <input id="room-in" placeholder="Room ID (group chat ID)" maxlength="60" autocomplete="off"/>
+        <button id="join-btn">Join Game →</button>
+      </div>
     </div>
   </div>
 
@@ -567,6 +580,7 @@ html, body {
     <div id="chat-panel">
       <div id="chat-log"></div>
       <div id="guess-row">
+        <button id="hint-btn" title="Request a hint">💡</button>
         <input id="guess-in" placeholder="Type your guess…" autocomplete="off" autocorrect="off" autocapitalize="off"/>
         <button id="guess-go">Send</button>
       </div>
@@ -1184,6 +1198,26 @@ function sendGuess(){
   document.getElementById('guess-in').value='';
 }
 document.getElementById('guess-go').addEventListener('click',sendGuess);
+
+// ── Hint button (guessers only) ───────────────────────────────────────────────
+let hintCooldown = false;
+document.getElementById('hint-btn')?.addEventListener('click', () => {
+  if (hintCooldown || isDrawer) return;
+  if (!ws || ws.readyState !== 1) return;
+  ws.send(JSON.stringify({type:'request_hint'}));
+  // 15s cooldown per person so hints aren't spammed
+  hintCooldown = true;
+  const btn = document.getElementById('hint-btn');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '⏳';
+    setTimeout(() => {
+      hintCooldown = false;
+      btn.disabled = false;
+      btn.textContent = '💡';
+    }, 15000);
+  }
+});
 document.getElementById('guess-in').addEventListener('keydown',e=>{if(e.key==='Enter')sendGuess();});
 
 // ── Round overlay ─────────────────────────────────────────────────────────────
@@ -1275,6 +1309,8 @@ function setRole(role,wordOrHint,round){
   document.getElementById('chat-panel').classList.add('visible');
   showStartBtn(false);
   document.getElementById('guess-row').style.display=isDrawer?'none':'flex';
+  const hb=document.getElementById('hint-btn');
+  if(hb) hb.style.display=isDrawer?'none':'inline-flex';
   const pill=document.getElementById('role-pill');
   pill.className='role-pill '+role;
   pill.textContent=isDrawer?'DRAWING':'GUESSING';
@@ -1410,8 +1446,8 @@ document.getElementById('start-btn')?.addEventListener('click', () => {
       case 'role': clearAll();savedStrokes=[];setRole(m.role,m.role==='drawer'?m.word:m.hint,m.round); break;
       case 'hint':
         document.getElementById('word-display').textContent=m.hint;
-        addChat('sys',`💡 Hint: ${m.hint}`);
-        showToast('💡 Hint!'); sfxHint(); break;
+        addChat('sys', m.requester ? `💡 <b>${m.requester}</b> requested a hint: ${m.hint}` : `💡 Hint: ${m.hint}`);
+        showToast('💡 Hint revealed!'); sfxHint(); break;
       case 'word_skipped':
         document.getElementById('word-display').textContent=m.hint;
         addChat('sys','Word skipped!'); clearAll(); break;
@@ -1540,44 +1576,54 @@ function doJoin(roomId, playerName, tgId) {
 // Retry until BOTH roomId AND playerName from Telegram are available
 // Telegram can take up to ~800ms to inject initDataUnsafe on some devices
 (function tryAutoJoin(attempt) {
-  const roomId    = getRoomId();
-  const tgName    = getTgUser();
-
-  // Parse startapp which contains both room and name
   const parsed = parseStartParam();
-  const urlName = parsed.name || getUrlName();
-  const tgName2 = getTgUser();
-  // Best name: Telegram user > startapp name > url param
-  const bestName = tgName2 || urlName;
-  const tgId = getTgUserId() || parsed.tgId || '';
-  if (parsed.roomId && bestName) { doJoin(parsed.roomId, bestName, tgId); return; }
-  if (parsed.roomId && attempt >= 8) { doJoin(parsed.roomId, urlName || ('Artist'+Math.floor(Math.random()*900+100)), tgId); return; }
-  // Legacy: roomId from URL
-  const urlRoomId = getRoomId();
-  if (urlRoomId && bestName) { doJoin(urlRoomId, bestName); return; }
+  const tgUser = getTgUser();
+  const tgId   = getTgUserId() || parsed.tgId || '';
 
-  // Still waiting — retry for up to 2 seconds (20 × 100ms)
-  if (attempt < 20) { setTimeout(() => tryAutoJoin(attempt + 1), 100); return; }
-
-  // Timed out — use what we have
-  if (roomId) {
-    // Priority: Telegram user > URL name param > random
-    const fallbackName = tgName || getUrlName() || ('Artist' + Math.floor(Math.random()*900+100));
-    doJoin(roomId, fallbackName);
-  } else {
-    // No room ID — show manual join form with Telegram name pre-filled
-    const name = tgName || '';
-    if (name) document.getElementById('name-in').value = name;
+  // Show debug info on screen while loading
+  if (attempt === 0) {
+    const wd = document.getElementById('word-display');
+    if (wd) wd.textContent = 'LOADING…';
   }
+
+  const roomId   = parsed.roomId;
+  const bestName = tgUser || parsed.name || null;
+
+  // Have everything we need — join immediately
+  if (roomId && bestName) {
+    doJoin(roomId, bestName, tgId);
+    return;
+  }
+
+  // Still waiting for Telegram to inject initDataUnsafe (async)
+  if (attempt < 25) {
+    setTimeout(() => tryAutoJoin(attempt + 1), 100);
+    return;
+  }
+
+  // Timeout after 2.5s — use whatever we have
+  if (roomId) {
+    const fallback = tgUser || parsed.name || ('Player' + Math.floor(Math.random()*900+100));
+    doJoin(roomId, fallback, tgId);
+    return;
+  }
+
+  // No roomId — show manual form
+  const jl=document.getElementById('join-loading');
+  const jm=document.getElementById('join-manual');
+  if(jl) jl.style.display='none';
+  if(jm) jm.style.display='flex';
+  if (tgUser) { const ni=document.getElementById('name-in'); if(ni) ni.value=tgUser; }
+  showToast('Open this from Telegram using /startgame', 'warn');
 })(0);
 
-document.getElementById('join-btn').addEventListener('click',()=>{
+document.getElementById('join-btn')?.addEventListener('click',()=>{
   const name=document.getElementById('name-in').value.trim()||`Player${Math.floor(Math.random()*1000)}`;
   const roomId=document.getElementById('room-in').value.trim()||'default';
   doJoin(roomId,name);
 });
-document.getElementById('name-in').addEventListener('keydown',e=>{if(e.key==='Enter')document.getElementById('room-in').focus();});
-document.getElementById('room-in').addEventListener('keydown',e=>{if(e.key==='Enter')document.getElementById('join-btn').click();});
+document.getElementById('name-in')?.addEventListener('keydown',e=>{if(e.key==='Enter')document.getElementById('room-in')?.focus();});
+document.getElementById('room-in')?.addEventListener('keydown',e=>{if(e.key==='Enter')document.getElementById('join-btn')?.click();});
 
 })();
 </script>

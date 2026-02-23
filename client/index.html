@@ -7,13 +7,14 @@
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet"/>
 <style>
+/* ─── Design tokens ─────────────────────────────────────── */
 :root {
-  --bg:        #253334;
+  --bg:        #253334;   /* dark teal background like reference */
   --bg2:       #1e2a2b;
   --surface:   #2d3f40;
   --surface2:  #354849;
   --border:    #3d5355;
-  --btn-bg:    #c4956a;
+  --btn-bg:    #c4956a;   /* warm tan/orange buttons like reference */
   --btn-bg2:   #b8875e;
   --btn-active:#e0a870;
   --accent:    #6c63ff;
@@ -22,9 +23,9 @@
   --red:       #e05555;
   --text:      #eef2f2;
   --text2:     #8aabac;
-  --r:         14px;
+  --r:         14px;      /* rounded like reference */
   --topbar-h:  44px;
-  --toolbar-h: 160px;
+  --toolbar-h: 160px;     /* 2 rows of large buttons */
 }
 
 *,*::before,*::after { box-sizing:border-box; margin:0; padding:0; -webkit-tap-highlight-color:transparent; }
@@ -34,13 +35,14 @@ html, body {
   font-family:'DM Sans',sans-serif; touch-action:none;
 }
 
+/* ─── App shell ─────────────────────────────────────────── */
 #app {
   display:flex; flex-direction:column;
   position:fixed; inset:0;
   overflow:hidden;
 }
 
-/* ── Topbar ── */
+/* ─── Topbar (minimal — just word + timer) ─────────────── */
 #topbar {
   height:var(--topbar-h); min-height:var(--topbar-h);
   display:flex; align-items:center; gap:8px; padding:0 14px;
@@ -70,7 +72,10 @@ html, body {
 #timer-display.urgent { color:var(--red); animation:pulse .5s ease-in-out infinite; }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
 
-#top-actions { display:flex; gap:8px; flex-shrink:0; }
+/* top-right corner icons (like reference 3-dot + X) */
+#top-actions {
+  display:flex; gap:8px; flex-shrink:0;
+}
 .top-icon {
   width:36px; height:36px; border-radius:50%;
   background:rgba(0,0,0,.35); border:none; color:var(--text);
@@ -80,7 +85,7 @@ html, body {
 }
 .top-icon:active { background:rgba(0,0,0,.5); transform:scale(.9); }
 
-/* ── Canvas area — takes ALL space between topbar and chat/toolbar ── */
+/* ─── Canvas — takes ALL space between topbar and toolbar ─ */
 #canvas-area {
   flex:1; position:relative; overflow:hidden;
   background:var(--bg); min-height:0;
@@ -91,21 +96,7 @@ html, body {
 #cv-main { z-index:2; cursor:crosshair; }
 #cv-preview { z-index:3; pointer-events:none; }
 
-/* ── Waiting overlay inside canvas area ── */
-#waiting-overlay {
-  position:absolute; inset:0; display:flex; flex-direction:column;
-  align-items:center; justify-content:center; gap:16px; z-index:10;
-  pointer-events:none;
-}
-#start-btn {
-  background:var(--btn-bg); color:#fff; border:none;
-  padding:16px 40px; border-radius:16px; font-size:1.1rem;
-  font-family:'Syne',sans-serif; font-weight:800; cursor:pointer;
-  box-shadow:0 6px 24px rgba(196,149,106,.5);
-  pointer-events:all; display:none; letter-spacing:.05em;
-}
-
-/* ── Chat strip — SIBLING of canvas-area, NOT inside it ── */
+/* ─── Chat strip (guesser view) ─────────────────────────── */
 #chat-panel {
   flex-shrink:0; display:none; flex-direction:column; gap:4px;
   padding:6px 12px calc(6px + env(safe-area-inset-bottom,0px));
@@ -134,18 +125,27 @@ html, body {
   font-family:'Syne',sans-serif; flex-shrink:0;
 }
 
-/* ── Toolbar — drawer only ── */
+/* ─── Toolbar — 2 rows of 4 centered icon buttons ────────
+   Exactly like reference: warm rounded square buttons, centered,
+   with small size/opacity text label at bottom-right of last btn
+──────────────────────────────────────────────────────────── */
 #toolbar {
   flex-shrink:0; display:none; flex-direction:column;
   align-items:center; justify-content:center; gap:8px;
   padding:10px 20px calc(10px + env(safe-area-inset-bottom,0px));
   background:rgba(30,42,43,0.85);
-  backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px);
-  border-top:1px solid rgba(255,255,255,.06); z-index:20;
+  backdrop-filter:blur(12px);
+  -webkit-backdrop-filter:blur(12px);
+  border-top:1px solid rgba(255,255,255,.06);
+  z-index:20;
 }
 #toolbar.visible { display:flex; }
-.tb-row { display:flex; gap:10px; align-items:center; justify-content:center; }
 
+.tb-row {
+  display:flex; gap:10px; align-items:center; justify-content:center;
+}
+
+/* The big rounded icon buttons — exactly like reference */
 .tbtn {
   width:52px; height:52px; min-width:52px;
   border-radius:13px; border:none;
@@ -155,7 +155,8 @@ html, body {
   transition:transform .12s, background .12s; flex-shrink:0;
   -webkit-user-select:none;
   box-shadow:0 2px 8px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.15);
-  position:relative; font-family:'DM Sans',sans-serif;
+  position:relative;
+  font-family:'DM Sans',sans-serif;
 }
 .tbtn:active { transform:scale(.84); }
 .tbtn.on     { background:rgba(220,175,120,.95); box-shadow:0 3px 12px rgba(196,149,106,.6),inset 0 1px 0 rgba(255,255,255,.2); }
@@ -164,10 +165,13 @@ html, body {
 .tbtn.tgreen { background:rgba(42,156,106,.9); }
 .tbtn.tgreen:active { background:rgba(32,120,82,.9); }
 
+/* Size+opacity label — shown next to last btn in row 2 like reference */
 #sz-op-label {
   font-size:.7rem; color:var(--text2); font-weight:600;
   line-height:1.5; text-align:left; min-width:40px;
 }
+
+/* Color indicator dot on brush button */
 .color-dot {
   position:absolute; bottom:5px; right:5px;
   width:11px; height:11px; border-radius:50%;
@@ -175,11 +179,16 @@ html, body {
   pointer-events:none; background:#1a1a2e;
 }
 
-/* ── Popups ── */
+/* ─── Popups ─────────────────────────────────────────────── */
 .popup {
-  position:fixed; background:var(--surface); border:1px solid var(--border);
-  border-radius:16px; padding:12px; z-index:300;
-  display:none; flex-direction:column; gap:8px;
+  position:fixed;
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:16px;
+  padding:12px;
+  z-index:300;
+  display:none;
+  flex-direction:column; gap:8px;
   box-shadow:0 16px 50px rgba(0,0,0,.75);
   animation:popUp .16s cubic-bezier(.17,.67,.41,1.3);
   max-height:70vh; overflow-y:auto;
@@ -190,6 +199,7 @@ html, body {
   to   { opacity:1; transform:scale(1)   translateY(0); }
 }
 
+/* Anchor positions */
 #brush-popup   { bottom:calc(var(--toolbar-h) + 8px); left:50%; transform:translateX(-50%); min-width:160px; }
 #color-popup   { bottom:calc(var(--toolbar-h) + 8px); left:50%; transform:translateX(-50%); min-width:220px; }
 #opacity-popup { bottom:calc(var(--toolbar-h) + 8px); left:50%; transform:translateX(-50%); min-width:200px; }
@@ -197,11 +207,14 @@ html, body {
 #settings-popup{ top:calc(var(--topbar-h) + 8px); right:14px; min-width:210px; }
 #players-popup { top:calc(var(--topbar-h) + 8px); left:50%; transform:translateX(-50%); min-width:165px; max-height:280px; }
 #lb-popup      { top:calc(var(--topbar-h) + 8px); left:50%; transform:translateX(-50%); min-width:210px; }
-#logs-popup    { top:calc(var(--topbar-h) + 8px); left:50%; transform:translateX(-50%); width:min(440px,92vw); max-height:60vh; }
 
-.pop-label { font-size:.62rem; color:var(--text2); font-weight:700; letter-spacing:.08em; text-transform:uppercase; }
+.pop-label {
+  font-size:.62rem; color:var(--text2); font-weight:700;
+  letter-spacing:.08em; text-transform:uppercase;
+}
 .pop-divider { height:1px; background:var(--border); margin:2px 0; }
 
+/* Brush options */
 .brush-opt {
   display:flex; align-items:center; gap:10px; padding:8px 10px;
   border-radius:9px; cursor:pointer; font-size:.83rem; font-weight:600;
@@ -211,6 +224,7 @@ html, body {
 .brush-opt.on    { border-color:var(--btn-bg); background:rgba(196,149,106,.15); color:var(--btn-active); }
 .brush-icon      { font-size:1rem; width:22px; text-align:center; }
 
+/* Color swatches */
 .color-row { display:flex; gap:7px; flex-wrap:wrap; }
 .cswatch {
   width:32px; height:32px; min-width:32px;
@@ -223,6 +237,7 @@ html, body {
 #custom-color { width:30px; height:30px; border-radius:50%; border:2px solid var(--border); cursor:pointer; padding:0; }
 #custom-color-lbl { font-size:.76rem; color:var(--text2); }
 
+/* Opacity popup */
 #op-popup-wrap { display:flex; align-items:center; gap:10px; }
 #op-range {
   -webkit-appearance:none; flex:1; height:4px;
@@ -234,6 +249,7 @@ html, body {
 }
 #op-lbl { font-size:.76rem; color:var(--text2); font-weight:700; min-width:36px; text-align:right; }
 
+/* Size popup */
 #sz-popup-wrap { display:flex; align-items:center; gap:10px; }
 #sz-range {
   -webkit-appearance:none; flex:1; height:4px;
@@ -246,6 +262,7 @@ html, body {
 #sz-lbl { font-size:.76rem; color:var(--text2); font-weight:700; min-width:28px; text-align:right; }
 #sz-preview { width:20px; height:20px; display:flex; align-items:center; justify-content:center; }
 
+/* Layer rows */
 .layer-row {
   display:flex; align-items:center; gap:6px; padding:7px 8px;
   border-radius:9px; cursor:pointer; font-size:.8rem; font-weight:600;
@@ -264,19 +281,22 @@ html, body {
   -webkit-appearance:none; width:12px; height:12px;
   border-radius:50%; background:var(--text2); cursor:pointer;
 }
+#layer-add { font-size:.76rem; padding:8px 10px; width:100%; border-radius:9px; }
 
+/* Settings popup items */
 .setting-row {
   display:flex; align-items:center; gap:10px; padding:9px 8px;
   border-radius:9px; cursor:pointer; font-size:.83rem; font-weight:500;
   border:1px solid transparent; transition:background .1s;
 }
 .setting-row:hover { background:var(--surface2); }
-.setting-row .s-icon  { font-size:1.1rem; width:24px; text-align:center; flex-shrink:0; }
+.setting-row .s-icon { font-size:1.1rem; width:24px; text-align:center; flex-shrink:0; }
 .setting-row .s-label { flex:1; }
 .setting-row .s-value { font-size:.75rem; color:var(--text2); font-weight:600; }
 .setting-section { font-family:'Syne',sans-serif; font-size:.72rem; font-weight:700; color:var(--btn-bg); letter-spacing:.06em; text-transform:uppercase; padding:2px 4px; }
 
-.player-row  { display:flex; align-items:center; gap:7px; padding:5px 6px; font-size:.8rem; }
+/* Players / LB */
+.player-row { display:flex; align-items:center; gap:7px; padding:5px 6px; font-size:.8rem; }
 .player-dot  { width:8px; height:8px; border-radius:50%; background:var(--green); flex-shrink:0; }
 .player-name { flex:1; font-weight:500; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .player-score{ color:var(--yellow); font-weight:700; font-size:.75rem; }
@@ -287,14 +307,7 @@ html, body {
 .lb-name  { flex:1; font-weight:500; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .lb-pts   { color:var(--yellow); font-weight:700; white-space:nowrap; }
 
-#log-entries { font-family:'Courier New',monospace; font-size:.7rem; color:#8aabac; overflow-y:auto; max-height:calc(60vh - 80px); }
-.log-entry { padding:2px 4px; border-bottom:1px solid rgba(255,255,255,.04); line-height:1.5; }
-.log-entry.round { color:#c4956a; }
-.log-entry.join  { color:#3dd68c; }
-.log-entry.guess { color:#b3adff; }
-#log-clear-btn { font-size:.72rem; padding:5px 12px; border-radius:8px; background:var(--surface2); border:1px solid var(--border); color:var(--text2); cursor:pointer; }
-
-/* ── Toast ── */
+/* ─── Toast ──────────────────────────────────────────────── */
 #toast {
   position:fixed; top:calc(var(--topbar-h) + 10px); left:50%;
   transform:translateX(-50%) translateY(-6px);
@@ -309,7 +322,7 @@ html, body {
 #toast.ok   { background:rgba(61,214,140,.18); border-color:var(--green); color:var(--green); }
 #toast.warn { background:rgba(224,85,85,.18);  border-color:var(--red);   color:var(--red); }
 
-/* ── Round result overlay ── */
+/* ─── Round result ───────────────────────────────────────── */
 #round-overlay {
   position:fixed; inset:0; background:rgba(0,0,0,.88);
   display:none; align-items:center; justify-content:center;
@@ -331,7 +344,7 @@ html, body {
   font-family:'Syne',sans-serif; width:100%;
 }
 
-/* ── Join overlay ── */
+/* ─── Join overlay ───────────────────────────────────────── */
 #join-overlay {
   position:fixed; inset:0; background:rgba(15,22,23,.97);
   display:flex; align-items:center; justify-content:center;
@@ -358,7 +371,7 @@ html, body {
   font-family:'Syne',sans-serif;
 }
 
-/* ── Replay ── */
+/* ─── Replay ─────────────────────────────────────────────── */
 #replay-overlay {
   position:fixed; inset:0; background:rgba(0,0,0,.9);
   display:none; align-items:center; justify-content:center;
@@ -371,6 +384,7 @@ html, body {
   padding:8px 18px; border-radius:20px; cursor:pointer; font-size:.84rem;
 }
 
+/* ─── Desktop ────────────────────────────────────────────── */
 @media(min-width:640px){
   :root{ --topbar-h:50px; --toolbar-h:80px; }
   #toolbar{ flex-direction:row; padding:0 20px; gap:14px; }
@@ -382,29 +396,38 @@ html, body {
   #toolbar{ gap:7px; padding:8px 10px; }
   .tb-row{ gap:7px; }
 }
+
+/* Logs popup */
+#logs-popup { top:calc(var(--topbar-h) + 8px); left:50%; transform:translateX(-50%); width:min(440px,92vw); max-height:60vh; }
+#log-entries { font-family:'Courier New',monospace; font-size:.7rem; color:#8aabac; overflow-y:auto; max-height:calc(60vh - 80px); }
+.log-entry { padding:2px 4px; border-bottom:1px solid rgba(255,255,255,.04); line-height:1.5; }
+.log-entry.round { color:#c4956a; }
+.log-entry.join  { color:#3dd68c; }
+.log-entry.guess { color:#b3adff; }
+#log-clear-btn { font-size:.72rem; padding:5px 12px; border-radius:8px; background:var(--surface2); border:1px solid var(--border); color:var(--text2); cursor:pointer; }
 </style>
 </head>
 <body>
 <div id="app">
 
-  <!-- Join overlay (shown if no room in URL) -->
+  <!-- Join overlay -->
   <div id="join-overlay">
     <div id="join-box">
       <h2>🎨 Draw & Guess</h2>
       <input id="name-in" placeholder="Your name" maxlength="24" autocomplete="off"/>
-      <input id="room-in" placeholder="Room ID (chat ID)" maxlength="60" autocomplete="off"/>
+      <input id="room-in" placeholder="Room ID" maxlength="60" autocomplete="off"/>
       <button id="join-btn">Join Game →</button>
     </div>
   </div>
 
-  <!-- Round result overlay -->
+  <!-- Round result -->
   <div id="round-overlay">
     <div id="round-box">
       <div class="re-emoji" id="re-emoji">🎉</div>
       <div class="re-title" id="re-title"></div>
       <div class="re-word"  id="re-word"></div>
       <div class="re-sub"   id="re-sub"></div>
-      <button id="re-newround">▶ New Game</button>
+      <button id="re-newround">▶ New Round</button>
     </div>
   </div>
 
@@ -459,28 +482,32 @@ html, body {
     <button class="tbtn" id="layer-add" style="height:36px;font-size:.78rem;border-radius:9px;background:var(--surface2);color:var(--text2)">+ Add Layer</button>
   </div>
 
+  <!-- Settings popup — 3-dot menu -->
   <div class="popup" id="settings-popup">
     <div class="setting-section">Game</div>
-    <div class="setting-row" id="s-players">    <span class="s-icon">👥</span><span class="s-label">Players</span></div>
+    <div class="setting-row" id="s-players"><span class="s-icon">👥</span><span class="s-label">Players</span></div>
     <div class="setting-row" id="s-leaderboard"><span class="s-icon">🏆</span><span class="s-label">Leaderboard</span></div>
     <div class="pop-divider"></div>
     <div class="setting-section">Drawing</div>
     <div class="setting-row" id="s-save-drawing"><span class="s-icon">💾</span><span class="s-label">Save drawing</span></div>
-    <div class="setting-row" id="s-send-bot">   <span class="s-icon">📤</span><span class="s-label">Send to Telegram</span></div>
-    <div class="setting-row" id="s-gallery">    <span class="s-icon">🖼</span><span class="s-label">Gallery</span></div>
+    <div class="setting-row" id="s-send-bot"><span class="s-icon">📤</span><span class="s-label">Send to my Telegram</span></div>
+    <div class="setting-row" id="s-gallery"><span class="s-icon">🖼</span><span class="s-label">Gallery</span></div>
     <div class="pop-divider"></div>
     <div class="setting-section">Display</div>
     <div class="setting-row" id="s-theme"><span class="s-icon">☀️</span><span class="s-label">Light mode</span><span class="s-value" id="s-theme-val">Off</span></div>
     <div class="setting-row" id="s-sound"><span class="s-icon">🔊</span><span class="s-label">Sound</span><span class="s-value" id="s-sound-val">On</span></div>
     <div class="pop-divider"></div>
     <div class="setting-section">Round</div>
-    <div class="setting-row" id="s-skip">    <span class="s-icon">⏭</span><span class="s-label">Skip word</span></div>
-    <div class="setting-row" id="s-done">    <span class="s-icon">✅</span><span class="s-label">Finish drawing</span></div>
+    <div class="setting-row" id="s-skip"><span class="s-icon">⏭</span><span class="s-label">Skip word</span></div>
+    <div class="setting-row" id="s-done"><span class="s-icon">✅</span><span class="s-label">Finish drawing</span></div>
+    <div class="setting-row" id="s-newround"><span class="s-icon">▶</span><span class="s-label">New round</span></div>
     <div class="pop-divider"></div>
     <div class="setting-section">Developer</div>
     <div class="setting-row" id="s-logs"><span class="s-icon">📋</span><span class="s-label">Server logs</span></div>
   </div>
 
+
+  <!-- Logs popup -->
   <div class="popup" id="logs-popup">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
       <div class="pop-label">Server Logs</div>
@@ -489,14 +516,15 @@ html, body {
         <button id="log-clear-btn">Clear</button>
       </div>
     </div>
-    <div id="log-entries"><div style="color:var(--text2);font-size:.72rem;padding:8px">No logs yet.</div></div>
+    <div id="log-entries"><div style="color:var(--text2);font-size:.72rem;padding:8px">No logs yet. Connect to load.</div></div>
   </div>
-
+  <!-- Players popup -->
   <div class="popup" id="players-popup">
     <div class="pop-label">Players</div>
     <div id="player-list"><div style="font-size:.76rem;color:var(--text2);padding:4px 6px">No players</div></div>
   </div>
 
+  <!-- Leaderboard popup -->
   <div class="popup" id="lb-popup">
     <div class="lb-title">🏆 Leaderboard</div>
     <div id="lb-list"></div>
@@ -513,43 +541,52 @@ html, body {
     </div>
   </div>
 
-  <!-- Canvas area (canvases only — chat panel is OUTSIDE this div) -->
+  <!-- Canvas area -->
   <div id="canvas-area">
     <div id="canvas-wrap">
       <canvas id="cv-bg"      class="cvl"></canvas>
       <canvas id="cv-main"    class="cvl"></canvas>
       <canvas id="cv-preview" class="cvl"></canvas>
     </div>
-    <!-- Waiting / start button overlay -->
-    <div id="waiting-overlay">
-      <button id="start-btn">▶ NEW ROUND</button>
+    <!-- Waiting to start overlay — shown when no round active -->
+    <div id="waiting-overlay" style="
+      position:absolute;inset:0;display:flex;flex-direction:column;
+      align-items:center;justify-content:center;gap:16px;z-index:10;
+      pointer-events:none;
+    ">
+      <button id="start-btn" style="
+        background:var(--btn-bg);color:#fff;border:none;
+        padding:16px 40px;border-radius:16px;font-size:1.1rem;
+        font-family:'Syne',sans-serif;font-weight:800;cursor:pointer;
+        box-shadow:0 6px 24px rgba(196,149,106,.5);
+        pointer-events:all;display:none;letter-spacing:.05em;
+      ">▶ NEW ROUND</button>
+    </div>
+
+    <!-- Chat (guesser) -->
+    <div id="chat-panel">
+      <div id="chat-log"></div>
+      <div id="guess-row">
+        <input id="guess-in" placeholder="Type your guess…" autocomplete="off" autocorrect="off" autocapitalize="off"/>
+        <button id="guess-go">Send</button>
+      </div>
     </div>
   </div>
 
-  <!-- ✅ FIX: chat-panel is OUTSIDE canvas-area so it doesn't collapse canvas height -->
-  <div id="chat-panel">
-    <div id="chat-log"></div>
-    <div id="guess-row">
-      <input id="guess-in" placeholder="Type your guess…" autocomplete="off" autocorrect="off" autocapitalize="off"/>
-      <button id="guess-go">Send</button>
-    </div>
-  </div>
-
-  <!-- Toolbar (drawer only) -->
+  <!-- Toolbar (drawer) — 2×4 icon grid like reference -->
   <div id="toolbar">
+    <!-- Row 1: brush, color, size/opacity, layers, (filler) -->
     <div class="tb-row">
       <button class="tbtn on" id="btn-brush"   title="Brush">✏️<div class="color-dot" id="color-dot"></div></button>
       <button class="tbtn"    id="btn-color"   title="Color">🎨</button>
       <button class="tbtn"    id="btn-opacity" title="Size & Opacity">💧</button>
       <button class="tbtn"    id="btn-layers"  title="Layers">📋</button>
     </div>
+    <!-- Row 2: undo, redo, clear, settings + size label -->
     <div class="tb-row">
       <button class="tbtn"       id="btn-undo"  title="Undo">↩</button>
       <button class="tbtn"       id="btn-redo"  title="Redo">↪</button>
       <button class="tbtn tred"  id="btn-clear" title="Clear">✕</button>
-      <button class="tbtn"       id="btn-zoom-in"  title="Zoom In">＋</button>
-      <button class="tbtn"       id="btn-zoom-out" title="Zoom Out">－</button>
-      <button class="tbtn"       id="btn-zoom-fit" title="Fit Screen">⊡</button>
       <button class="tbtn"       id="btn-menu2" title="More">⋯</button>
       <div id="sz-op-label">
         <div id="sz-op-size">5px</div>
@@ -558,8 +595,7 @@ html, body {
     </div>
   </div>
 
-</div><!-- end #app -->
-
+</div>
 <div id="toast"></div>
 
 <script>
@@ -572,15 +608,20 @@ if (tg) {
   try { tg.expand(); } catch(e) {}
   try { if (typeof tg.requestFullscreen === 'function') tg.requestFullscreen(); } catch(e) {}
   try { tg.onEvent('viewportChanged', () => { try { if (!tg.isExpanded) tg.expand(); } catch(e){} }); } catch(e) {}
+  // Hook Telegram's native SettingsButton (the gear in the 3-dot menu)
   try {
     if (tg.SettingsButton) {
       tg.SettingsButton.show();
       tg.SettingsButton.onClick(() => togglePanel('settings-popup'));
     }
   } catch(e) {}
-  try { tg.onEvent('viewportChanged', () => setTimeout(fitCanvas, 100)); } catch(e) {}
+  // Refit canvas when Telegram changes viewport
+  try {
+    tg.onEvent('viewportChanged', () => setTimeout(fitCanvas, 100));
+  } catch(e) {}
 }
 
+// Fit canvas on load and after fonts/layout settle
 window.addEventListener('load', () => {
   setTimeout(fitCanvas, 0);
   setTimeout(fitCanvas, 200);
@@ -594,6 +635,7 @@ const mainCanvas    = document.getElementById('cv-main');
 const previewCanvas = document.getElementById('cv-preview');
 let   bgCtx, mainCtx, previewCtx;
 
+// Layer system
 const MAX_LAYERS = 5;
 let layers = [];
 let activeLayerIdx = 0;
@@ -613,8 +655,8 @@ function initCanvases() {
     c.width = CW; c.height = CH;
     c.style.width = CW+'px'; c.style.height = CH+'px';
   });
-  bgCtx      = bgCanvas.getContext('2d');
-  mainCtx    = mainCanvas.getContext('2d');
+  bgCtx = bgCanvas.getContext('2d');
+  mainCtx = mainCanvas.getContext('2d');
   previewCtx = previewCanvas.getContext('2d');
   bgCtx.fillStyle = '#fff'; bgCtx.fillRect(0,0,CW,CH);
   mainCtx.lineCap = mainCtx.lineJoin = 'round';
@@ -638,8 +680,8 @@ const canvasArea = document.getElementById('canvas-area');
 function applyTransform() {
   canvasWrap.style.transform = `translate(${panX}px,${panY}px) scale(${zoom})`;
 }
-
 function fitCanvas() {
+  // Use getBoundingClientRect for accurate dimensions after layout
   const rect = canvasArea.getBoundingClientRect();
   const aw = rect.width  || canvasArea.offsetWidth  || window.innerWidth;
   const ah = rect.height || canvasArea.offsetHeight || (window.innerHeight - 44);
@@ -694,7 +736,7 @@ function doRedo() {
 function applyBrushSettings(ctx) {
   ctx.globalAlpha = brushOpacity;
   ctx.globalCompositeOperation = brushType==='eraser' ? 'destination-out' : 'source-over';
-  ctx.lineWidth   = brushSize;
+  ctx.lineWidth = brushSize;
   ctx.lineCap = 'round'; ctx.lineJoin = 'round';
   ctx.strokeStyle = brushType==='eraser' ? 'rgba(0,0,0,1)' : currentColor;
 }
@@ -705,7 +747,7 @@ function drawSegment(ctx, x0, y0, x1, y1) {
     case 'pencil': {
       ctx.setLineDash([brushSize*.6, brushSize*.3]);
       ctx.globalAlpha = brushOpacity * .75;
-      ctx.lineWidth   = brushSize * .8;
+      ctx.lineWidth = brushSize * .8;
       for (let i=0;i<2;i++) {
         ctx.beginPath();
         ctx.moveTo(x0+(Math.random()-.5)*1.2, y0+(Math.random()-.5)*1.2);
@@ -717,14 +759,14 @@ function drawSegment(ctx, x0, y0, x1, y1) {
     }
     case 'marker': {
       ctx.globalAlpha = brushOpacity * .6;
-      ctx.lineWidth   = brushSize * 1.4;
+      ctx.lineWidth = brushSize * 1.4;
       ctx.beginPath(); ctx.moveTo(x0,y0); ctx.lineTo(x1,y1); ctx.stroke();
       break;
     }
     case 'bristle': {
       const bristles = Math.max(3, Math.floor(brushSize/2));
       ctx.globalAlpha = brushOpacity / bristles * 2;
-      ctx.lineWidth   = Math.max(1, brushSize/bristles);
+      ctx.lineWidth = Math.max(1, brushSize/bristles);
       for (let i=0;i<bristles;i++) {
         const r = brushSize*.6;
         ctx.beginPath();
@@ -776,79 +818,35 @@ function onPointerUp(e) {
   currentStroke=null;
 }
 
-canvasArea.addEventListener('pointerdown',  onPointerDown,  {passive:false});
-canvasArea.addEventListener('pointermove',  onPointerMove,  {passive:false});
-canvasArea.addEventListener('pointerup',    onPointerUp);
-canvasArea.addEventListener('pointercancel',onPointerUp);
+canvasArea.addEventListener('pointerdown', onPointerDown, {passive:false});
+canvasArea.addEventListener('pointermove', onPointerMove, {passive:false});
+canvasArea.addEventListener('pointerup',   onPointerUp);
+canvasArea.addEventListener('pointercancel', onPointerUp);
 
-// ── Pinch zoom (fixed for mobile — prevents page scroll/dismiss) ──────────────
-let pinchDist=0, pinchZoom=1, pinchActive=false;
-
+// Pinch zoom
+let pinchDist=0, pinchZoom=1;
 canvasArea.addEventListener('touchstart', e=>{
   if (e.touches.length===2) {
-    e.preventDefault(); // stop page scroll/dismiss
-    e.stopPropagation();
-    isDrawing=false; pinchActive=true;
+    isDrawing=false;
     const t=e.touches;
     pinchDist=Math.hypot(t[0].clientX-t[1].clientX,t[0].clientY-t[1].clientY);
-    pinchZoom=zoom;
-  } else if (e.touches.length===1 && isDrawer) {
-    // Single finger — prevent page scroll only when on canvas area
-    e.preventDefault();
+    pinchZoom=zoom; e.preventDefault();
   }
 },{passive:false});
-
 canvasArea.addEventListener('touchmove', e=>{
-  e.preventDefault(); // always prevent — stops Telegram dismiss gesture
-  e.stopPropagation();
-  if (e.touches.length===2 && pinchActive) {
+  if (e.touches.length===2) {
+    e.preventDefault();
     const t=e.touches;
     const d=Math.hypot(t[0].clientX-t[1].clientX,t[0].clientY-t[1].clientY);
     zoom=Math.max(.2,Math.min(8,pinchZoom*(d/pinchDist)));
-    // Keep canvas centered during zoom
-    const rect=canvasArea.getBoundingClientRect();
-    const cx=(t[0].clientX+t[1].clientX)/2-rect.left;
-    const cy=(t[0].clientY+t[1].clientY)/2-rect.top;
-    const oldZ=pinchZoom*(pinchDist/pinchDist); // recalc relative
-    panX=cx-(cx-panX)*(zoom/pinchZoom);
-    panY=cy-(cy-panY)*(zoom/pinchZoom);
-    pinchZoom=zoom; pinchDist=d; // update so next frame is relative
     applyTransform();
   }
 },{passive:false});
-
-canvasArea.addEventListener('touchend', e=>{
-  if(e.touches.length<2) pinchActive=false;
-},{passive:true});
-
-// Zoom buttons
-document.getElementById('btn-zoom-in')?.addEventListener('click',()=>{
-  const rect=canvasArea.getBoundingClientRect();
-  const cx=rect.width/2, cy=rect.height/2;
-  const nz=Math.min(8, zoom*1.3);
-  panX=cx-(cx-panX)*(nz/zoom);
-  panY=cy-(cy-panY)*(nz/zoom);
-  zoom=nz; applyTransform();
-  showToast(`${Math.round(zoom*100)}%`);
-});
-document.getElementById('btn-zoom-out')?.addEventListener('click',()=>{
-  const rect=canvasArea.getBoundingClientRect();
-  const cx=rect.width/2, cy=rect.height/2;
-  const nz=Math.max(.2, zoom/1.3);
-  panX=cx-(cx-panX)*(nz/zoom);
-  panY=cy-(cy-panY)*(nz/zoom);
-  zoom=nz; applyTransform();
-  showToast(`${Math.round(zoom*100)}%`);
-});
-document.getElementById('btn-zoom-fit')?.addEventListener('click',()=>{
-  fitCanvas();
-  showToast('Fit screen');
-});
 canvasArea.addEventListener('wheel',e=>{
-  e.preventDefault(); // always prevent — stops Telegram scroll-to-dismiss
   if(e.ctrlKey||e.metaKey){
+    e.preventDefault();
     const rect=canvasArea.getBoundingClientRect();
-    const ox=e.clientX-rect.left, oy=e.clientY-rect.top;
+    const ox=e.clientX-rect.left,oy=e.clientY-rect.top;
     const nz=Math.max(.15,Math.min(8,zoom*(e.deltaY<0?1.12:.89)));
     panX=ox-(ox-panX)*(nz/zoom); panY=oy-(oy-panY)*(nz/zoom);
     zoom=nz; applyTransform();
@@ -859,17 +857,15 @@ canvasArea.addEventListener('wheel',e=>{
 function renderStroke(s, ctx) {
   if (!ctx) return;
   const pts=s.points||[]; if (pts.length<2) return;
-  ctx.globalAlpha = s.opacity||1;
-  ctx.globalCompositeOperation = (s.brushType==='eraser') ? 'destination-out' : 'source-over';
-  ctx.strokeStyle = (s.brushType==='eraser') ? 'rgba(0,0,0,1)' : (s.color||'#000');
-  ctx.lineWidth   = s.size||4;
-  ctx.lineCap = ctx.lineJoin = 'round';
+  ctx.globalAlpha=s.opacity||1;
+  ctx.globalCompositeOperation=(s.brushType==='eraser')?'destination-out':'source-over';
+  ctx.strokeStyle=(s.brushType==='eraser')?'rgba(0,0,0,1)':(s.color||'#000');
+  ctx.lineWidth=s.size||4; ctx.lineCap=ctx.lineJoin='round';
   ctx.beginPath(); ctx.moveTo(pts[0][0],pts[0][1]);
   for(let i=1;i<pts.length;i++) ctx.lineTo(pts[i][0],pts[i][1]);
   ctx.stroke();
   ctx.globalAlpha=1; ctx.globalCompositeOperation='source-over';
 }
-
 function clearAll() {
   layers.forEach(l=>l.ctx.clearRect(0,0,CW,CH));
   bgCtx.fillStyle='#fff'; bgCtx.fillRect(0,0,CW,CH);
@@ -888,24 +884,11 @@ function renderLayerPanel() {
       ${layers.length>1?`<span style="cursor:pointer;font-size:.78rem;color:var(--red)" data-del="${i}">🗑</span>`:''}
     `;
     row.addEventListener('click',ev=>{
-      if(ev.target.dataset.del!==undefined){
-        layers.splice(+ev.target.dataset.del,1);
-        if(activeLayerIdx>=layers.length) activeLayerIdx=layers.length-1;
-        renderLayerPanel(); return;
-      }
-      if(ev.target.classList.contains('layer-vis')){
-        const li=+ev.target.dataset.li;
-        layers[li].visible=!layers[li].visible;
-        layers[li].canvas.style.opacity=layers[li].visible?layers[li].opacity:0;
-        renderLayerPanel(); return;
-      }
+      if(ev.target.dataset.del!==undefined){layers.splice(+ev.target.dataset.del,1);if(activeLayerIdx>=layers.length)activeLayerIdx=layers.length-1;renderLayerPanel();return;}
+      if(ev.target.classList.contains('layer-vis')){layers[+ev.target.dataset.li].visible=!layers[+ev.target.dataset.li].visible;layers[+ev.target.dataset.li].canvas.style.opacity=layers[+ev.target.dataset.li].visible?layers[+ev.target.dataset.li].opacity:0;renderLayerPanel();return;}
       activeLayerIdx=i; renderLayerPanel();
     });
-    row.querySelector('.layer-op-slider')?.addEventListener('input',ev=>{
-      const li=+ev.target.dataset.li;
-      layers[li].opacity=+ev.target.value/100;
-      if(layers[li].visible) layers[li].canvas.style.opacity=layers[li].opacity;
-    });
+    row.querySelector('.layer-op-slider')?.addEventListener('input',ev=>{const li=+ev.target.dataset.li;layers[li].opacity=+ev.target.value/100;if(layers[li].visible)layers[li].canvas.style.opacity=layers[li].opacity;});
     list.appendChild(row);
   });
 }
@@ -948,9 +931,7 @@ function updateColorDot(hex) {
 
 function setColor(hex) {
   currentColor=hex;
-  document.querySelectorAll('.cswatch').forEach(s=>
-    s.classList.toggle('on', s.style.background===hex || s.style.background===hexToRgb(hex))
-  );
+  document.querySelectorAll('.cswatch').forEach(s=>s.classList.toggle('on',s.style.background===hex||s.style.background===hexToRgb(hex)));
   document.getElementById('custom-color').value=hex;
   updateColorDot(hex);
   if(brushType==='eraser'){brushType='pen'; updateBrushBtn();}
@@ -977,9 +958,9 @@ document.querySelectorAll('.brush-opt').forEach(el=>{
 
 // ── Sliders ───────────────────────────────────────────────────────────────────
 function updateSzOpLabel() {
-  const el=document.getElementById('sz-op-size');    if(el) el.textContent=brushSize+'px';
+  const el=document.getElementById('sz-op-size'); if(el) el.textContent=brushSize+'px';
   const el2=document.getElementById('sz-op-opacity'); if(el2) el2.textContent=Math.round(brushOpacity*100)+'%';
-  const lbl=document.getElementById('sz-lbl');        if(lbl) lbl.textContent=brushSize+'px';
+  const lbl=document.getElementById('sz-lbl'); if(lbl) lbl.textContent=brushSize+'px';
 }
 
 document.getElementById('sz-range').addEventListener('input',e=>{
@@ -1006,40 +987,29 @@ function togglePanel(id) {
   if(!was) el.classList.add('open');
 }
 
-document.getElementById('btn-brush')  .addEventListener('click',()=>togglePanel('brush-popup'));
-document.getElementById('btn-color')  .addEventListener('click',()=>togglePanel('color-popup'));
+document.getElementById('btn-brush').addEventListener('click',()=>togglePanel('brush-popup'));
+document.getElementById('btn-color').addEventListener('click',()=>togglePanel('color-popup'));
 document.getElementById('btn-opacity').addEventListener('click',()=>togglePanel('opacity-popup'));
-document.getElementById('btn-layers') .addEventListener('click',()=>togglePanel('layer-popup'));
-document.getElementById('btn-menu')   .addEventListener('click',()=>togglePanel('settings-popup'));
-document.getElementById('btn-menu2')  .addEventListener('click',()=>togglePanel('settings-popup'));
-document.getElementById('btn-undo')   .addEventListener('click',doUndo);
-document.getElementById('btn-redo')   .addEventListener('click',doRedo);
-document.getElementById('btn-clear')  .addEventListener('click',()=>{
+document.getElementById('btn-layers').addEventListener('click',()=>togglePanel('layer-popup'));
+document.getElementById('btn-menu').addEventListener('click',()=>togglePanel('settings-popup'));
+document.getElementById('btn-menu2').addEventListener('click',()=>togglePanel('settings-popup'));
+document.getElementById('btn-undo').addEventListener('click',doUndo);
+document.getElementById('btn-redo').addEventListener('click',doRedo);
+document.getElementById('btn-clear').addEventListener('click',()=>{
   if(!isDrawer) return;
   saveUndo(); clearAll();
   ws?.send(JSON.stringify({type:'clear'}));
 });
 
-// Prevent Telegram Mini App dismiss gesture (swipe down to close)
-// by blocking touchmove on the whole document when a touch started on canvas
-let touchStartedOnCanvas = false;
-document.addEventListener('touchstart', e=>{
-  touchStartedOnCanvas = !!e.target.closest('#canvas-area');
-}, {passive:true});
-document.addEventListener('touchmove', e=>{
-  if(touchStartedOnCanvas) e.preventDefault();
-},{passive:false});
-
 document.addEventListener('pointerdown',e=>{
-  if(!e.target.closest('.tbtn')&&!e.target.closest('.top-icon')&&!e.target.closest('.popup'))
-    closeAllPanels();
+  if(!e.target.closest('.tbtn')&&!e.target.closest('.top-icon')&&!e.target.closest('.popup')) closeAllPanels();
 });
 
 // ── Settings panel actions ────────────────────────────────────────────────────
 let isDark=true, soundEnabled=true;
 
-document.getElementById('s-players')    .addEventListener('click',()=>togglePanel('players-popup'));
-document.getElementById('s-leaderboard').addEventListener('click',()=>togglePanel('lb-popup'));
+document.getElementById('s-players').addEventListener('click',()=>{togglePanel('players-popup');});
+document.getElementById('s-leaderboard').addEventListener('click',()=>{togglePanel('lb-popup');});
 
 document.getElementById('s-skip').addEventListener('click',()=>{
   if(!isDrawer){showToast('Only the drawer can skip','warn');return;}
@@ -1051,6 +1021,11 @@ document.getElementById('s-done').addEventListener('click',()=>{
   if(confirm('Finish drawing?')) ws?.send(JSON.stringify({type:'done_drawing'}));
   closeAllPanels();
 });
+document.getElementById('s-newround').addEventListener('click',()=>{
+  ws?.send(JSON.stringify({type:'new_round'}));
+  closeAllPanels();
+});
+
 document.getElementById('s-theme').addEventListener('click',()=>{
   isDark=!isDark; applyTheme(isDark);
   document.getElementById('s-theme-val').textContent=isDark?'Off':'On';
@@ -1063,20 +1038,19 @@ document.getElementById('s-sound').addEventListener('click',()=>{
 });
 document.getElementById('s-save-drawing').addEventListener('click',()=>{
   saveToGallery(currentWord||'drawing', myName);
-  showToast('Drawing saved ✅','ok');
+  showToast('Drawing saved to gallery ✅','ok');
   closeAllPanels();
 });
 document.getElementById('s-send-bot').addEventListener('click',()=>{
-  sendDrawingToTelegram(); closeAllPanels();
-});
-document.getElementById('s-logs').addEventListener('click',()=>{
+  sendDrawingToTelegram();
   closeAllPanels();
-  setTimeout(()=>{ togglePanel('logs-popup'); requestLogs(); },10);
 });
+document.getElementById('s-logs').addEventListener('click',()=>{togglePanel('logs-popup');requestLogs();closeAllPanels();setTimeout(()=>document.getElementById('logs-popup').classList.add('open'),10);});
 document.getElementById('s-gallery').addEventListener('click',()=>{
   openGallery(); closeAllPanels();
 });
 
+// Send current canvas as image to user's private Telegram chat via bot
 function sendDrawingToTelegram() {
   try {
     const temp=document.createElement('canvas');
@@ -1087,79 +1061,105 @@ function sendDrawingToTelegram() {
     const dataUrl=temp.toDataURL('image/png');
     if(ws&&ws.readyState===1){
       ws.send(JSON.stringify({type:'snapshot',data:dataUrl,sendToUser:true,userName:myName}));
-      showToast('Sent to Telegram ✅','ok');
+      showToast('Sent to your Telegram ✅','ok');
     } else {
       showToast('Not connected','warn');
     }
   } catch(e){ showToast('Failed to send','warn'); }
 }
 
-// Scroll on brush button = cycle brush type
+// ── Zoom buttons ─────────────────────────────────────────────────────────────
+document.getElementById('btn-zoom-in')?.addEventListener('click',()=>{
+  const rect=canvasArea.getBoundingClientRect();
+  const cx=rect.width/2, cy=rect.height/2;
+  const nz=Math.min(8, zoom*1.3);
+  panX=cx-(cx-panX)*(nz/zoom); panY=cy-(cy-panY)*(nz/zoom);
+  zoom=nz; applyTransform(); showToast(Math.round(zoom*100)+'%');
+});
+document.getElementById('btn-zoom-out')?.addEventListener('click',()=>{
+  const rect=canvasArea.getBoundingClientRect();
+  const cx=rect.width/2, cy=rect.height/2;
+  const nz=Math.max(.2, zoom/1.3);
+  panX=cx-(cx-panX)*(nz/zoom); panY=cy-(cy-panY)*(nz/zoom);
+  zoom=nz; applyTransform(); showToast(Math.round(zoom*100)+'%');
+});
+document.getElementById('btn-zoom-fit')?.addEventListener('click',()=>{
+  fitCanvas(); showToast('Fit screen');
+});
+
+// ── Scroll on toolbar buttons to adjust values ───────────────────────────────
+// Scroll on brush button = change brush type
+// Scroll on color button = cycle colors  
+// Scroll on opacity button = change size OR opacity
 const BRUSH_ORDER = ['pen','pencil','marker','bristle','flat','eraser'];
 document.getElementById('btn-brush')?.addEventListener('wheel', e => {
   e.preventDefault();
-  const cur  = BRUSH_ORDER.indexOf(brushType);
+  const cur = BRUSH_ORDER.indexOf(brushType);
   const next = (cur + (e.deltaY > 0 ? 1 : -1) + BRUSH_ORDER.length) % BRUSH_ORDER.length;
-  brushType  = BRUSH_ORDER[next];
-  document.querySelectorAll('.brush-opt').forEach(b=>b.classList.toggle('on',b.dataset.brush===brushType));
+  brushType = BRUSH_ORDER[next];
+  document.querySelectorAll('.brush-opt').forEach(b => b.classList.toggle('on', b.dataset.brush === brushType));
   updateBrushBtn();
-  showToast(brushType.charAt(0).toUpperCase()+brushType.slice(1));
-},{passive:false});
+  showToast(brushType.charAt(0).toUpperCase() + brushType.slice(1));
+}, {passive:false});
 
 document.getElementById('btn-opacity')?.addEventListener('wheel', e => {
   e.preventDefault();
   if (e.shiftKey) {
-    brushOpacity = Math.min(1, Math.max(0.05, brushOpacity + (e.deltaY<0 ? 0.05 : -0.05)));
+    // Shift+scroll = opacity
+    brushOpacity = Math.min(1, Math.max(0.05, brushOpacity + (e.deltaY < 0 ? 0.05 : -0.05)));
     document.getElementById('op-range').value = Math.round(brushOpacity*100);
     document.getElementById('op-lbl').textContent = Math.round(brushOpacity*100)+'%';
   } else {
-    brushSize = Math.min(60, Math.max(1, brushSize + (e.deltaY<0 ? 1 : -1)));
+    // scroll = size
+    brushSize = Math.min(60, Math.max(1, brushSize + (e.deltaY < 0 ? 1 : -1)));
     document.getElementById('sz-range').value = brushSize;
   }
   updateSzOpLabel();
-  const sz=Math.max(4,Math.min(20,brushSize));
-  const dot=document.getElementById('sz-preview');
-  if(dot) dot.innerHTML=`<div style="width:${sz}px;height:${sz}px;border-radius:50%;background:${currentColor}"></div>`;
-},{passive:false});
+  const sz = Math.max(4,Math.min(20,brushSize));
+  const dot = document.getElementById('sz-preview');
+  if(dot) dot.innerHTML = `<div style="width:${sz}px;height:${sz}px;border-radius:50%;background:${currentColor}"></div>`;
+}, {passive:false});
 
-let touchSizeStart=null, touchSizeY=null;
-document.getElementById('btn-opacity')?.addEventListener('touchstart',e=>{
-  touchSizeY=e.touches[0].clientY; touchSizeStart=brushSize; e.preventDefault();
-},{passive:false});
-document.getElementById('btn-opacity')?.addEventListener('touchmove',e=>{
-  if(touchSizeY===null) return; e.preventDefault();
-  const dy=touchSizeY-e.touches[0].clientY;
-  brushSize=Math.min(60,Math.max(1,Math.round(touchSizeStart+dy*0.3)));
-  document.getElementById('sz-range').value=brushSize;
+// Also: long-press + drag up/down on mobile for size
+let touchSizeStart = null, touchSizeY = null;
+document.getElementById('btn-opacity')?.addEventListener('touchstart', e => {
+  touchSizeY = e.touches[0].clientY; touchSizeStart = brushSize; e.preventDefault();
+}, {passive:false});
+document.getElementById('btn-opacity')?.addEventListener('touchmove', e => {
+  if (touchSizeY === null) return; e.preventDefault();
+  const dy = touchSizeY - e.touches[0].clientY; // up = increase
+  brushSize = Math.min(60, Math.max(1, Math.round(touchSizeStart + dy * 0.3)));
+  document.getElementById('sz-range').value = brushSize;
   updateSzOpLabel();
-  const sz=Math.max(4,Math.min(20,brushSize));
-  const dot=document.getElementById('sz-preview');
-  if(dot) dot.innerHTML=`<div style="width:${sz}px;height:${sz}px;border-radius:50%;background:${currentColor}"></div>`;
+  const sz = Math.max(4,Math.min(20,brushSize));
+  const dot = document.getElementById('sz-preview');
+  if(dot) dot.innerHTML = `<div style="width:${sz}px;height:${sz}px;border-radius:50%;background:${currentColor}"></div>`;
   showToast(brushSize+'px');
-},{passive:false});
-document.getElementById('btn-opacity')?.addEventListener('touchend',()=>{touchSizeY=null;});
+}, {passive:false});
+document.getElementById('btn-opacity')?.addEventListener('touchend', () => { touchSizeY=null; });
 
-// ── Server logs ───────────────────────────────────────────────────────────────
+// ── Server logs panel ────────────────────────────────────────────────────────
 function requestLogs() {
-  if (ws && ws.readyState===1) ws.send(JSON.stringify({type:'get_logs'}));
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify({type:'get_logs'}));
 }
 function renderLogs(logs) {
-  const el=document.getElementById('log-entries'); if(!el) return;
-  if(!logs.length){el.innerHTML='<div style="color:var(--text2);font-size:.72rem;padding:8px">No logs yet.</div>';return;}
-  el.innerHTML=logs.map(({t,msg})=>{
-    const time=new Date(t).toLocaleTimeString();
-    let cls='';
-    if(msg.includes('[round]')) cls='round';
-    else if(msg.includes('joined')||msg.includes('left')) cls='join';
-    else if(msg.includes('guess')||msg.includes('word')) cls='guess';
+  const el = document.getElementById('log-entries'); if (!el) return;
+  if (!logs.length) { el.innerHTML='<div style="color:var(--text2);font-size:.72rem;padding:8px">No logs yet.</div>'; return; }
+  el.innerHTML = logs.map(({t,msg}) => {
+    const time = new Date(t).toLocaleTimeString();
+    let cls = '';
+    if (msg.includes('[round]')) cls = 'round';
+    else if (msg.includes('joined') || msg.includes('left')) cls = 'join';
+    else if (msg.includes('guess') || msg.includes('word')) cls = 'guess';
     return `<div class="log-entry ${cls}"><span style="color:var(--text2)">[${time}]</span> ${msg}</div>`;
   }).join('');
-  el.scrollTop=el.scrollHeight;
+  el.scrollTop = el.scrollHeight;
 }
-document.getElementById('log-refresh-btn')?.addEventListener('click',requestLogs);
-document.getElementById('log-clear-btn')?.addEventListener('click',()=>{
-  const el=document.getElementById('log-entries');
-  if(el) el.innerHTML='<div style="color:var(--text2);font-size:.72rem;padding:8px">Cleared.</div>';
+
+document.getElementById('log-refresh-btn')?.addEventListener('click', requestLogs);
+document.getElementById('log-clear-btn')?.addEventListener('click', () => {
+  const el = document.getElementById('log-entries');
+  if (el) el.innerHTML = '<div style="color:var(--text2);font-size:.72rem;padding:8px">Cleared.</div>';
 });
 
 // ── Toast ─────────────────────────────────────────────────────────────────────
@@ -1186,9 +1186,9 @@ function sendGuess(){
 document.getElementById('guess-go').addEventListener('click',sendGuess);
 document.getElementById('guess-in').addEventListener('keydown',e=>{if(e.key==='Enter')sendGuess();});
 
-// ── Round result overlay ──────────────────────────────────────────────────────
+// ── Round overlay ─────────────────────────────────────────────────────────────
 const roundOverlay=document.getElementById('round-overlay');
-let currentWord='';
+let savedStrokes=[], currentWord='';
 
 function showResult(emoji,title,word,sub){
   document.getElementById('re-emoji').textContent=emoji;
@@ -1196,16 +1196,45 @@ function showResult(emoji,title,word,sub){
   document.getElementById('re-word').textContent=word;
   document.getElementById('re-sub').textContent=sub;
   roundOverlay.classList.add('show');
-  setTimeout(()=>roundOverlay.classList.remove('show'),8000);
+  setTimeout(()=>roundOverlay.classList.remove('show'),7000);
 }
 document.getElementById('re-newround').addEventListener('click',()=>{
   roundOverlay.classList.remove('show');
+  document.getElementById('word-display').textContent='TYPE /STARTGAME IN TELEGRAM';
+  showToast('Use /startgame in your group to play again!');
+});
+
+// ── Replay ────────────────────────────────────────────────────────────────────
+function playReplay(strokes){
+  const overlay=document.getElementById('replay-overlay');
+  const rc=document.getElementById('replay-canvas');
+  overlay.classList.add('show');
+  rc.width=480; rc.height=300;
+  const ctx=rc.getContext('2d');
+  ctx.fillStyle='#fff'; ctx.fillRect(0,0,480,300);
+  const scale=480/CW; let i=0;
+  function nextStroke(){
+    if(i>=strokes.length) return;
+    const s=strokes[i++];
+    const pts=(s.points||[]).map(p=>[p[0]*scale,p[1]*scale]);
+    if(pts.length<2){nextStroke();return;}
+    ctx.strokeStyle=s.color||'#000'; ctx.lineWidth=Math.max(1,(s.size||4)*scale);
+    ctx.lineCap=ctx.lineJoin='round'; ctx.globalAlpha=s.opacity||1;
+    ctx.beginPath(); ctx.moveTo(pts[0][0],pts[0][1]);
+    pts.slice(1).forEach(p=>ctx.lineTo(p[0],p[1])); ctx.stroke();
+    ctx.globalAlpha=1; setTimeout(nextStroke,20);
+  }
+  nextStroke();
+}
+document.getElementById('replay-close').addEventListener('click',()=>{
+  document.getElementById('replay-overlay').classList.remove('show');
 });
 
 // ── Players & Leaderboard ─────────────────────────────────────────────────────
 function updatePlayerList(board){
   const list=document.getElementById('player-list');
   if(!board?.length){list.innerHTML='<div style="font-size:.76rem;color:var(--text2);padding:4px 6px">No players</div>';return;}
+  const medals=['🥇','🥈','🥉'];
   list.innerHTML=board.map(({rank,name,score})=>`
     <div class="player-row">
       <div class="player-dot"></div>
@@ -1225,42 +1254,45 @@ function updateLeaderboard(board){
     </div>`).join('');
 }
 
+// ── Timer ─────────────────────────────────────────────────────────────────────
+function setRoundStatus(msg) {
+  const el = document.getElementById('round-status');
+  if (el) el.textContent = msg;
+}
+// Keep these as no-ops for any remaining calls
+function startTimer(s){ setRoundStatus(''); }
+function stopTimer(){ setRoundStatus(''); }
+
 // ── Role ──────────────────────────────────────────────────────────────────────
 let isDrawer=false;
-
-function setRole(role, wordOrHint, round){
-  isDrawer = role==='drawer';
-
+function setRole(role,wordOrHint,round){
+  showStartBtn(false);
+  isDrawer=role==='drawer';
   const tb=document.getElementById('toolbar');
-  tb.classList.toggle('visible', isDrawer);
-  tb.style.display = isDrawer ? 'flex' : 'none';
-
-  // Always show chat panel for both roles
-  const cp=document.getElementById('chat-panel');
-  cp.classList.add('visible');
-
-  // Hide guess input for drawer (they draw, not guess)
-  document.getElementById('guess-row').style.display = isDrawer ? 'none' : 'flex';
-
+  tb.classList.toggle('visible',isDrawer);
+  tb.style.display=isDrawer?'flex':'none'; // force display as backup
+  if(isDrawer) setTimeout(fitCanvas, 80); // refit after toolbar appears
+  document.getElementById('chat-panel').classList.add('visible');
+  showStartBtn(false);
+  document.getElementById('guess-row').style.display=isDrawer?'none':'flex';
   const pill=document.getElementById('role-pill');
   pill.className='role-pill '+role;
-  pill.textContent=isDrawer ? 'DRAWING' : 'GUESSING';
-
+  pill.textContent=isDrawer?'DRAWING':'GUESSING';
   const wd=document.getElementById('word-display');
   if(isDrawer){
     currentWord=wordOrHint;
     wd.textContent=`✏️ ${wordOrHint}`;
     showToast(`Your word: ${wordOrHint}`,'ok');
-    document.getElementById('round-status').textContent='You are drawing!';
+    setRoundStatus('You are drawing');
     sfxRoundStart();
   } else {
     currentWord='';
-    const hint = typeof wordOrHint==='number' ? '_ '.repeat(wordOrHint).trim() : wordOrHint;
+    const hint=typeof wordOrHint==='number'?'_ '.repeat(wordOrHint).trim():wordOrHint;
     wd.textContent=hint;
-    document.getElementById('round-status').textContent='Guess the word!';
+    setRoundStatus('Guess the word!');
     setTimeout(fitCanvas, 50);
   }
-  if(round) addChat('sys',`Round ${round} — let's go!`);
+  if(round) addChat('sys',`Round ${round} — let\'s go!`);
 }
 
 // ── Sound effects ─────────────────────────────────────────────────────────────
@@ -1340,33 +1372,25 @@ function openGallery(){
   document.getElementById('gc').addEventListener('click',()=>overlay.remove());
 }
 
-// ── Show/hide start button ────────────────────────────────────────────────────
-// ✅ FIX: defined at TOP LEVEL (was incorrectly inside connect())
-function showStartBtn(show) {
-  const btn=document.getElementById('start-btn');
-  if(btn) btn.style.display=show?'block':'none';
-}
-document.getElementById('start-btn')?.addEventListener('click',()=>{
-  ws?.send(JSON.stringify({type:'new_round'}));
-  showStartBtn(false);
-});
-
 // ── WebSocket ─────────────────────────────────────────────────────────────────
 let ws=null, myName='', myRoom='', myTgId='';
 
 function connect(){
-  if(!myName||!myRoom) return;
+  // Wire the start-btn in waiting overlay
+function showStartBtn(show) {
+  const btn = document.getElementById('start-btn');
+  if (btn) btn.style.display = show ? 'block' : 'none';
+}
+document.getElementById('start-btn')?.addEventListener('click', () => {
+  ws?.send(JSON.stringify({type:'new_round'}));
+  showStartBtn(false);
+});
+
+// Restore name from session if somehow lost
+  if (!myName) try { myName=sessionStorage.getItem('dgName')||myName; myRoom=sessionStorage.getItem('dgRoom')||myRoom; } catch{}
   const proto=location.protocol==='https:'?'wss':'ws';
-  // ✅ FIX: send userId (tgId) so server knows if this connection is the drawer
-  ws=new WebSocket(
-    `${proto}://${location.host}/ws` +
-    `?room=${encodeURIComponent(myRoom)}` +
-    `&name=${encodeURIComponent(myName)}` +
-    `&userId=${encodeURIComponent(myTgId)}`
-  );
-  ws.onopen=()=>{
-    document.getElementById('conn-dot').style.background='var(--green)';
-  };
+  ws=new WebSocket(`${proto}://${location.host}/ws?room=${encodeURIComponent(myRoom)}&name=${encodeURIComponent(myName)}&userId=${encodeURIComponent(myTgId)}`);
+  ws.onopen=()=>{document.getElementById('conn-dot').style.background='var(--green)';};
   ws.onmessage=({data})=>{
     let m; try{m=JSON.parse(data);}catch{return;}
     switch(m.type){
@@ -1376,33 +1400,21 @@ function connect(){
         document.getElementById('word-display').textContent=`${m.players} player${m.players!==1?'s':''}`;
         if(m.board){updatePlayerList(m.board);updateLeaderboard(m.board);}
         break;
-      case 'draw':
-        renderStroke(m.stroke,activeCtx());
-        break;
+      case 'draw': renderStroke(m.stroke,activeCtx()); break;
       case 'clear':
         clearAll();
         getStack(activeLayer(),undoStacks).length=0;
         getStack(activeLayer(),redoStacks).length=0;
         break;
-      case 'snapshot':{
-        const img=new Image();
-        img.onload=()=>{clearAll();activeCtx().drawImage(img,0,0,CW,CH);};
-        img.src=m.data;
-        break;
-      }
-      case 'role':
-        clearAll();
-        setRole(m.role, m.role==='drawer'?m.word:m.hint, m.round);
-        break;
+      case 'snapshot':{const img=new Image();img.onload=()=>{clearAll();activeCtx().drawImage(img,0,0,CW,CH);};img.src=m.data;break;}
+      case 'role': clearAll();savedStrokes=[];setRole(m.role,m.role==='drawer'?m.word:m.hint,m.round); break;
       case 'hint':
         document.getElementById('word-display').textContent=m.hint;
         addChat('sys',`💡 Hint: ${m.hint}`);
-        showToast('💡 Hint!'); sfxHint();
-        break;
+        showToast('💡 Hint!'); sfxHint(); break;
       case 'word_skipped':
         document.getElementById('word-display').textContent=m.hint;
-        addChat('sys','Word skipped!'); clearAll();
-        break;
+        addChat('sys','Word skipped!'); clearAll(); break;
       case 'guess':
         addChat(m.correct?'ok':'',`<span class="cn">${m.name}:</span> ${m.text}${m.correct?' ✅':''}`);
         if(m.correct){showToast(`🎉 ${m.name} got it!`,'ok');sfxCorrectGuess();}
@@ -1412,44 +1424,40 @@ function connect(){
         if(m.board){updatePlayerList(m.board);updateLeaderboard(m.board);}
         break;
       case 'round_end':
-        sfxRoundEnd();
-        showResult(
-          m.guesser ? '🎉' : (m.reason==='timeout' ? '⏰' : '😮'),
-          m.guesser ? `${m.guesser} got it!` : (m.reason==='timeout' ? "Time's up!" : 'Game over'),
-          m.word,
-          m.guesser ? `Artist: ${m.drawerName}` : `The word was: ${m.word}`
-        );
+        setTimeout(()=>showStartBtn(true), 4000); // show after result overlay
+        stopTimer(); sfxRoundEnd();
+        savedStrokes=[...(m.strokes||[])];
+        showResult(m.guesser?'🎉':(m.reason==='timeout'?'⏰':'😮'),
+          m.guesser?`${m.guesser} got it!`:(m.reason==='timeout'?"Time's up!":'Round over'),
+          m.word, m.guesser?`Artist: ${m.drawerName}`:`The word was: ${m.word}`);
         if(m.board){updatePlayerList(m.board);updateLeaderboard(m.board);}
         if(m.word&&m.drawerName) saveToGallery(m.word,m.drawerName);
-        // Reset UI to idle state
-        document.getElementById('word-display').textContent='waiting…';
-        document.getElementById('role-pill').className='role-pill';
-        document.getElementById('role-pill').textContent='—';
-        document.getElementById('round-status').textContent='Use /startgame to play again!';
+        // Reset UI to idle
         document.getElementById('toolbar').classList.remove('visible');
         document.getElementById('toolbar').style.display='none';
+        document.getElementById('chat-panel').classList.remove('visible');
+        document.getElementById('word-display').textContent='USE /STARTGAME TO PLAY AGAIN';
+        document.getElementById('role-pill').className='role-pill';
+        document.getElementById('role-pill').textContent='—';
+        document.getElementById('round-status').textContent='';
         isDrawer=false;
+        setTimeout(fitCanvas,150);
         break;
-      case 'leaderboard':
-        if(m.board){updatePlayerList(m.board);updateLeaderboard(m.board);}
-        break;
-      case 'logs':
-        renderLogs(m.logs||[]);
-        break;
+      case 'leaderboard': if(m.board){updatePlayerList(m.board);updateLeaderboard(m.board);} break;
+      case 'logs': renderLogs(m.logs||[]); break;
       case 'status':
         document.getElementById('word-display').textContent=m.message.toUpperCase();
         addChat('sys',m.message);
+        // Show big start button when waiting for round
+        showStartBtn(m.message.includes('New Round') || m.message.includes('start'));
         break;
-      case 'player_joined':
-        addChat('sys',`${m.name} joined (${m.count})`); sfxPlayerJoin();
-        break;
-      case 'player_left':
-        addChat('sys',`${m.name} left (${m.count})`);
-        break;
+      case 'player_joined': addChat('sys',`${m.name} joined (${m.count})`); sfxPlayerJoin(); break;
+      case 'player_left':   addChat('sys',`${m.name} left (${m.count})`); break;
     }
   };
   ws.onclose=()=>{
     document.getElementById('conn-dot').style.background='var(--red)';
+    // Reconnect immediately when page becomes visible again (Telegram minimized/restored)
     scheduleReconnect();
   };
   ws.onerror=()=>ws.close();
@@ -1459,44 +1467,41 @@ let reconnectTimer=null;
 function scheduleReconnect(){
   clearTimeout(reconnectTimer);
   reconnectTimer=setTimeout(()=>{
-    if(!myName||!myRoom) return;
-    if(ws&&ws.readyState===WebSocket.CONNECTING) return;
+    if(!myName||!myRoom) return; // not joined yet
+    if(ws&&ws.readyState===WebSocket.CONNECTING) return; // already trying
     connect();
-  },1500);
+  }, 1500);
 }
+// Reconnect immediately when tab/app becomes visible
 document.addEventListener('visibilitychange',()=>{
   if(document.visibilityState==='visible'&&myRoom){
-    if(!ws||ws.readyState===WebSocket.CLOSED||ws.readyState===WebSocket.CLOSING) connect();
+    if(!ws||ws.readyState===WebSocket.CLOSED||ws.readyState===WebSocket.CLOSING){
+      connect();
+    }
   }
 });
 
-// ── Auto-join from Telegram startapp param ────────────────────────────────────
+// ── Auto-join ─────────────────────────────────────────────────────────────────
 function getTgUser() {
-  if(!tg) return null;
-  const u=tg.initDataUnsafe?.user;
-  if(!u) return null;
-  return [u.first_name,u.last_name].filter(Boolean).join(' ').trim() || u.username || null;
+  if (!tg) return null;
+  const u = tg.initDataUnsafe?.user;
+  if (!u) return null;
+  return [u.first_name, u.last_name].filter(Boolean).join(' ').trim() || u.username || null;
 }
 
-function getTgUserId() {
-  if(!tg) return '';
-  const u=tg.initDataUnsafe?.user;
-  return u ? String(u.id) : '';
-}
-
-// ✅ FIX: startapp param is now  chatId__tgId__name
 function parseStartParam() {
-  let raw='';
-  if(tg){
-    const sp=tg.initDataUnsafe?.start_param;
-    if(sp) try{raw=decodeURIComponent(sp);}catch{raw=sp;}
+  // startapp format: ROOMID__NAME (encoded together since t.me only supports startapp param)
+  let raw = '';
+  if (tg) {
+    const sp = tg.initDataUnsafe?.start_param;
+    if (sp) try { raw = decodeURIComponent(sp); } catch { raw = sp; }
   }
-  if(!raw){
-    const usp=new URLSearchParams(location.search);
-    raw=usp.get('startapp')||usp.get('room')||'';
-    try{raw=decodeURIComponent(raw);}catch{}
+  if (!raw) {
+    const usp = new URLSearchParams(location.search);
+    raw = usp.get('startapp') || usp.get('room') || '';
+    try { raw = decodeURIComponent(raw); } catch {}
   }
-  // Format: chatId__tgId__name  (name can contain __)
+  // Split on __ separator
   const parts  = raw.split('__');
   const roomId = parts[0] || '';
   const tgId   = parts[1] || '';
@@ -1504,55 +1509,72 @@ function parseStartParam() {
   return { roomId, tgId, name };
 }
 
-// ✅ FIX: doJoin now takes tgId and stores it
+function getRoomId() {
+  return parseStartParam().roomId;
+}
+
+function getUrlName() {
+  // From startapp param OR from ?name= query (fallback)
+  const n = parseStartParam().name;
+  if (n) return n;
+  const usp = new URLSearchParams(location.search);
+  return usp.get('name') || null;
+}
+
+// Log what we see on load — helps debug name issues
+console.log('[join] URL:', location.href);
+console.log('[join] search:', location.search);
+console.log('[join] tg.initData:', tg?.initData?.slice(0,80)||'none');
+console.log('[join] tg.initDataUnsafe:', JSON.stringify(tg?.initDataUnsafe||{}).slice(0,120));
+
 function doJoin(roomId, playerName, tgId) {
-  myName  = playerName;
-  myRoom  = roomId;
-  myTgId  = tgId || '';
-  try{
-    sessionStorage.setItem('dgName', myName);
-    sessionStorage.setItem('dgRoom', myRoom);
-    sessionStorage.setItem('dgTgId', myTgId);
-  }catch{}
-  console.log('[join] room:', myRoom, 'name:', myName, 'tgId:', myTgId);
-  document.getElementById('join-overlay').style.display='none';
+  myName = playerName; myRoom = roomId; myTgId = tgId||'';
+  // Persist so page refreshes / reconnects keep the same name
+  try { sessionStorage.setItem('dgName', myName); sessionStorage.setItem('dgRoom', myRoom); sessionStorage.setItem('dgTgId', myTgId); } catch{}
+  console.log('[join] Joining as:', myName, 'room:', myRoom);
+  document.getElementById('join-overlay').style.display = 'none';
   initCanvases(); renderPalette(); updateSzOpLabel(); connect();
   setTimeout(fitCanvas,100); setTimeout(fitCanvas,400); setTimeout(fitCanvas,800);
 }
 
-// ✅ FIX: tryAutoJoin uses new 3-part startapp format
-(function tryAutoJoin(attempt){
-  const parsed  = parseStartParam();
-  const tgName  = getTgUser();
-  const tgId    = getTgUserId() || parsed.tgId || '';
+// Retry until BOTH roomId AND playerName from Telegram are available
+// Telegram can take up to ~800ms to inject initDataUnsafe on some devices
+(function tryAutoJoin(attempt) {
+  const roomId    = getRoomId();
+  const tgName    = getTgUser();
 
-  // Best name: Telegram profile > name from startapp param > fallback
-  const bestName = tgName || parsed.name || null;
+  // Parse startapp which contains both room and name
+  const parsed = parseStartParam();
+  const urlName = parsed.name || getUrlName();
+  const tgName2 = getTgUser();
+  // Best name: Telegram user > startapp name > url param
+  const bestName = tgName2 || urlName;
+  const tgId = getTgUserId() || parsed.tgId || '';
+  if (parsed.roomId && bestName) { doJoin(parsed.roomId, bestName, tgId); return; }
+  if (parsed.roomId && attempt >= 8) { doJoin(parsed.roomId, urlName || ('Artist'+Math.floor(Math.random()*900+100)), tgId); return; }
+  // Legacy: roomId from URL
+  const urlRoomId = getRoomId();
+  if (urlRoomId && bestName) { doJoin(urlRoomId, bestName); return; }
 
-  if(parsed.roomId && bestName){
-    doJoin(parsed.roomId, bestName, tgId);
-    return;
-  }
-  // Telegram injects initDataUnsafe asynchronously — retry up to 2s
-  if(attempt < 20){
-    setTimeout(()=>tryAutoJoin(attempt+1), 100);
-    return;
-  }
-  // Timeout fallback
-  if(parsed.roomId){
-    const fallback = tgName || parsed.name || ('Artist'+Math.floor(Math.random()*900+100));
-    doJoin(parsed.roomId, fallback, tgId);
+  // Still waiting — retry for up to 2 seconds (20 × 100ms)
+  if (attempt < 20) { setTimeout(() => tryAutoJoin(attempt + 1), 100); return; }
+
+  // Timed out — use what we have
+  if (roomId) {
+    // Priority: Telegram user > URL name param > random
+    const fallbackName = tgName || getUrlName() || ('Artist' + Math.floor(Math.random()*900+100));
+    doJoin(roomId, fallbackName);
   } else {
-    // No room in URL — show manual join form with name pre-filled
-    const name=tgName||'';
-    if(name) document.getElementById('name-in').value=name;
+    // No room ID — show manual join form with Telegram name pre-filled
+    const name = tgName || '';
+    if (name) document.getElementById('name-in').value = name;
   }
 })(0);
 
 document.getElementById('join-btn').addEventListener('click',()=>{
-  const name   = document.getElementById('name-in').value.trim()||`Player${Math.floor(Math.random()*1000)}`;
-  const roomId = document.getElementById('room-in').value.trim()||'default';
-  doJoin(roomId, name, '');
+  const name=document.getElementById('name-in').value.trim()||`Player${Math.floor(Math.random()*1000)}`;
+  const roomId=document.getElementById('room-in').value.trim()||'default';
+  doJoin(roomId,name);
 });
 document.getElementById('name-in').addEventListener('keydown',e=>{if(e.key==='Enter')document.getElementById('room-in').focus();});
 document.getElementById('room-in').addEventListener('keydown',e=>{if(e.key==='Enter')document.getElementById('join-btn').click();});

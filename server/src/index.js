@@ -66,87 +66,174 @@ const WORDS = [
 ];
 function pickWord() { return WORDS[Math.floor(Math.random() * WORDS.length)]; }
 
-// ── Canvas render (PNG for Telegram chat) ─────────────────────────────────────
-// Uses node-canvas which is identical to browser Canvas API —
-// same anti-aliasing, lineCap, lineJoin, globalAlpha as the frontend
-const CANVAS_W = 800, CANVAS_H = 500; // match frontend logical size exactly
+// ── Canvas render (PNG for Telegram) — identical engine to frontend ───────────
+const CANVAS_W = 800, CANVAS_H = 500;
 
-const BRUSH_TYPE_MAP = {
-  pen:     { lw: 1.0, alpha: 1.0,  cap: 'round', dash: [] },
-  pencil:  { lw: 0.8, alpha: 0.75, cap: 'round', dash: [0.6, 0.3] }, // relative to size
-  marker:  { lw: 1.4, alpha: 0.6,  cap: 'round', dash: [] },
-  bristle: { lw: 0.3, alpha: 0.4,  cap: 'round', dash: [] }, // drawn as multiple lines
-  flat:    { lw: 2.5, alpha: 1.0,  cap: 'square',dash: [] },
-  eraser:  { lw: 1.0, alpha: 1.0,  cap: 'round', dash: [], erase: true },
+const BRUSH_DEFAULTS = {
+  pen:       { smoothing:0.5,  alpha:1.0,  widthMult:1.0,  cap:'round',  pressure:true  },
+  pencil:    { smoothing:0.3,  alpha:0.75, widthMult:0.8,  cap:'round',  pressure:true  },
+  marker:    { smoothing:0.6,  alpha:0.55, widthMult:1.6,  cap:'round',  pressure:false },
+  bristle:   { smoothing:0.2,  alpha:0.5,  widthMult:1.0,  cap:'round',  pressure:true  },
+  flat:      { smoothing:0.4,  alpha:1.0,  widthMult:2.5,  cap:'square', pressure:false },
+  eraser:    { smoothing:0.5,  alpha:1.0,  widthMult:1.0,  cap:'round',  pressure:false },
+  spray:     { smoothing:0.0,  alpha:0.08, widthMult:1.0,  cap:'round',  pressure:false },
+  ink:       { smoothing:0.7,  alpha:1.0,  widthMult:1.0,  cap:'round',  pressure:true  },
+  watercolor:{ smoothing:0.6,  alpha:0.25, widthMult:2.0,  cap:'round',  pressure:true  },
 };
+
+function smoothPoints(pts, smoothing) {
+  if (pts.length < 3 || smoothing < 0.05) return null;
+  const s = smoothing * 0.4;
+  const cp = [];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[Math.max(0, i-1)];
+    const p1 = pts[i];
+    const p2 = pts[i+1];
+    const p3 = pts[Math.min(pts.length-1, i+2)];
+    cp.push([
+      p1[0] + (p2[0]-p0[0]) * s, p1[1] + (p2[1]-p0[1]) * s,
+      p2[0] - (p3[0]-p1[0]) * s, p2[1] - (p3[1]-p1[1]) * s,
+    ]);
+  }
+  return cp;
+}
+
+function calcPressure(pts, i) {
+  if (i === 0 || i >= pts.length - 1) return 0.8;
+  const dx = pts[i+1][0] - pts[i-1][0];
+  const dy = pts[i+1][1] - pts[i-1][1];
+  const speed = Math.sqrt(dx*dx + dy*dy);
+  return Math.max(0.3, Math.min(1.2, 1.4 - speed * 0.018));
+}
+
+function _drawPath(ctx, pts, smoothing) {
+  const cp = smoothPoints(pts, smoothing);
+  ctx.beginPath();
+  ctx.moveTo(pts[0][0], pts[0][1]);
+  if (!cp) {
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+  } else {
+    for (let i = 0; i < cp.length; i++) {
+      ctx.bezierCurveTo(cp[i][0],cp[i][1],cp[i][2],cp[i][3],pts[i+1][0],pts[i+1][1]);
+    }
+  }
+}
+
+function renderStrokeProper(ctx, s) {
+  const pts = s.points || [];
+  if (pts.length < 2) return;
+  const btype     = s.brushType  || 'pen';
+  const size      = s.size       || 6;
+  const color     = s.color      || '#000000';
+  const opacity   = s.opacity    != null ? s.opacity : 1.0;
+  const smoothing = s.smoothing  != null ? s.smoothing : (BRUSH_DEFAULTS[btype]?.smoothing ?? 0.5);
+  const bd        = BRUSH_DEFAULTS[btype] || BRUSH_DEFAULTS.pen;
+
+  ctx.save();
+
+  if (btype === 'eraser') {
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.globalAlpha = 1.0; ctx.strokeStyle = 'rgba(0,0,0,1)';
+    ctx.lineWidth = size * bd.widthMult; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.setLineDash([]);
+    _drawPath(ctx, pts, smoothing); ctx.stroke();
+    ctx.restore(); return;
+  }
+
+  if (btype === 'spray') {
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = color;
+    for (let i = 0; i < pts.length; i++) {
+      const density = Math.floor(size * 1.5);
+      for (let d = 0; d < density; d++) {
+        const angle = Math.random()*Math.PI*2, r = Math.random()*size*1.2;
+        ctx.globalAlpha = Math.random()*opacity*0.3;
+        ctx.beginPath(); ctx.arc(pts[i][0]+Math.cos(angle)*r, pts[i][1]+Math.sin(angle)*r, Math.random()*1.5+0.5, 0, Math.PI*2); ctx.fill();
+      }
+    }
+    ctx.restore(); return;
+  }
+
+  if (btype === 'watercolor') {
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.strokeStyle = color; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    for (let l = 0; l < 6; l++) {
+      ctx.globalAlpha = opacity * bd.alpha / 6;
+      ctx.lineWidth = size * bd.widthMult * (0.7 + Math.random()*0.6);
+      ctx.beginPath(); ctx.moveTo(pts[0][0]+(Math.random()-.5)*size*.3, pts[0][1]+(Math.random()-.5)*size*.3);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0]+(Math.random()-.5)*size*.4, pts[i][1]+(Math.random()-.5)*size*.4);
+      ctx.stroke();
+    }
+    ctx.restore(); return;
+  }
+
+  if (btype === 'bristle') {
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    const bristles = Math.max(4, Math.floor(size*0.7));
+    ctx.lineWidth = Math.max(0.8, size/bristles*1.2);
+    for (let b = 0; b < bristles; b++) {
+      ctx.globalAlpha = opacity * bd.alpha * (0.5+Math.random()*.5);
+      ctx.strokeStyle = color;
+      const r = size*0.55, offX=(Math.random()-.5)*r*2, offY=(Math.random()-.5)*r*2;
+      ctx.beginPath(); ctx.moveTo(pts[0][0]+offX, pts[0][1]+offY);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0]+offX*(0.85+Math.random()*.3), pts[i][1]+offY*(0.85+Math.random()*.3));
+      ctx.stroke();
+    }
+    ctx.restore(); return;
+  }
+
+  if (btype === 'ink') {
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.strokeStyle = color; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.setLineDash([]);
+    for (let i = 1; i < pts.length; i++) {
+      const p = calcPressure(pts, i);
+      ctx.globalAlpha = opacity * Math.min(1, p*0.9+0.1);
+      ctx.lineWidth = size * p * bd.widthMult;
+      ctx.beginPath(); ctx.moveTo(pts[i-1][0],pts[i-1][1]); ctx.lineTo(pts[i][0],pts[i][1]); ctx.stroke();
+    }
+    ctx.restore(); return;
+  }
+
+  if (btype === 'pencil') {
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.strokeStyle = color; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.setLineDash([size*0.5, size*0.2]);
+    ctx.lineWidth = size * bd.widthMult; ctx.globalAlpha = opacity * bd.alpha;
+    for (let pass = 0; pass < 2; pass++) {
+      ctx.beginPath(); ctx.moveTo(pts[0][0]+(Math.random()-.5)*1.5, pts[0][1]+(Math.random()-.5)*1.5);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0]+(Math.random()-.5)*1.5, pts[i][1]+(Math.random()-.5)*1.5);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    ctx.restore(); return;
+  }
+
+  // pen / marker / flat
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = opacity * bd.alpha;
+  ctx.strokeStyle = color; ctx.lineCap = bd.cap || 'round'; ctx.lineJoin = 'round'; ctx.setLineDash([]);
+  if (bd.pressure && btype !== 'marker' && btype !== 'flat') {
+    for (let i = 1; i < pts.length; i++) {
+      const p = calcPressure(pts, i);
+      ctx.lineWidth = size * bd.widthMult * p;
+      ctx.beginPath(); ctx.moveTo(pts[i-1][0],pts[i-1][1]); ctx.lineTo(pts[i][0],pts[i][1]); ctx.stroke();
+    }
+  } else {
+    ctx.lineWidth = size * bd.widthMult;
+    _drawPath(ctx, pts, smoothing); ctx.stroke();
+  }
+  ctx.restore();
+}
 
 function renderPNG(strokes) {
   const canvas = createCanvas(CANVAS_W, CANVAS_H);
   const ctx    = canvas.getContext('2d');
-
-  // White background
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
-
-  for (const s of (strokes || [])) {
-    const pts  = s.points || [];
-    if (pts.length < 2) continue;
-
-    const size      = s.size    || 4;
-    const color     = s.color   || '#000000';
-    const opacity   = s.opacity != null ? s.opacity : 1.0;
-    const brushType = s.brushType || 'pen';
-    const brush     = BRUSH_TYPE_MAP[brushType] || BRUSH_TYPE_MAP.pen;
-
-    ctx.save();
-
-    if (brush.erase) {
-      ctx.globalCompositeOperation = 'destination-out';
-      ctx.globalAlpha = 1.0;
-    } else {
-      ctx.globalCompositeOperation = 'source-over';
-      ctx.globalAlpha = opacity * brush.alpha;
-    }
-
-    ctx.strokeStyle = brush.erase ? 'rgba(0,0,0,1)' : color;
-    ctx.lineWidth   = size * brush.lw;
-    ctx.lineCap     = brush.cap;
-    ctx.lineJoin    = 'round';
-
-    if (brush.dash.length) {
-      ctx.setLineDash(brush.dash.map(d => d * size));
-    } else {
-      ctx.setLineDash([]);
-    }
-
-    if (brushType === 'bristle') {
-      // Bristle: draw multiple offset lines like the frontend does
-      const bristles = Math.max(3, Math.floor(size / 2));
-      ctx.lineWidth  = Math.max(1, size / bristles);
-      for (let b = 0; b < bristles; b++) {
-        ctx.beginPath();
-        const r = size * 0.6;
-        ctx.moveTo(pts[0][0] + (Math.random()-.5)*r, pts[0][1] + (Math.random()-.5)*r);
-        for (let i = 1; i < pts.length; i++) {
-          ctx.lineTo(pts[i][0] + (Math.random()-.5)*r, pts[i][1] + (Math.random()-.5)*r);
-        }
-        ctx.stroke();
-      }
-    } else {
-      ctx.beginPath();
-      ctx.moveTo(pts[0][0], pts[0][1]);
-      for (let i = 1; i < pts.length; i++) {
-        ctx.lineTo(pts[i][0], pts[i][1]);
-      }
-      ctx.stroke();
-    }
-
-    ctx.restore();
-  }
-
+  for (const s of (strokes || [])) renderStrokeProper(ctx, s);
   return canvas.toBuffer('image/png');
 }
-
 // ── Game state ────────────────────────────────────────────────────────────────
 // One game per Telegram group chat
 const games = new Map(); // chatId (string) → game object

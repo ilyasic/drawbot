@@ -5,7 +5,7 @@ const WebSocket = require('ws');
 const path      = require('path');
 const { v4: uuidv4 } = require('uuid');
 const { Telegraf, Markup } = require('telegraf');
-const { createCanvas } = require('canvas');
+const { createCanvas } = require('@napi-rs/canvas');
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const BOT_TOKEN         = process.env.BOT_TOKEN;
@@ -226,7 +226,7 @@ function renderStrokeProper(ctx, s) {
   ctx.restore();
 }
 
-function renderPNG(strokes) {
+async function renderPNG(strokes) {
   const canvas = createCanvas(CANVAS_W, CANVAS_H);
   const ctx    = canvas.getContext('2d');
   ctx.fillStyle = '#ffffff';
@@ -332,7 +332,7 @@ function revealNextHint(game) {
 async function pushCanvasToChat(game) {
   if (game.phase !== 'drawing' || !game.word) return;
   let png;
-  try { png = renderPNG(game.strokes); }
+  try { png = await renderPNG(game.strokes); }
   catch(e) { console.error('[render]', e.message); return; }
 
   const hint    = buildHint(game.word, game.hintRevealed);
@@ -406,7 +406,7 @@ async function endGame(game, guesserName, reason) {
 
   // Render final image
   let png;
-  try { png = renderPNG(game.strokes); }
+  try { png = await renderPNG(game.strokes); }
   catch(e) { console.error('[endGame render]', e.message); }
 
   // Delete the live drawing message

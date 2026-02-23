@@ -40,13 +40,13 @@ const WEBHOOK_PATH = `/webhook/${WEBHOOK_SECRET}`;
 const WEBHOOK_URL  = `${PUBLIC_URL}${WEBHOOK_PATH}`;
 
 app.post(WEBHOOK_PATH, async (req, res) => {
+  // Respond immediately so Telegram never retries the same update
+  res.sendStatus(200);
   console.log('[webhook] update:', JSON.stringify(req.body).slice(0, 100));
   try {
     await bot.handleUpdate(req.body);
-    res.sendStatus(200);
   } catch(e) {
     console.error('[webhook] error:', e.message);
-    res.sendStatus(500);
   }
 });
 app.get(WEBHOOK_PATH, (_req, res) => res.send('Webhook active ✅'));
@@ -243,7 +243,7 @@ async function pushCanvasToChat(game) {
   } catch(e) {
     if (/not modified/i.test(e.message)) return;
     console.error('[pushCanvas]', e.message);
-    if (/not found|deleted|message to edit/i.test(e.message)) game.liveMessageId = null;
+    if (/not found|deleted|message to edit|socket hang up|ECONNRESET|ETIMEDOUT/i.test(e.message)) game.liveMessageId = null;
   }
 }
 
@@ -532,16 +532,26 @@ wss.on('connection', (ws, req) => {
   if (!chatId) { ws.close(); return; }
 
   const game = getOrMakeGame(chatId);
-  game.clients.set(wsId, { ws, name, tgId });
 
+  // ── Ghost game fix: only assign drawer role if game is actively drawing ──
+  const isDrawer = tgId && tgId === game.drawerTgId && game.phase === 'drawing';
+
+  // ── Duplicate connection fix: if drawer reconnects, close old WS first ──
+  if (isDrawer && game.drawerWsId) {
+    const old = game.clients.get(game.drawerWsId);
+    if (old && old.ws.readyState === WebSocket.OPEN) {
+      console.log(`[ws] Closing duplicate drawer WS for ${name}`);
+      old.ws.close();
+    }
+    game.clients.delete(game.drawerWsId);
+    game.drawerWsId = null;
+  }
+
+  game.clients.set(wsId, { ws, name, tgId });
   console.log(`[ws] +${name} tgId=${tgId} chatId=${chatId} clients=${game.clients.size}`);
 
-  // Is this the drawer connecting?
-  const isDrawer = tgId && tgId === game.drawerTgId;
-
-  if (isDrawer && game.phase === 'drawing') {
+  if (isDrawer) {
     game.drawerWsId = wsId;
-    // Send them their secret word
     ws.send(JSON.stringify({ type:'role', role:'drawer', word:game.word, round:1 }));
     console.log(`[ws] ${name} = DRAWER, word=${game.word}`);
   } else {

@@ -184,7 +184,6 @@ function drawPath(ctx,pts,sm){
 function renderStroke(ctx,s){
   const pts=s.points||[];
   const bt0=s.brushType||'pen';
-  // fill/eyedrop only need 1 point — skip the length<2 guard for them
   if(pts.length<1)return;
   if(pts.length<2&&bt0!=='fill'&&bt0!=='eyedrop')return;
   const bt=s.brushType||'pen',sz=s.size||6,col=s.color||'#000',
@@ -192,6 +191,10 @@ function renderStroke(ctx,s){
         sm=s.smoothing!=null?s.smoothing:(BD[bt]?.smoothing??0.5),
         bd=BD[bt]||BD.pen,rng=makePRNG(s.seed||12345);
   ctx.save();
+  // Always reset these — @napi-rs/canvas ctx.restore() doesn't always clean up lineDash
+  ctx.setLineDash([]);
+  ctx.globalAlpha=1;
+  ctx.globalCompositeOperation='source-over';
 
   if(bt==='eraser'){
     ctx.globalCompositeOperation='destination-out';ctx.globalAlpha=1;
@@ -280,16 +283,18 @@ function renderStroke(ctx,s){
     }
     ctx.restore();return;
   }
-  // Pencil
+  // Pencil — textured via alpha variation, NO lineDash (unreliable cross-platform)
   if(bt==='pencil'){
     ctx.globalCompositeOperation='source-over';ctx.strokeStyle=col;ctx.lineCap='round';ctx.lineJoin='round';
-    ctx.setLineDash([sz*0.5,sz*0.2]);ctx.lineWidth=sz*bd.widthMult;ctx.globalAlpha=op*bd.alpha*fl;
+    ctx.setLineDash([]);ctx.lineWidth=sz*bd.widthMult;
+    // Two passes with slight jitter — gives pencil texture
     for(let pass=0;pass<2;pass++){
+      ctx.globalAlpha=op*bd.alpha*fl*(pass===0?0.7:0.45);
       ctx.beginPath();ctx.moveTo(pts[0][0]+(rng()-.5)*1.5,pts[0][1]+(rng()-.5)*1.5);
       for(let i=1;i<pts.length;i++)ctx.lineTo(pts[i][0]+(rng()-.5)*1.5,pts[i][1]+(rng()-.5)*1.5);
       ctx.stroke();
     }
-    ctx.setLineDash([]);ctx.restore();return;
+    ctx.restore();return;
   }
   // Pen/Marker
   ctx.globalCompositeOperation='source-over';ctx.globalAlpha=op*bd.alpha*fl;
@@ -386,9 +391,13 @@ async function pushCanvas(game){
     }
   }
 }
-function scheduleUpdate(game){
-  if(!game.firstStrokeDrawn||game.updateTimer)return;
-  game.updateTimer=setTimeout(async()=>{game.updateTimer=null;await pushCanvas(game);},1500);
+function scheduleUpdate(game,delay=1500,force=false){
+  if(!game.firstStrokeDrawn)return;
+  // force=true (undo/redo): always cancel and restart timer with current state
+  // force=false (draw): only schedule if no timer already running (debounce)
+  if(force){clearTimeout(game.updateTimer);game.updateTimer=null;}
+  if(game.updateTimer)return;
+  game.updateTimer=setTimeout(async()=>{game.updateTimer=null;await pushCanvas(game);},delay);
 }
 
 async function endGame(game,guesser,reason){
@@ -551,12 +560,29 @@ wss.on('connection',(ws,req)=>{
         break;
       case'undo':
         if(wsId!==game.drawerWsId)return;
-        if(game.strokes.length>0){game.strokes.pop();persistDebounced(game);scheduleUpdate(game);}
+        if(game.strokes.length>0){
+          game.strokes.pop();
+          // Broadcast snapshot so watching clients update immediately
+          renderPNG(game.strokes).then(png=>{
+            const b64='data:image/png;base64,'+png.toString('base64');
+            broadcast(game,{type:'snapshot',data:b64});
+          });
+          persistDebounced(game);
+          scheduleUpdate(game,800,true);
+        }
         break;
       case'redo':
         if(wsId!==game.drawerWsId)return;
         {const next=game.strokesUndo[game.strokes.length];
-        if(next){game.strokes.push(next);persistDebounced(game);scheduleUpdate(game);}}
+        if(next){
+          game.strokes.push(next);
+          renderPNG(game.strokes).then(png=>{
+            const b64='data:image/png;base64,'+png.toString('base64');
+            broadcast(game,{type:'snapshot',data:b64});
+          });
+          persistDebounced(game);
+          scheduleUpdate(game,800,true);
+        }}
         break;
       case'clear':
         if(wsId!==game.drawerWsId)return;

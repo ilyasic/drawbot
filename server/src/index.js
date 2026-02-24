@@ -187,7 +187,6 @@ function renderStroke(ctx,s){
   const pts=s.points||[];
   const bt0=s.brushType||'pen';
   if(pts.length<1)return;
-  if(pts.length<2&&bt0!=='fill'&&bt0!=='eyedrop')return;
   const bt=s.brushType||'pen',sz=s.size||6,col=s.color||'#000',
         op=s.opacity!=null?s.opacity:1.0,fl=s.flow!=null?s.flow:0.8,
         sm=s.smoothing!=null?s.smoothing:(BD[bt]?.smoothing??0.5),
@@ -196,6 +195,21 @@ function renderStroke(ctx,s){
   ctx.setLineDash([]);
   ctx.globalAlpha=1;
   ctx.globalCompositeOperation='source-over';
+
+  // ── Dot fix: single tap or nearly-identical 2 points → filled circle ──────
+  const isDot = pts.length===1 || (pts.length===2 &&
+    Math.abs(pts[1][0]-pts[0][0])<1.5 && Math.abs(pts[1][1]-pts[0][1])<1.5);
+  if(isDot && bt0!=='fill' && bt0!=='eyedrop' && bt0!=='eraser'){
+    const r = sz * (bd.widthMult||1) * 0.5;
+    ctx.globalAlpha = op * (bd.alpha||1) * (fl||1);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = col;
+    ctx.beginPath();
+    ctx.arc(pts[0][0], pts[0][1], Math.max(0.5, r), 0, Math.PI*2);
+    ctx.fill();
+    ctx.restore(); return;
+  }
+  if(pts.length<2 && bt0!=='fill' && bt0!=='eyedrop') { ctx.restore(); return; }
 
   if(bt==='eraser'){
     ctx.globalCompositeOperation='destination-out';ctx.globalAlpha=1;
@@ -574,7 +588,18 @@ wss.on('connection',(ws,req)=>{
         if(wsId!==game.drawerWsId)return;
         // ✅ New stroke clears the redo stack (standard behavior)
         game.strokesUndo=[];
-        game.strokes.push(msg.stroke);
+        {
+          // ✅ Deduplicate partial strokes: client sends every 8 pts + final pointerUp.
+          // Use strokeId to replace the existing partial instead of stacking duplicates.
+          // Without this: a 69-pt stroke = 9 entries → 9x overdraw in Telegram image.
+          const sid=msg.stroke.strokeId;
+          if(sid){
+            const idx=game.strokes.findIndex(s=>s.strokeId===sid);
+            if(idx>=0){game.strokes[idx]=msg.stroke;}else{game.strokes.push(msg.stroke);}
+          }else{
+            game.strokes.push(msg.stroke); // fill/legacy strokes without strokeId
+          }
+        }
         broadcast(game,{type:'draw',stroke:msg.stroke},wsId);
         persistDebounced(game,600);
         if(!game.firstStrokeDrawn){

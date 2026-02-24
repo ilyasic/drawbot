@@ -97,7 +97,9 @@ function rowToGame(row) {
   g.word             = row.word || null;
   g.hintRevealed     = JSON.parse(row.hint_revealed || '[]');
   g.strokes          = JSON.parse(row.strokes || '[]');
-  g.strokesUndo      = [...g.strokes];
+  // ✅ FIX: strokesUndo is a separate redo stack, initialized EMPTY (not a copy)
+  // It holds strokes that were undone and can be redone
+  g.strokesUndo      = [];
   g.roundStartTime   = row.round_start || 0;
   g.firstStrokeDrawn = row.first_stroke === 1;
   g.lastHintAt       = row.last_hint_at || 0;
@@ -128,7 +130,7 @@ app.post(WEBHOOK_PATH, async(req,res)=>{
 app.get(WEBHOOK_PATH, (_req,res)=>res.send('Webhook active ✅'));
 app.use(express.static(path.join(__dirname,'../../client')));
 
-// ── Words ────────────────────────────────────────────────────────────────────
+// ── Words ─────────────────────────────────────────────────────────────────────
 const WORDS=['cat','dog','sun','car','fish','bird','moon','tree','house','flower','apple','pizza',
   'smile','heart','star','cake','boat','rain','snow','book','guitar','elephant','rainbow','castle',
   'dragon','piano','volcano','butterfly','telescope','snowman','dinosaur','waterfall','helicopter',
@@ -191,7 +193,6 @@ function renderStroke(ctx,s){
         sm=s.smoothing!=null?s.smoothing:(BD[bt]?.smoothing??0.5),
         bd=BD[bt]||BD.pen,rng=makePRNG(s.seed||12345);
   ctx.save();
-  // Always reset these — @napi-rs/canvas ctx.restore() doesn't always clean up lineDash
   ctx.setLineDash([]);
   ctx.globalAlpha=1;
   ctx.globalCompositeOperation='source-over';
@@ -233,7 +234,6 @@ function renderStroke(ctx,s){
   }
   if(bt==='eyedrop'){ctx.restore();return;}
 
-  // ── Airbrush: real foggy mist ──
   if(bt==='airbrush'){
     ctx.globalCompositeOperation='source-over';ctx.fillStyle=col;
     const rad=sz*3.5,count=Math.floor(rad*rad*0.35*fl);
@@ -250,7 +250,6 @@ function renderStroke(ctx,s){
     }
     ctx.restore();return;
   }
-  // Watercolor
   if(bt==='watercolor'){
     ctx.globalCompositeOperation='source-over';ctx.strokeStyle=col;ctx.lineCap='round';ctx.lineJoin='round';
     for(let l=0;l<6;l++){
@@ -261,7 +260,6 @@ function renderStroke(ctx,s){
     }
     ctx.restore();return;
   }
-  // Bristle
   if(bt==='bristle'){
     ctx.globalCompositeOperation='source-over';ctx.lineCap='round';ctx.lineJoin='round';
     const br=Math.max(4,Math.floor(sz*0.7));ctx.lineWidth=Math.max(0.8,sz/br*1.2);
@@ -274,7 +272,6 @@ function renderStroke(ctx,s){
     }
     ctx.restore();return;
   }
-  // Ink
   if(bt==='ink'){
     ctx.globalCompositeOperation='source-over';ctx.strokeStyle=col;ctx.lineCap='round';ctx.lineJoin='round';ctx.setLineDash([]);
     for(let i=1;i<pts.length;i++){
@@ -283,11 +280,9 @@ function renderStroke(ctx,s){
     }
     ctx.restore();return;
   }
-  // Pencil — textured via alpha variation, NO lineDash (unreliable cross-platform)
   if(bt==='pencil'){
     ctx.globalCompositeOperation='source-over';ctx.strokeStyle=col;ctx.lineCap='round';ctx.lineJoin='round';
     ctx.setLineDash([]);ctx.lineWidth=sz*bd.widthMult;
-    // Two passes with slight jitter — gives pencil texture
     for(let pass=0;pass<2;pass++){
       ctx.globalAlpha=op*bd.alpha*fl*(pass===0?0.7:0.45);
       ctx.beginPath();ctx.moveTo(pts[0][0]+(rng()-.5)*1.5,pts[0][1]+(rng()-.5)*1.5);
@@ -296,7 +291,6 @@ function renderStroke(ctx,s){
     }
     ctx.restore();return;
   }
-  // Pen/Marker
   ctx.globalCompositeOperation='source-over';ctx.globalAlpha=op*bd.alpha*fl;
   ctx.strokeStyle=col;ctx.lineCap=bd.cap||'round';ctx.lineJoin='round';ctx.setLineDash([]);
   if(bd.pressure&&bt!=='marker'){
@@ -315,12 +309,18 @@ async function renderPNG(strokes){
   return canvas.toBuffer('image/png');
 }
 
-// ── Game state ────────────────────────────────────────────────────────────────
+// ── Game state ─────────────────────────────────────────────────────────────────
 const games=new Map();
 function makeGame(chatId){
   return{chatId,phase:'idle',drawerTgId:null,drawerName:'',drawerWsId:null,
-    word:null,hintRevealed:[],strokes:[],strokesUndo:[],roundStartTime:0,
-    firstStrokeDrawn:false,lastHintAt:0,roundTimer:null,hintTimer:null,updateTimer:null,
+    word:null,hintRevealed:[],strokes:[],
+    // ✅ strokesUndo is the REDO stack — strokes popped by undo go here
+    // It is CLEARED whenever a new stroke is drawn (standard undo/redo model)
+    strokesUndo:[],
+    roundStartTime:0,firstStrokeDrawn:false,lastHintAt:0,
+    roundTimer:null,hintTimer:null,updateTimer:null,
+    // ✅ Rate limit tracking: don't hammer Telegram during undo spam
+    lastPushAt:0, retryAfterMs:0,
     inviteMessageId:null,liveMessageId:null,scores:new Map(),clients:new Map()};
 }
 function getOrMakeGame(chatId){
@@ -368,13 +368,28 @@ function revealNextHint(game){
   return hint;
 }
 
+// ── Canvas push with rate-limit handling ──────────────────────────────────────
 async function pushCanvas(game){
   if(game.phase!=='drawing'||!game.word)return;
+
+  // ✅ Respect Telegram's retry-after: if we got a 429, wait it out
+  const now=Date.now();
+  if(game.retryAfterMs>0&&now<game.lastPushAt+game.retryAfterMs){
+    // Re-schedule after the cooldown expires
+    const wait=game.lastPushAt+game.retryAfterMs-now+200;
+    scheduleUpdate(game,wait,true);
+    return;
+  }
+
   let png;try{png=await renderPNG(game.strokes);}catch(e){console.error('[render]',e.message);return;}
   const hint=buildHint(game.word,game.hintRevealed);
   const caption=`🎨 *${game.drawerName}* is drawing!\n🔤 \`${hint}\`  —  ${game.word.length} letters\n\n💬 Type your guess in the chat!`;
-  const cd=Math.ceil((HINT_COOLDOWN_MS-(Date.now()-game.lastHintAt))/1000);
+  const cd=Math.ceil((HINT_COOLDOWN_MS-(now-game.lastHintAt))/1000);
   const kb=Markup.inlineKeyboard([[Markup.button.callback(cd<=0?'💡 Hint':`⏳ Hint (${cd}s)`,`hint:${game.chatId}`)]]);
+
+  game.lastPushAt=Date.now();
+  game.retryAfterMs=0;
+
   try{
     if(game.liveMessageId){
       await bot.telegram.editMessageMedia(game.chatId,game.liveMessageId,null,{type:'photo',media:{source:png,filename:'drawing.png'},caption,parse_mode:'Markdown'},kb);
@@ -384,6 +399,15 @@ async function pushCanvas(game){
     }
   }catch(e){
     if(/not modified/i.test(e.message))return;
+    // ✅ Parse retry-after from 429 response and back off
+    const retryMatch=e.message.match(/retry after (\d+)/i);
+    if(retryMatch){
+      const secs=parseInt(retryMatch[1])+1;
+      game.retryAfterMs=secs*1000;
+      console.log(`[pushCanvas] 429 — backing off ${secs}s`);
+      scheduleUpdate(game,secs*1000,true); // re-try after backoff
+      return;
+    }
     console.error('[pushCanvas]',e.message);
     if(/not found|deleted|message to edit|socket hang up|ECONNRESET|ETIMEDOUT/i.test(e.message)){
       game.liveMessageId=null;
@@ -391,10 +415,11 @@ async function pushCanvas(game){
     }
   }
 }
-function scheduleUpdate(game,delay=1500,force=false){
+
+// ✅ scheduleUpdate: force=true cancels pending timer (for undo/redo bursts)
+// force=false debounces (normal drawing — don't queue up while one is pending)
+function scheduleUpdate(game,delay=2000,force=false){
   if(!game.firstStrokeDrawn)return;
-  // force=true (undo/redo): always cancel and restart timer with current state
-  // force=false (draw): only schedule if no timer already running (debounce)
   if(force){clearTimeout(game.updateTimer);game.updateTimer=null;}
   if(game.updateTimer)return;
   game.updateTimer=setTimeout(async()=>{game.updateTimer=null;await pushCanvas(game);},delay);
@@ -516,7 +541,6 @@ wss.on('connection',(ws,req)=>{
   const game=getOrMakeGame(chatId);
   const isDrawer=tgId&&tgId===game.drawerTgId&&game.phase==='drawing';
 
-  // Close stale duplicate drawer connection
   if(isDrawer&&game.drawerWsId){
     const old=game.clients.get(game.drawerWsId);
     if(old&&old.ws.readyState===WebSocket.OPEN){console.log(`[ws] Closing stale drawer for ${name}`);old.ws.close();}
@@ -528,7 +552,6 @@ wss.on('connection',(ws,req)=>{
 
   if(isDrawer){
     game.drawerWsId=wsId;
-    // Restore: send existing strokes then role (so drawer sees their work on reconnect)
     ws.send(JSON.stringify({type:'init',strokes:game.strokes,players:game.clients.size,board:leaderboard(game)}));
     ws.send(JSON.stringify({type:'role',role:'drawer',word:game.word,round:1}));
     console.log(`[ws] ${name} = DRAWER restored, word=${game.word} strokes=${game.strokes.length}`);
@@ -546,9 +569,12 @@ wss.on('connection',(ws,req)=>{
   ws.on('message',data=>{
     let msg;try{msg=JSON.parse(data);}catch{return;}
     switch(msg.type){
+
       case'draw':
         if(wsId!==game.drawerWsId)return;
-        game.strokesUndo.push({...msg.stroke});game.strokes.push(msg.stroke);
+        // ✅ New stroke clears the redo stack (standard behavior)
+        game.strokesUndo=[];
+        game.strokes.push(msg.stroke);
         broadcast(game,{type:'draw',stroke:msg.stroke},wsId);
         persistDebounced(game,600);
         if(!game.firstStrokeDrawn){
@@ -558,41 +584,53 @@ wss.on('connection',(ws,req)=>{
           setTimeout(()=>pushCanvas(game),500);
         }else{scheduleUpdate(game);}
         break;
+
       case'undo':
         if(wsId!==game.drawerWsId)return;
         if(game.strokes.length>0){
-          game.strokes.pop();
-          // Broadcast snapshot so watching clients update immediately
+          // ✅ Pop from strokes, push to redo stack
+          const undone=game.strokes.pop();
+          game.strokesUndo.push(undone);
+          if(game.strokesUndo.length>50)game.strokesUndo.shift(); // cap redo stack
+          // ✅ Send snapshot ONLY to non-drawer clients (watchers/guessers)
+          // Drawer manages their own canvas locally — sending snapshot back causes the bug
           renderPNG(game.strokes).then(png=>{
             const b64='data:image/png;base64,'+png.toString('base64');
-            broadcast(game,{type:'snapshot',data:b64});
-          });
+            broadcast(game,{type:'snapshot',data:b64},game.drawerWsId); // skip drawer
+          }).catch(e=>console.error('[undo render]',e.message));
           persistDebounced(game);
-          scheduleUpdate(game,800,true);
+          scheduleUpdate(game,1500,true);
         }
         break;
+
       case'redo':
         if(wsId!==game.drawerWsId)return;
-        {const next=game.strokesUndo[game.strokes.length];
-        if(next){
-          game.strokes.push(next);
+        if(game.strokesUndo.length>0){
+          // ✅ Pop from redo stack, push back to strokes
+          const redone=game.strokesUndo.pop();
+          game.strokes.push(redone);
+          // ✅ Also skip drawer for redo snapshots
           renderPNG(game.strokes).then(png=>{
             const b64='data:image/png;base64,'+png.toString('base64');
-            broadcast(game,{type:'snapshot',data:b64});
-          });
+            broadcast(game,{type:'snapshot',data:b64},game.drawerWsId); // skip drawer
+          }).catch(e=>console.error('[redo render]',e.message));
           persistDebounced(game);
-          scheduleUpdate(game,800,true);
-        }}
+          scheduleUpdate(game,1500,true);
+        }
         break;
+
       case'clear':
         if(wsId!==game.drawerWsId)return;
         game.strokes=[];game.strokesUndo=[];game.firstStrokeDrawn=false;
         broadcast(game,{type:'clear'});persistDebounced(game);
         break;
+
       case'snapshot':
         if(wsId!==game.drawerWsId)return;
+        // Manual snapshot from sendToTg — broadcast to everyone except drawer
         broadcast(game,{type:'snapshot',data:msg.data},wsId);
         break;
+
       case'guess':{
         const t=(msg.text||'').trim();if(!t)return;
         const ok=game.word&&t.toLowerCase()===game.word.toLowerCase();
@@ -607,6 +645,7 @@ wss.on('connection',(ws,req)=>{
         }
         break;
       }
+
       case'change_word':
         if(wsId!==game.drawerWsId)return;
         {const nw=pickWord();game.word=nw;game.hintRevealed=new Array(nw.length).fill(false);
@@ -614,6 +653,7 @@ wss.on('connection',(ws,req)=>{
         sendWs(game,wsId,{type:'role',role:'drawer',word:nw,round:1});
         broadcast(game,{type:'clear'},wsId);broadcast(game,{type:'word_skipped',hint:buildHint(nw,game.hintRevealed)},wsId);}
         break;
+
       case'skip_word':
         if(wsId!==game.drawerWsId)return;
         {const nw=pickWord();game.word=nw;game.hintRevealed=new Array(nw.length).fill(false);
@@ -622,8 +662,26 @@ wss.on('connection',(ws,req)=>{
         persistGame(game);sendWs(game,wsId,{type:'role',role:'drawer',word:nw,round:1});
         broadcast(game,{type:'clear'},wsId);broadcast(game,{type:'word_skipped',hint:buildHint(nw,game.hintRevealed)},wsId);}
         break;
+
       case'done_drawing':
         if(wsId!==game.drawerWsId)return;endGame(game,null,'done');break;
+
+      case'new_round':
+        // ✅ Handle new_round from Mini App start button
+        if(game.phase==='idle'||game.phase==='ended'){
+          // Only admins/anyone can trigger — same logic as /startgame
+          game.phase='waiting_drawer';game.scores=new Map();game.strokes=[];game.strokesUndo=[];
+          game.word=null;game.drawerTgId=null;game.drawerName='';game.drawerWsId=null;
+          persistDebounced(game);
+          // Notify group chat
+          if(botUsername){
+            const canvasUrl=`https://t.me/${botUsername}/${WEBAPP_SHORT_NAME}?startapp=${encodeURIComponent(game.chatId+'__'+tgId+'__'+name)}`;
+            bot.telegram.sendMessage(game.chatId,`🎨 *${name}* wants to start a new round! Who wants to draw?`,
+              {parse_mode:'Markdown',...Markup.inlineKeyboard([[Markup.button.callback('✏️ I Want to Draw!',`claim_draw:${game.chatId}`)]])}).catch(()=>{});
+          }
+        }
+        break;
+
       case'get_logs':
         ws.send(JSON.stringify({type:'logs',logs:[]}));break;
     }
@@ -665,7 +723,7 @@ async function launchBot(){
 
 server.listen(PORT,()=>{
   console.log(`✅ http://localhost:${PORT}  |  📡 ${PUBLIC_URL}`);
-  restoreAll(); // restore before bot launches
+  restoreAll();
   setTimeout(launchBot,1000);
   if(PUBLIC_URL){
     setInterval(()=>{

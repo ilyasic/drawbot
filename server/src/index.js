@@ -1,4 +1,3 @@
-
 require('dotenv').config();
 const express     = require('express');
 const http        = require('http');
@@ -531,7 +530,7 @@ wss.on('connection',(ws,req)=>{
     game.drawerWsId=wsId;
     // Restore: send existing strokes then role (so drawer sees their work on reconnect)
     ws.send(JSON.stringify({type:'init',strokes:game.strokes,players:game.clients.size,board:leaderboard(game)}));
-    ws.send(JSON.stringify({type:'role',role:'drawer',word:game.word,round:1}));
+    ws.send(JSON.stringify({type:'role',role:'drawer',word:game.word,round:1,reconnect:game.strokes.length>0}));
     console.log(`[ws] ${name} = DRAWER restored, word=${game.word} strokes=${game.strokes.length}`);
   }else{
     ws.send(JSON.stringify({type:'init',strokes:game.strokes,players:game.clients.size,board:leaderboard(game)}));

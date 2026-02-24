@@ -152,17 +152,18 @@ html, body {
   font-weight:700; cursor:pointer; font-family:'Syne',sans-serif; flex-shrink:0;
 }
 
-/* ── Toolbar (drawer only) — single row, 8 buttons max ── */
+/* ── Toolbar — 2 rows ── */
 #toolbar {
-  flex-shrink:0; display:none; flex-direction:row;
+  flex-shrink:0; display:none; flex-direction:column;
   align-items:center; justify-content:center;
-  gap:8px; padding:10px 16px calc(10px + var(--safe-b));
+  gap:6px; padding:8px 12px calc(8px + var(--safe-b));
   background:rgba(29,40,41,.96);
   backdrop-filter:blur(16px); -webkit-backdrop-filter:blur(16px);
   border-top:1px solid rgba(255,255,255,.07);
-  z-index:20; min-height:var(--toolbar-h);
+  z-index:20;
 }
 #toolbar.visible { display:flex; }
+.tb-row { display:flex; gap:8px; align-items:center; justify-content:center; }
 
 .tbtn {
   width:50px; height:50px; min-width:50px;
@@ -179,6 +180,7 @@ html, body {
 .tbtn.on  { background:rgba(224,168,112,.95); box-shadow:0 3px 14px rgba(196,149,106,.55), inset 0 1px 0 rgba(255,255,255,.25); }
 .tbtn.tred   { background:rgba(180,55,55,.9); }
 .tbtn.tred:active { background:rgba(140,35,35,.9); }
+.tbtn.tblue  { background:rgba(108,99,255,.85); }
 
 .color-dot {
   position:absolute; bottom:4px; right:4px;
@@ -186,13 +188,29 @@ html, body {
   border:2px solid rgba(255,255,255,.75);
   pointer-events:none;
 }
-
-/* sz/opacity mini label */
 #sz-op-label {
   font-size:.65rem; color:var(--text2); font-weight:700;
   line-height:1.6; text-align:center; min-width:36px;
   display:flex; flex-direction:column; align-items:center;
 }
+
+/* Sync indicator in topbar */
+#sync-indicator { display:flex; align-items:center; flex-shrink:0; width:18px; justify-content:center; }
+@keyframes spin { to { transform:rotate(360deg); } }
+
+/* Brush grid — 3 columns */
+.brush-grid {
+  display:grid; grid-template-columns:repeat(3,1fr); gap:5px;
+}
+.brush-opt {
+  display:flex; flex-direction:column; align-items:center; gap:3px;
+  padding:8px 6px; border-radius:10px; cursor:pointer;
+  font-size:.72rem; font-weight:600; text-align:center;
+  border:1.5px solid transparent; transition:all .1s;
+}
+.brush-opt:active { background:var(--surface2); }
+.brush-opt.on { border-color:var(--btn-bg); background:rgba(196,149,106,.15); color:var(--btn-active); }
+.brush-icon { font-size:1.3rem; }
 
 /* ── Popups ── */
 .popup {
@@ -210,11 +228,11 @@ html, body {
 }
 
 /* Popup positioning — above toolbar */
-#brush-popup   { bottom:calc(var(--toolbar-h) + var(--safe-b) + 8px); left:8px;  min-width:165px; }
-#color-popup   { bottom:calc(var(--toolbar-h) + var(--safe-b) + 8px); left:50%; transform:translateX(-50%); min-width:230px; }
-#opacity-popup { bottom:calc(var(--toolbar-h) + var(--safe-b) + 8px); left:50%; transform:translateX(-50%); min-width:210px; }
-#layer-popup   { bottom:calc(var(--toolbar-h) + var(--safe-b) + 8px); right:8px; min-width:180px; }
-#settings-popup{ top:calc(var(--topbar-h) + 8px); right:8px; min-width:215px; }
+#brush-popup   { bottom:calc(128px + var(--safe-b) + 8px); left:4px;  min-width:220px; }
+#color-popup   { bottom:calc(128px + var(--safe-b) + 8px); left:50%; transform:translateX(-50%); min-width:230px; }
+#opacity-popup { bottom:calc(128px + var(--safe-b) + 8px); left:50%; transform:translateX(-50%); min-width:210px; }
+#layer-popup   { bottom:calc(128px + var(--safe-b) + 8px); right:4px; min-width:180px; }
+#settings-popup{ bottom:calc(128px + var(--safe-b) + 8px); right:4px; min-width:220px; max-height:70vh; }
 #players-popup { top:calc(var(--topbar-h) + 8px); left:50%; transform:translateX(-50%); min-width:165px; max-height:280px; }
 #lb-popup      { top:calc(var(--topbar-h) + 8px); left:50%; transform:translateX(-50%); min-width:215px; }
 #logs-popup    { top:calc(var(--topbar-h) + 8px); left:50%; transform:translateX(-50%); width:min(440px,94vw); max-height:60vh; }
@@ -476,22 +494,23 @@ input[type=range].pop-slider::-webkit-slider-thumb {
 
   <!-- ── Popups ── -->
   <div class="popup" id="brush-popup">
-    <div class="pop-label">Brush Type</div>
-    <div class="brush-opt on"  data-brush="pen">      <span class="brush-icon">🖊</span>Pen</div>
-    <div class="brush-opt"     data-brush="pencil">   <span class="brush-icon">✏️</span>Pencil</div>
-    <div class="brush-opt"     data-brush="marker">   <span class="brush-icon">🖍</span>Marker</div>
-    <div class="brush-opt"     data-brush="bristle">  <span class="brush-icon">🎨</span>Bristle</div>
-    <div class="brush-opt"     data-brush="flat">     <span class="brush-icon">▬</span>Flat</div>
-    <div class="brush-opt"     data-brush="ink">      <span class="brush-icon">🪶</span>Ink</div>
-    <div class="brush-opt"     data-brush="watercolor"><span class="brush-icon">💧</span>Watercolor</div>
-    <div class="brush-opt"     data-brush="spray">    <span class="brush-icon">🌫</span>Spray</div>
-    <div class="brush-opt"     data-brush="eraser">   <span class="brush-icon">🧽</span>Eraser</div>
+    <div class="pop-label">Brush</div>
+    <div class="brush-grid">
+      <div class="brush-opt on"  data-brush="pen">      <span class="brush-icon">🖊</span><span>Pen</span></div>
+      <div class="brush-opt"     data-brush="pencil">   <span class="brush-icon">✏️</span><span>Pencil</span></div>
+      <div class="brush-opt"     data-brush="marker">   <span class="brush-icon">🖍</span><span>Marker</span></div>
+      <div class="brush-opt"     data-brush="ink">      <span class="brush-icon">🪶</span><span>Ink</span></div>
+      <div class="brush-opt"     data-brush="watercolor"><span class="brush-icon">💧</span><span>Water</span></div>
+      <div class="brush-opt"     data-brush="bristle">  <span class="brush-icon">🎨</span><span>Bristle</span></div>
+      <div class="brush-opt"     data-brush="spray">    <span class="brush-icon">🌫</span><span>Spray</span></div>
+      <div class="brush-opt"     data-brush="line">     <span class="brush-icon">╱</span><span>Line</span></div>
+      <div class="brush-opt"     data-brush="eraser">   <span class="brush-icon">🧽</span><span>Eraser</span></div>
+    </div>
     <div class="pop-divider"></div>
     <div class="pop-label">Smoothing</div>
-    <div style="display:flex;align-items:center;gap:8px;padding:2px 0">
-      <input type="range" id="smooth-range" min="0" max="100" value="50"
-        style="-webkit-appearance:none;flex:1;height:4px;border-radius:2px;background:var(--border);outline:none"/>
-      <span id="smooth-lbl" style="font-size:.76rem;color:var(--text2);font-weight:700;min-width:36px;text-align:right">50%</span>
+    <div class="pop-slider-wrap">
+      <input type="range" class="pop-slider" id="smooth-range" min="0" max="100" value="50"/>
+      <span class="pop-slider-lbl" id="smooth-lbl">50%</span>
     </div>
   </div>
 
@@ -510,16 +529,16 @@ input[type=range].pop-slider::-webkit-slider-thumb {
 
   <div class="popup" id="opacity-popup">
     <div class="pop-label">Brush Size</div>
-    <div id="sz-popup-wrap">
+    <div class="pop-slider-wrap">
       <div id="sz-preview"></div>
-      <input type="range" id="sz-range" min="1" max="60" value="8"/>
-      <span id="sz-lbl">8px</span>
+      <input type="range" class="pop-slider" id="sz-range" min="1" max="60" value="8"/>
+      <span class="pop-slider-lbl" id="sz-lbl">8px</span>
     </div>
     <div class="pop-divider"></div>
     <div class="pop-label">Opacity</div>
-    <div id="op-popup-wrap">
-      <input type="range" id="op-range" min="5" max="100" value="100"/>
-      <span id="op-lbl">100%</span>
+    <div class="pop-slider-wrap">
+      <input type="range" class="pop-slider" id="op-range" min="5" max="100" value="100"/>
+      <span class="pop-slider-lbl" id="op-lbl">100%</span>
     </div>
   </div>
 
@@ -529,23 +548,28 @@ input[type=range].pop-slider::-webkit-slider-thumb {
     <button class="tbtn" id="layer-add" style="height:36px;font-size:.78rem;border-radius:9px;background:var(--surface2);color:var(--text2)">+ Add Layer</button>
   </div>
 
+  <!-- Settings popup — drawer only: word + game actions -->
   <div class="popup" id="settings-popup">
-    <div class="setting-section">Game</div>
+    <div class="setting-section">Word</div>
+    <div style="display:flex;align-items:center;gap:8px;padding:4px 0">
+      <span id="s-current-word" style="flex:1;font-weight:700;color:var(--btn-active);font-size:.95rem;letter-spacing:.06em">—</span>
+      <button id="s-change-word" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:6px 12px;border-radius:9px;font-size:.78rem;font-weight:700;cursor:pointer;white-space:nowrap">🔀 New Word</button>
+    </div>
+    <div class="pop-divider"></div>
+    <div class="setting-section">Round</div>
+    <div class="setting-row" id="s-skip"><span class="s-icon">⏭</span><span class="s-label">Skip word</span></div>
+    <div class="setting-row" id="s-done"><span class="s-icon">✅</span><span class="s-label">Finish drawing</span></div>
+    <div class="pop-divider"></div>
+    <div class="setting-section">View</div>
     <div class="setting-row" id="s-players">    <span class="s-icon">👥</span><span class="s-label">Players</span></div>
     <div class="setting-row" id="s-leaderboard"><span class="s-icon">🏆</span><span class="s-label">Leaderboard</span></div>
-    <div class="pop-divider"></div>
-    <div class="setting-section">Drawing</div>
-    <div class="setting-row" id="s-save-drawing"><span class="s-icon">💾</span><span class="s-label">Save drawing</span></div>
-    <div class="setting-row" id="s-send-bot">   <span class="s-icon">📤</span><span class="s-label">Send to Telegram</span></div>
     <div class="setting-row" id="s-gallery">    <span class="s-icon">🖼</span><span class="s-label">Gallery</span></div>
     <div class="pop-divider"></div>
     <div class="setting-section">Display</div>
+    <div class="setting-row" id="s-save-drawing"><span class="s-icon">💾</span><span class="s-label">Save drawing</span></div>
+    <div class="setting-row" id="s-send-bot">   <span class="s-icon">📤</span><span class="s-label">Send to chat</span></div>
     <div class="setting-row" id="s-theme"><span class="s-icon">☀️</span><span class="s-label">Light mode</span><span class="s-value" id="s-theme-val">Off</span></div>
     <div class="setting-row" id="s-sound"><span class="s-icon">🔊</span><span class="s-label">Sound</span><span class="s-value" id="s-sound-val">On</span></div>
-    <div class="pop-divider"></div>
-    <div class="setting-section">Round</div>
-    <div class="setting-row" id="s-skip">    <span class="s-icon">⏭</span><span class="s-label">Skip word</span></div>
-    <div class="setting-row" id="s-done">    <span class="s-icon">✅</span><span class="s-label">Finish drawing</span></div>
     <div class="pop-divider"></div>
     <div class="setting-section">Developer</div>
     <div class="setting-row" id="s-logs"><span class="s-icon">📋</span><span class="s-label">Server logs</span></div>
@@ -583,15 +607,19 @@ input[type=range].pop-slider::-webkit-slider-thumb {
     </div>
   </div>
 
-  <!-- Topbar -->
+  <!-- Topbar — word left, sync dot, ⋯ menu right -->
   <div id="topbar">
     <div id="conn-dot"></div>
     <div id="word-display">connecting…</div>
     <span id="role-pill">—</span>
-    <span id="round-status" style="font-size:.7rem;color:var(--text2);font-weight:600;white-space:nowrap;flex-shrink:0"></span>
-    <div id="top-actions">
-      <button class="top-icon" id="btn-menu" title="Settings">⋯</button>
+    <!-- Sync state indicator: spinning = uploading, ✓ = saved -->
+    <div id="sync-indicator" title="Sync status">
+      <svg id="sync-spin" width="16" height="16" viewBox="0 0 16 16" style="display:none;animation:spin 1s linear infinite;opacity:.6">
+        <circle cx="8" cy="8" r="6" fill="none" stroke="var(--text2)" stroke-width="2" stroke-dasharray="20 16"/>
+      </svg>
+      <span id="sync-check" style="font-size:.9rem;color:var(--green);display:none">✓</span>
     </div>
+    <button class="top-icon" id="btn-menu" title="Menu">⋯</button>
   </div>
 
   <!-- Canvas area -->
@@ -604,13 +632,11 @@ input[type=range].pop-slider::-webkit-slider-thumb {
     <div id="waiting-overlay">
       <button id="start-btn">▶ NEW ROUND</button>
     </div>
-    <!-- Floating zoom % indicator -->
     <div id="zoom-indicator">100%</div>
-    <!-- Fit-to-screen floating button — appears when zoomed -->
     <button id="btn-fit-canvas" title="Fit screen">⊡</button>
   </div>
 
-  <!-- Chat panel (guesser only) -->
+  <!-- Chat panel (guesser) -->
   <div id="chat-panel">
     <div id="chat-log"></div>
     <div id="guess-row">
@@ -619,19 +645,26 @@ input[type=range].pop-slider::-webkit-slider-thumb {
     </div>
   </div>
 
-  <!-- Toolbar (drawer only) — single row, 6 buttons -->
+  <!-- Toolbar — 2 rows: row1=5 tools, row2=3 actions + sync -->
   <div id="toolbar">
-    <button class="tbtn on" id="btn-brush"   title="Brush">🖊<div class="color-dot" id="color-dot"></div></button>
-    <button class="tbtn"    id="btn-color"   title="Color">🎨</button>
-    <button class="tbtn"    id="btn-opacity" title="Size & Opacity">💧</button>
-    <button class="tbtn"    id="btn-layers"  title="Layers">📋</button>
-    <button class="tbtn"    id="btn-undo"    title="Undo">↩</button>
-    <button class="tbtn"    id="btn-redo"    title="Redo">↪</button>
-    <button class="tbtn tred" id="btn-clear" title="Clear">✕</button>
-    <button class="tbtn"    id="btn-menu2"   title="More">⋯</button>
-    <div id="sz-op-label">
-      <div id="sz-op-size">8px</div>
-      <div id="sz-op-opacity">100%</div>
+    <div class="tb-row">
+      <!-- Row 1: drawing tools -->
+      <button class="tbtn on" id="btn-brush"     title="Brush">🖊<div class="color-dot" id="color-dot"></div></button>
+      <button class="tbtn"    id="btn-color"     title="Color">🎨</button>
+      <button class="tbtn"    id="btn-fill"      title="Fill">🪣</button>
+      <button class="tbtn"    id="btn-eyedrop"   title="Pick color">💉</button>
+      <button class="tbtn"    id="btn-opacity"   title="Size / Opacity">💧</button>
+    </div>
+    <div class="tb-row">
+      <!-- Row 2: history + info -->
+      <button class="tbtn"      id="btn-undo"  title="Undo">↩</button>
+      <button class="tbtn"      id="btn-redo"  title="Redo">↪</button>
+      <button class="tbtn tred" id="btn-clear" title="Clear">✕</button>
+      <button class="tbtn"      id="btn-layers" title="Layers">📋</button>
+      <div id="sz-op-label">
+        <div id="sz-op-size">8px</div>
+        <div id="sz-op-opacity">100%</div>
+      </div>
     </div>
   </div>
 
@@ -897,27 +930,44 @@ function doUndo() {
   rs.push(l.ctx.getImageData(0,0,CW,CH));
   l.ctx.putImageData(us.pop(),0,0);
 }
+function doUndo() {
+  const l=activeLayer(); if (!l) return;
+  const us=getStack(l,undoStacks), rs=getStack(l,redoStacks);
+  if (!us.length) return;
+  rs.push(l.ctx.getImageData(0,0,CW,CH));
+  if (rs.length > 20) rs.shift();
+  l.ctx.putImageData(us.pop(),0,0);
+  if (activeLayer()) activeLayer()._committed = activeCtx().getImageData(0,0,CW,CH);
+  ws?.send(JSON.stringify({type:'undo'}));
+  showSyncDone();
+}
 function doRedo() {
   const l=activeLayer(); if (!l) return;
   const us=getStack(l,undoStacks), rs=getStack(l,redoStacks);
   if (!rs.length) return;
   us.push(l.ctx.getImageData(0,0,CW,CH));
+  if (us.length > 20) us.shift();
   l.ctx.putImageData(rs.pop(),0,0);
+  if (activeLayer()) activeLayer()._committed = activeCtx().getImageData(0,0,CW,CH);
+  // redo = re-send last stroke is complex; just tell server to push canvas
+  ws?.send(JSON.stringify({type:'undo'})); // approximate — server will re-render
+  showSyncDone();
 }
 
 // ── Pro Drawing Engine ────────────────────────────────────────────────────────
 // Per-brush default settings — user can override smoothing/opacity/size
 const BRUSH_DEFAULTS = {
-  pen:     { smoothing:0.5,  alpha:1.0,  widthMult:1.0,  cap:'round',  dash:[],           pressure:true  },
-  pencil:  { smoothing:0.3,  alpha:0.75, widthMult:0.8,  cap:'round',  dash:'auto',       pressure:true  },
-  marker:  { smoothing:0.6,  alpha:0.55, widthMult:1.6,  cap:'round',  dash:[],           pressure:false },
-  bristle: { smoothing:0.2,  alpha:0.5,  widthMult:1.0,  cap:'round',  dash:[],           pressure:true  },
-  flat:    { smoothing:0.4,  alpha:1.0,  widthMult:2.5,  cap:'square', dash:[],           pressure:false },
-  eraser:  { smoothing:0.5,  alpha:1.0,  widthMult:1.0,  cap:'round',  dash:[],           pressure:false },
-  fill:    { smoothing:1.0,  alpha:1.0,  widthMult:1.0,  cap:'round',  dash:[],           pressure:false },
-  spray:   { smoothing:0.0,  alpha:0.08, widthMult:1.0,  cap:'round',  dash:[],           pressure:false },
-  ink:     { smoothing:0.7,  alpha:1.0,  widthMult:1.0,  cap:'round',  dash:[],           pressure:true  },
-  watercolor:{smoothing:0.6, alpha:0.25, widthMult:2.0,  cap:'round',  dash:[],           pressure:true  },
+  pen:     { smoothing:0.5,  alpha:1.0,  widthMult:1.0,  cap:'round',  dash:[],     pressure:true  },
+  pencil:  { smoothing:0.3,  alpha:0.75, widthMult:0.8,  cap:'round',  dash:'auto', pressure:true  },
+  marker:  { smoothing:0.6,  alpha:0.55, widthMult:1.6,  cap:'round',  dash:[],     pressure:false },
+  bristle: { smoothing:0.2,  alpha:0.5,  widthMult:1.0,  cap:'round',  dash:[],     pressure:true  },
+  ink:     { smoothing:0.7,  alpha:1.0,  widthMult:1.0,  cap:'round',  dash:[],     pressure:true  },
+  watercolor:{smoothing:0.6, alpha:0.25, widthMult:2.0,  cap:'round',  dash:[],     pressure:true  },
+  spray:   { smoothing:0.0,  alpha:0.08, widthMult:1.0,  cap:'round',  dash:[],     pressure:false },
+  line:    { smoothing:0.0,  alpha:1.0,  widthMult:1.0,  cap:'round',  dash:[],     pressure:false },
+  eraser:  { smoothing:0.5,  alpha:1.0,  widthMult:1.0,  cap:'round',  dash:[],     pressure:false },
+  fill:    { smoothing:1.0,  alpha:1.0,  widthMult:1.0,  cap:'round',  dash:[],     pressure:false },
+  eyedrop: { smoothing:0.0,  alpha:1.0,  widthMult:1.0,  cap:'round',  dash:[],     pressure:false },
 };
 
 // Per-brush user-adjustable settings stored here
@@ -987,6 +1037,29 @@ function renderStrokeProper(ctx, s) {
     ctx.stroke();
     ctx.restore();
     return;
+  }
+
+  // ── Straight Line ──
+  if (btype === 'line') {
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = opacity;
+    ctx.strokeStyle = color;
+    ctx.lineWidth   = size;
+    ctx.lineCap     = 'round';
+    ctx.lineJoin    = 'round';
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    ctx.lineTo(pts[pts.length-1][0], pts[pts.length-1][1]);
+    ctx.stroke();
+    ctx.restore();
+    return;
+  }
+
+  // ── Fill (flood fill) — handled separately in pointerDown ──
+  if (btype === 'fill' || btype === 'eyedrop') {
+    ctx.restore();
+    return; // these are handled by special click logic
   }
 
   // ── Spray ──
@@ -1147,55 +1220,125 @@ function _drawPath(ctx, pts, smoothing) {
   }
 }
 
-// ── Pointer events ────────────────────────────────────────────────────────────
-let pointerId=null;
+// ── Flood fill (paint bucket) ─────────────────────────────────────────────────
+function floodFill(ctx, startX, startY, fillColorHex, tolerance) {
+  startX = Math.round(startX); startY = Math.round(startY);
+  const w = ctx.canvas.width, h = ctx.canvas.height;
+  if (startX<0||startX>=w||startY<0||startY>=h) return;
+  const imgData = ctx.getImageData(0,0,w,h);
+  const data = imgData.data;
+  const idx  = (startY*w+startX)*4;
+  const sr = data[idx], sg = data[idx+1], sb = data[idx+2], sa = data[idx+3];
+  const fr = parseInt(fillColorHex.slice(1,3),16);
+  const fg = parseInt(fillColorHex.slice(3,5),16);
+  const fb = parseInt(fillColorHex.slice(5,7),16);
+  const fa = 255;
+  if (sr===fr&&sg===fg&&sb===fb&&sa===fa) return; // same color
+  const tol = (tolerance||30)*tolerance||900;
+  function match(i) {
+    const dr=data[i]-sr, dg=data[i+1]-sg, db=data[i+2]-sb, da=data[i+3]-sa;
+    return dr*dr+dg*dg+db*db+da*da <= tol;
+  }
+  const stack=[startX+startY*w];
+  const visited=new Uint8Array(w*h);
+  visited[startX+startY*w]=1;
+  while(stack.length) {
+    const pos=stack.pop();
+    const x=pos%w, y=(pos/w)|0;
+    const i=pos*4;
+    data[i]=fr; data[i+1]=fg; data[i+2]=fb; data[i+3]=fa;
+    const left=x-1, right=x+1, up=y-1, down=y+1;
+    if (left>=0  && !visited[left+y*w]  && match((left+y*w)*4))  { visited[left+y*w]=1;  stack.push(left+y*w); }
+    if (right<w  && !visited[right+y*w] && match((right+y*w)*4)) { visited[right+y*w]=1; stack.push(right+y*w); }
+    if (up>=0    && !visited[x+up*w]    && match((x+up*w)*4))    { visited[x+up*w]=1;    stack.push(x+up*w); }
+    if (down<h   && !visited[x+down*w]  && match((x+down*w)*4))  { visited[x+down*w]=1;  stack.push(x+down*w); }
+  }
+  ctx.putImageData(imgData,0,0);
+}
+
+// ── Eyedropper — pick pixel color ────────────────────────────────────────────
+function pickColor(ctx, x, y) {
+  x=Math.round(x); y=Math.round(y);
+  if(x<0||x>=ctx.canvas.width||y<0||y>=ctx.canvas.height) return null;
+  // Sample from composite of all layers + bg
+  const tmp = document.createElement('canvas');
+  tmp.width=CW; tmp.height=CH;
+  const tc=tmp.getContext('2d');
+  tc.drawImage(document.getElementById('cv-bg'),0,0);
+  layers.forEach(l=>{ if(l.visible) tc.drawImage(l.canvas,0,0); });
+  const d=tc.getImageData(x,y,1,1).data;
+  return '#'+[d[0],d[1],d[2]].map(v=>v.toString(16).padStart(2,'0')).join('');
+}
+let pointerId=null, lineStartX=0, lineStartY=0;
 
 function onPointerDown(e) {
   if (!isDrawer) return;
   if (e.pointerType==='touch' && e.touches?.length>1) return;
   e.preventDefault();
+  const [x,y]=clientToCanvas(e.clientX,e.clientY);
+
+  // ── Eyedropper ──
+  if (brushType==='eyedrop') {
+    const hex=pickColor(activeCtx(),x,y);
+    if(hex){ setColor(hex); showToast('Color picked! 💉','ok'); }
+    return;
+  }
+  // ── Fill ──
+  if (brushType==='fill') {
+    saveUndo();
+    floodFill(activeCtx(),x,y,currentColor,30);
+    if(activeLayer()) activeLayer()._committed=activeCtx().getImageData(0,0,CW,CH);
+    ws?.send(JSON.stringify({type:'draw',stroke:{color:currentColor,size:brushSize,opacity:1,brushType:'fill',smoothing:0,points:[[x,y]]}}));
+    showSyncSpin();
+    return;
+  }
+
   pointerId=e.pointerId;
   canvasArea.setPointerCapture?.(e.pointerId);
-  const [x,y]=clientToCanvas(e.clientX,e.clientY);
   saveUndo();
   isDrawing=true; lastX=x; lastY=y;
-  const sm = brushSettings[brushType]?.smoothing ?? BRUSH_DEFAULTS[brushType]?.smoothing ?? 0.5;
-  currentStroke={
-    color:currentColor, size:brushSize, opacity:brushOpacity,
-    brushType, smoothing:sm, points:[[x,y]]
-  };
-  // Draw first point as a dot
-  renderStrokeProper(activeCtx(), {...currentStroke, points:[[x,y],[x+0.01,y+0.01]]});
+  lineStartX=x; lineStartY=y;
+  const sm=brushSettings[brushType]?.smoothing??BRUSH_DEFAULTS[brushType]?.smoothing??0.5;
+  currentStroke={color:currentColor,size:brushSize,opacity:brushOpacity,brushType,smoothing:sm,points:[[x,y]]};
+  renderStrokeProper(activeCtx(),{...currentStroke,points:[[x,y],[x+0.01,y+0.01]]});
 }
+
 function onPointerMove(e) {
   if (!isDrawing||!isDrawer||e.pointerId!==pointerId) return;
   e.preventDefault();
   const [x,y]=clientToCanvas(e.clientX,e.clientY);
-  // Skip if barely moved (reduces jitter on mobile)
   const dx=x-lastX, dy=y-lastY;
   if (dx*dx+dy*dy < 0.5) return;
+
+  // ── Line tool: show live preview ──
+  if (brushType==='line') {
+    activeCtx().clearRect(0,0,CW,CH);
+    if(activeLayer()?._committed) activeCtx().putImageData(activeLayer()._committed,0,0);
+    renderStrokeProper(activeCtx(),{...currentStroke,points:[[lineStartX,lineStartY],[x,y]]});
+    currentStroke.points=[[ lineStartX,lineStartY],[x,y]];
+    lastX=x; lastY=y;
+    return;
+  }
+
   currentStroke.points.push([x,y]);
   lastX=x; lastY=y;
-  // Redraw whole stroke from scratch for smooth bezier preview
   activeCtx().clearRect(0,0,CW,CH);
-  // Redraw all committed strokes on this layer first
-  if (activeLayer()?._committed) {
-    activeCtx().putImageData(activeLayer()._committed, 0, 0);
-  }
-  renderStrokeProper(activeCtx(), currentStroke);
-  // Send partial stroke every 8 points
-  if (currentStroke.points.length % 8 === 0) {
-    ws?.send(JSON.stringify({type:'draw', stroke:{...currentStroke}}));
+  if(activeLayer()?._committed) activeCtx().putImageData(activeLayer()._committed,0,0);
+  renderStrokeProper(activeCtx(),currentStroke);
+  if(currentStroke.points.length%8===0){
+    ws?.send(JSON.stringify({type:'draw',stroke:{...currentStroke}}));
+    showSyncSpin();
   }
 }
+
 function onPointerUp(e) {
   if (!isDrawing||!isDrawer) return;
   isDrawing=false; pointerId=null;
-  if (currentStroke?.points.length>0) {
-    renderStrokeProper(activeCtx(), currentStroke);
-    // Save committed state for next stroke preview
-    if (activeLayer()) activeLayer()._committed = activeCtx().getImageData(0,0,CW,CH);
-    ws?.send(JSON.stringify({type:'draw', stroke:currentStroke}));
+  if(currentStroke?.points.length>0){
+    renderStrokeProper(activeCtx(),currentStroke);
+    if(activeLayer()) activeLayer()._committed=activeCtx().getImageData(0,0,CW,CH);
+    ws?.send(JSON.stringify({type:'draw',stroke:currentStroke}));
+    showSyncSpin();
   }
   currentStroke=null;
 }
@@ -1300,9 +1443,20 @@ function setColor(hex) {
 document.getElementById('custom-color').addEventListener('input',e=>setColor(e.target.value));
 
 function updateBrushBtn() {
-  const ICONS={pen:'🖊',pencil:'✏️',marker:'🖍',bristle:'🎨',flat:'▬',ink:'🪶',watercolor:'💧',spray:'🌫',eraser:'🧽'};
+  const ICONS={pen:'🖊',pencil:'✏️',marker:'🖍',bristle:'🎨',ink:'🪶',watercolor:'💧',spray:'🌫',line:'╱',eraser:'🧽',fill:'🪣',eyedrop:'💉'};
   const btn=document.getElementById('btn-brush');
-  btn.innerHTML=(ICONS[brushType]||'🖊')+`<div class="color-dot" id="color-dot" style="background:${currentColor}"></div>`;
+  if(btn) btn.innerHTML=(ICONS[brushType]||'🖊')+`<div class="color-dot" id="color-dot" style="background:${currentColor}"></div>`;
+  // Highlight fill/eyedrop toolbar buttons
+  document.getElementById('btn-fill')?.classList.toggle('on', brushType==='fill');
+  document.getElementById('btn-eyedrop')?.classList.toggle('on', brushType==='eyedrop');
+  document.getElementById('btn-brush')?.classList.toggle('on', brushType!=='fill'&&brushType!=='eyedrop');
+}
+
+function setBrushType(type) {
+  brushType=type;
+  document.querySelectorAll('.brush-opt').forEach(b=>b.classList.toggle('on',b.dataset.brush===type));
+  updateBrushBtn();
+  updateSmoothSlider();
 }
 
 // ── Brush panel ───────────────────────────────────────────────────────────────
@@ -1315,12 +1469,8 @@ function updateSmoothSlider() {
 
 document.querySelectorAll('.brush-opt').forEach(el=>{
   el.addEventListener('click',()=>{
-    brushType=el.dataset.brush;
-    document.querySelectorAll('.brush-opt').forEach(b=>b.classList.remove('on'));
-    el.classList.add('on');
-    updateBrushBtn();
-    updateSmoothSlider();
-    // Don't close panel so user can also adjust smoothing
+    setBrushType(el.dataset.brush);
+    // Don't close — user may also adjust smoothing
   });
 });
 
@@ -1368,14 +1518,82 @@ document.getElementById('btn-color')  .addEventListener('click',()=>togglePanel(
 document.getElementById('btn-opacity').addEventListener('click',()=>togglePanel('opacity-popup'));
 document.getElementById('btn-layers') .addEventListener('click',()=>togglePanel('layer-popup'));
 document.getElementById('btn-menu')   .addEventListener('click',()=>togglePanel('settings-popup'));
-document.getElementById('btn-menu2')  .addEventListener('click',()=>togglePanel('settings-popup'));
 document.getElementById('btn-undo')   .addEventListener('click',doUndo);
 document.getElementById('btn-redo')   .addEventListener('click',doRedo);
 document.getElementById('btn-clear')  .addEventListener('click',()=>{
   if(!isDrawer) return;
   saveUndo(); clearAll();
   ws?.send(JSON.stringify({type:'clear'}));
+  showSyncSpin();
 });
+
+// Fill button — activates fill mode (sets brushType to fill)
+document.getElementById('btn-fill')?.addEventListener('click',()=>{
+  setBrushType('fill');
+  closeAllPanels();
+  showToast('Fill mode — tap to flood fill 🪣');
+});
+// Eyedropper button — activates eyedrop mode
+document.getElementById('btn-eyedrop')?.addEventListener('click',()=>{
+  setBrushType('eyedrop');
+  closeAllPanels();
+  showToast('Pick a color from canvas 💉');
+});
+
+// ── Sync indicator ────────────────────────────────────────────────────────────
+let _syncCheckTimer=null;
+function showSyncSpin() {
+  const spin=document.getElementById('sync-spin');
+  const chk =document.getElementById('sync-check');
+  if(spin) spin.style.display='block';
+  if(chk)  chk.style.display='none';
+  clearTimeout(_syncCheckTimer);
+}
+function showSyncDone() {
+  const spin=document.getElementById('sync-spin');
+  const chk =document.getElementById('sync-check');
+  if(spin) spin.style.display='none';
+  if(chk)  chk.style.display='inline';
+  clearTimeout(_syncCheckTimer);
+  _syncCheckTimer=setTimeout(()=>{ if(chk) chk.style.display='none'; },2000);
+}
+
+// ── Gallery — per group ───────────────────────────────────────────────────────
+function galleryKey(){ return 'drawguess_gallery__'+(myRoom||'default'); }
+function saveToGallery(word,drawerName){
+  try{
+    const cvs=layers[0]?.canvas;
+    if(!cvs) return;
+    const dataUrl=cvs.toDataURL('image/jpeg',.7);
+    const gallery=JSON.parse(localStorage.getItem(galleryKey())||'[]');
+    gallery.unshift({word,drawerName,date:new Date().toISOString(),img:dataUrl});
+    localStorage.setItem(galleryKey(),JSON.stringify(gallery.slice(0,20)));
+  }catch(e){console.warn('[gallery]',e.message);}
+}
+function openGallery(){
+  const gallery=JSON.parse(localStorage.getItem(galleryKey())||'[]');
+  if(!gallery.length){showToast('Gallery is empty','warn');return;}
+  closeAllPanels();
+  const overlay=document.createElement('div');
+  overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:900;overflow-y:auto;padding:16px;backdrop-filter:blur(8px)';
+  overlay.innerHTML=`
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <div style="font-family:Syne,sans-serif;font-size:1.1rem;font-weight:800;color:var(--btn-active)">🖼 Gallery</div>
+      <button id="gc" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:6px 14px;border-radius:20px;cursor:pointer;font-size:.84rem">✕ Close</button>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px">
+      ${gallery.map(g=>`
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden">
+          <img src="${g.img}" style="width:100%;display:block"/>
+          <div style="padding:6px 8px">
+            <div style="font-weight:700;font-size:.8rem;color:var(--btn-active)">${g.word}</div>
+            <div style="font-size:.7rem;color:var(--text2)">${g.drawerName} · ${new Date(g.date).toLocaleDateString()}</div>
+          </div>
+        </div>`).join('')}
+    </div>`;
+  document.body.appendChild(overlay);
+  document.getElementById('gc').addEventListener('click',()=>overlay.remove());
+}
 
 // Prevent Telegram Mini App dismiss gesture (swipe down to close)
 // by blocking touchmove on the whole document when a touch started on canvas
@@ -1432,6 +1650,12 @@ document.getElementById('s-logs').addEventListener('click',()=>{
 });
 document.getElementById('s-gallery').addEventListener('click',()=>{
   openGallery(); closeAllPanels();
+});
+document.getElementById('s-change-word')?.addEventListener('click',()=>{
+  if(!isDrawer){showToast('Only the drawer can change the word','warn');return;}
+  ws?.send(JSON.stringify({type:'change_word'}));
+  showToast('New word coming…');
+  closeAllPanels();
 });
 
 function sendDrawingToTelegram() {
@@ -1608,11 +1832,8 @@ function setRole(role, wordOrHint, round){
   tb.classList.toggle('visible', isDrawer);
   tb.style.display = isDrawer ? 'flex' : 'none';
 
-  // Always show chat panel for both roles
   const cp=document.getElementById('chat-panel');
   cp.classList.add('visible');
-
-  // Hide guess input for drawer (they draw, not guess)
   document.getElementById('guess-row').style.display = isDrawer ? 'none' : 'flex';
 
   const pill=document.getElementById('role-pill');
@@ -1623,14 +1844,15 @@ function setRole(role, wordOrHint, round){
   if(isDrawer){
     currentWord=wordOrHint;
     wd.textContent=`✏️ ${wordOrHint}`;
+    // Update settings panel word display
+    const sw=document.getElementById('s-current-word');
+    if(sw) sw.textContent=wordOrHint.toUpperCase();
     showToast(`Your word: ${wordOrHint}`,'ok');
-    document.getElementById('round-status').textContent='You are drawing!';
     sfxRoundStart();
   } else {
     currentWord='';
     const hint = typeof wordOrHint==='number' ? '_ '.repeat(wordOrHint).trim() : wordOrHint;
     wd.textContent=hint;
-    document.getElementById('round-status').textContent='Guess the word!';
     setTimeout(fitCanvas, 50);
   }
   if(round) addChat('sys',`Round ${round} — let's go!`);
@@ -1674,45 +1896,6 @@ function applyTheme(dark){
 }
 applyTheme(localStorage.getItem('theme')!=='light');
 
-// ── Gallery ───────────────────────────────────────────────────────────────────
-const GALLERY_KEY='drawguess_gallery';
-function saveToGallery(word,drawerName){
-  try{
-    const temp=document.createElement('canvas');temp.width=CW;temp.height=CH;
-    const tctx=temp.getContext('2d');tctx.fillStyle='#fff';tctx.fillRect(0,0,CW,CH);
-    layers.forEach(l=>{if(l.visible)tctx.drawImage(l.canvas,0,0);});
-    const dataUrl=temp.toDataURL('image/png');
-    const gallery=JSON.parse(localStorage.getItem(GALLERY_KEY)||'[]');
-    gallery.unshift({word,drawerName,date:new Date().toISOString(),img:dataUrl});
-    localStorage.setItem(GALLERY_KEY,JSON.stringify(gallery.slice(0,20)));
-  }catch(e){console.warn('[gallery]',e.message);}
-}
-function openGallery(){
-  const gallery=JSON.parse(localStorage.getItem(GALLERY_KEY)||'[]');
-  if(!gallery.length){showToast('Gallery is empty','warn');return;}
-  const overlay=document.createElement('div');
-  overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:600;overflow-y:auto;padding:16px;backdrop-filter:blur(8px)';
-  overlay.innerHTML=`
-    <div style="max-width:560px;margin:0 auto">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-        <h2 style="font-family:Syne,sans-serif;color:var(--btn-active);font-size:1.1rem">🖼 Gallery</h2>
-        <button id="gc" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:6px 14px;border-radius:20px;cursor:pointer">✕ Close</button>
-      </div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px">
-        ${gallery.map(g=>`
-          <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden">
-            <img src="${g.img}" style="width:100%;display:block"/>
-            <div style="padding:6px 8px">
-              <div style="font-weight:700;font-size:.8rem;color:var(--btn-active)">${g.word}</div>
-              <div style="font-size:.7rem;color:var(--text2)">${g.drawerName} · ${new Date(g.date).toLocaleDateString()}</div>
-            </div>
-          </div>`).join('')}
-      </div>
-    </div>`;
-  document.body.appendChild(overlay);
-  document.getElementById('gc').addEventListener('click',()=>overlay.remove());
-}
-
 // ── Show/hide start button ────────────────────────────────────────────────────
 // ✅ FIX: defined at TOP LEVEL (was incorrectly inside connect())
 function showStartBtn(show) {
@@ -1751,11 +1934,13 @@ function connect(){
         break;
       case 'draw':
         renderStroke(m.stroke,activeCtx());
+        if(isDrawer) showSyncDone(); // server confirmed stroke
         break;
       case 'clear':
         clearAll();
         getStack(activeLayer(),undoStacks).length=0;
         getStack(activeLayer(),redoStacks).length=0;
+        if(isDrawer) showSyncDone();
         break;
       case 'snapshot':{
         const img=new Image();
@@ -1810,7 +1995,7 @@ function connect(){
         document.getElementById('word-display').textContent='waiting…';
         document.getElementById('role-pill').className='role-pill';
         document.getElementById('role-pill').textContent='—';
-        document.getElementById('round-status').textContent='Use /startgame to play again!';
+        document.getElementById('word-display').textContent='waiting…';
         if (!m.drawerFinish || !isDrawer) {
           document.getElementById('toolbar').classList.remove('visible');
           document.getElementById('toolbar').style.display='none';

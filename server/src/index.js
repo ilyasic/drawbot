@@ -472,7 +472,7 @@ bot.action(/^claim_draw:(.+)$/,async(ctx)=>{
   game.strokes=[];game.strokesUndo=[];game.roundStartTime=Date.now();persistGame(game);
   console.log(`[game] Drawer: ${uname}(${tgId}) word=${game.word} chatId=${chatId}`);
   await ctx.answerCbQuery('✅ Open your canvas!');
-  const url=`https://t.me/${botUsername}/${WEBAPP_SHORT_NAME}?startapp=${encodeURIComponent(`${chatId}__${tgId}__${uname}`)}`;
+  const url=`https://t.me/${botUsername}/${WEBAPP_SHORT_NAME}?startapp=${encodeURIComponent(`${chatId}__${tgId}`)}`;
   try{await bot.telegram.editMessageText(chatId,game.inviteMessageId,null,
     `🎨 *${uname}* is drawing!\n🔤 \`${buildHint(game.word,game.hintRevealed)}\`  —  ${game.word.length} letters\n\n💬 Type your guess!`,
     {parse_mode:'Markdown',...Markup.inlineKeyboard([[Markup.button.url('🖌 Open Canvas',url)]])});}catch(e){console.error('[editInvite]',e.message);}

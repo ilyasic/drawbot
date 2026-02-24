@@ -1434,46 +1434,50 @@ function getTgId(){
   return'';
 }
 function parseStart(){
-  // Only extract roomId from startapp — ignore the tgId/name embedded in URL
+  // Get roomId from URL — works for both drawer and guessers
+  // Telegram passes startapp as a URL query param ?startapp=... for everyone who opens the link
   let raw='';
-  if(tg){const sp=tg.initDataUnsafe?.start_param;if(sp)try{raw=decodeURIComponent(sp);}catch{raw=sp;}}
-  if(!raw){const u=new URLSearchParams(location.search);raw=u.get('startapp')||u.get('room')||'';try{raw=decodeURIComponent(raw);}catch{}}
-  const p=raw.split('__');
-  return{roomId:p[0]||''};
+  // 1. Try tg.initDataUnsafe.start_param (works for drawer who clicked the button)
+  try{if(tg?.initDataUnsafe?.start_param)raw=decodeURIComponent(tg.initDataUnsafe.start_param);}catch{}
+  // 2. Try URL search params ?startapp= (works for everyone — Telegram appends this)
+  if(!raw){try{raw=decodeURIComponent(new URLSearchParams(location.search).get('startapp')||'');}catch{}}
+  // 3. Try URL hash #startapp=...
+  if(!raw){try{raw=decodeURIComponent(new URLSearchParams(location.hash.slice(1)).get('startapp')||'');}catch{}}
+  // 4. Try tg.initData query string
+  if(!raw&&tg?.initData){try{raw=decodeURIComponent(new URLSearchParams(tg.initData).get('start_param')||'');}catch{}}
+  // roomId is always the first segment before __
+  const roomId=(raw.split('__')[0]||'').trim();
+  return{roomId};
 }
-let _joined=false;
+let _joined=false,_canvasInited=false;
+function initOnce(){
+  if(_canvasInited)return;_canvasInited=true;
+  initCanvases();renderPalette();syncPickerFromColor(currentColor);updateSzLbl();
+  setTimeout(fitCanvas,100);setTimeout(fitCanvas,400);setTimeout(fitCanvas,800);
+}
 function doJoin(roomId,playerName,tgId){
+  if(_joined)return;_joined=true;
   myName=playerName;myRoom=roomId;myTgId=tgId||'';
   try{sessionStorage.setItem('dgN',myName);sessionStorage.setItem('dgR',myRoom);sessionStorage.setItem('dgT',myTgId);}catch{}
   addLog(`Joining room=${myRoom} name=${myName} tgId=${myTgId||'anon'}`,'system');
   document.getElementById('join-overlay').style.display='none';
-  if(!_joined){_joined=true;initCanvases();renderPalette();syncPickerFromColor(currentColor);updateSzLbl();setTimeout(fitCanvas,100);setTimeout(fitCanvas,400);setTimeout(fitCanvas,800);}
-  connect();
+  initOnce();connect();
 }
 (function tryAuto(attempt){
   const parsed=parseStart();
   const tgName=getTgName();
   const tgId=getTgId();
-  // If we have a roomId, hide join overlay immediately and show a loading state
-  if(parsed.roomId&&attempt===0){
-    document.getElementById('join-overlay').style.display='none';
-    document.getElementById('word-display').textContent='connecting…';
-    initCanvases();renderPalette();syncPickerFromColor(currentColor);updateSzLbl();
-    setTimeout(fitCanvas,100);
-  }
-  if(parsed.roomId&&tgName&&tgId){
-    doJoin(parsed.roomId,tgName,tgId);return;
-  }
-  if(parsed.roomId&&tgName&&!tgId){
-    doJoin(parsed.roomId,tgName,'');return;
-  }
-  if(attempt<25){setTimeout(()=>tryAuto(attempt+1),100);return;}
-  // Last resort fallback
   if(parsed.roomId){
-    const name=tgName||('Player'+~~(Math.random()*900+100));
-    doJoin(parsed.roomId,name,tgId);
+    // Show canvas immediately so user doesn't see black screen
+    document.getElementById('join-overlay').style.display='none';
+    initOnce();
+    if(tgName){doJoin(parsed.roomId,tgName,tgId);return;}
+    if(attempt<30){setTimeout(()=>tryAuto(attempt+1),100);return;}
+    // After 3s still no name — use fallback
+    doJoin(parsed.roomId,'Player'+~~(Math.random()*900+100),tgId);
   }else{
-    // No roomId — show join form
+    // No roomId in URL — show manual join form
+    if(attempt<15){setTimeout(()=>tryAuto(attempt+1),100);return;}
     document.getElementById('join-overlay').style.display='flex';
     const n=tgName||'';if(n)document.getElementById('name-in').value=n;
   }

@@ -762,6 +762,9 @@ function renderStroke(ctx,s){
         sm=s.smoothing??(BD[bt]?.smoothing??.5),
         bd=BD[bt]||BD.pen,rng=makePRNG(s.seed||12345);
   ctx.save();
+  ctx.setLineDash([]);
+  ctx.globalAlpha=1;
+  ctx.globalCompositeOperation='source-over';
 
   // Mask paint: black=hide, white=reveal on mask canvas
   if(s.isMask){
@@ -824,10 +827,13 @@ function renderStroke(ctx,s){
   }
   if(bt==='pencil'){
     ctx.globalCompositeOperation='source-over';ctx.strokeStyle=col;ctx.lineCap='round';ctx.lineJoin='round';
-    ctx.setLineDash([sz*.5,sz*.2]);ctx.lineWidth=sz*bd.widthMult;ctx.globalAlpha=op*bd.alpha*fl;
-    for(let p=0;p<2;p++){ctx.beginPath();ctx.moveTo(pts[0][0]+(rng()-.5)*1.5,pts[0][1]+(rng()-.5)*1.5);
-      for(let i=1;i<pts.length;i++)ctx.lineTo(pts[i][0]+(rng()-.5)*1.5,pts[i][1]+(rng()-.5)*1.5);ctx.stroke();}
-    ctx.setLineDash([]);ctx.restore();return;
+    ctx.setLineDash([]);ctx.lineWidth=sz*bd.widthMult;
+    for(let pass=0;pass<2;pass++){
+      ctx.globalAlpha=op*bd.alpha*fl*(pass===0?0.7:0.45);
+      ctx.beginPath();ctx.moveTo(pts[0][0]+(rng()-.5)*1.5,pts[0][1]+(rng()-.5)*1.5);
+      for(let i=1;i<pts.length;i++)ctx.lineTo(pts[i][0]+(rng()-.5)*1.5,pts[i][1]+(rng()-.5)*1.5);ctx.stroke();
+    }
+    ctx.restore();return;
   }
   // Pen / Marker
   ctx.globalCompositeOperation='source-over';ctx.globalAlpha=op*bd.alpha*fl;

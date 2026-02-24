@@ -1427,7 +1427,10 @@ function connect(){
         img.src=m.data;addLog('Snapshot received','system');break;
       }
       case'role':
-        clearAll();setRole(m.role,m.role==='drawer'?m.word:m.hint,m.round);break;
+        // Don't clear canvas if reconnecting mid-draw (strokes already restored by init)
+        if(m.role==='drawer'&&!m.reconnect)clearAll();
+        setRole(m.role,m.role==='drawer'?m.word:m.hint,m.round);
+        break;
       case'hint':
         document.getElementById('word-display').textContent=m.hint;
         addChat('sys',`💡 Hint: ${m.hint}`);showToast('💡 New hint!');sfxHint();

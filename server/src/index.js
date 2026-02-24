@@ -97,7 +97,7 @@ function rowToGame(row) {
   g.word             = row.word || null;
   g.hintRevealed     = JSON.parse(row.hint_revealed || '[]');
   g.strokes          = JSON.parse(row.strokes || '[]');
-  g.strokesUndo      = [];
+  g.strokesUndo      = [...g.strokes];
   g.roundStartTime   = row.round_start || 0;
   g.firstStrokeDrawn = row.first_stroke === 1;
   g.lastHintAt       = row.last_hint_at || 0;
@@ -126,20 +126,9 @@ app.post(WEBHOOK_PATH, async(req,res)=>{
   try { await bot.handleUpdate(req.body); } catch(e){ console.error('[webhook]',e.message); }
 });
 app.get(WEBHOOK_PATH, (_req,res)=>res.send('Webhook active ✅'));
+app.use(express.static(path.join(__dirname,'../../client')));
 
-// ── FIX: log the static path so we can verify it on Railway ──────────────────
-const clientPath = path.join(__dirname, '../../client');
-console.log(`[static] serving files from: ${clientPath}`);
-app.use(express.static(clientPath));
-
-// ── FIX: explicit GET / handler so we can see in logs if page is being served ─
-app.get('/', (req, res) => {
-  const filePath = path.join(clientPath, 'index.html');
-  console.log(`[GET /] from ${req.headers['x-forwarded-for'] || req.ip} serving ${filePath}`);
-  res.sendFile(filePath);
-});
-
-// ── Words ─────────────────────────────────────────────────────────────────────
+// ── Words ────────────────────────────────────────────────────────────────────
 const WORDS=['cat','dog','sun','car','fish','bird','moon','tree','house','flower','apple','pizza',
   'smile','heart','star','cake','boat','rain','snow','book','guitar','elephant','rainbow','castle',
   'dragon','piano','volcano','butterfly','telescope','snowman','dinosaur','waterfall','helicopter',
@@ -148,7 +137,7 @@ const WORDS=['cat','dog','sun','car','fish','bird','moon','tree','house','flower
   'alien','crown','bridge'];
 function pickWord(){ return WORDS[Math.floor(Math.random()*WORDS.length)]; }
 
-// ── Deterministic PRNG (mulberry32) ──────────────────────────────────────────
+// ── Deterministic PRNG (mulberry32) — IDENTICAL on client and server ──────────
 function makePRNG(seed){
   let s=seed>>>0;
   return function(){
@@ -196,34 +185,26 @@ function renderStroke(ctx,s){
   const pts=s.points||[];
   const bt0=s.brushType||'pen';
   if(pts.length<1)return;
+  if(pts.length<2&&bt0!=='fill'&&bt0!=='eyedrop')return;
   const bt=s.brushType||'pen',sz=s.size||6,col=s.color||'#000',
         op=s.opacity!=null?s.opacity:1.0,fl=s.flow!=null?s.flow:0.8,
         sm=s.smoothing!=null?s.smoothing:(BD[bt]?.smoothing??0.5),
         bd=BD[bt]||BD.pen,rng=makePRNG(s.seed||12345);
   ctx.save();
+  // Always reset these — @napi-rs/canvas ctx.restore() doesn't always clean up lineDash
   ctx.setLineDash([]);
   ctx.globalAlpha=1;
   ctx.globalCompositeOperation='source-over';
-  const isDot = pts.length===1 || (pts.length===2 &&
-    Math.abs(pts[1][0]-pts[0][0])<1.5 && Math.abs(pts[1][1]-pts[0][1])<1.5);
-  if(isDot && bt0!=='fill' && bt0!=='eyedrop' && bt0!=='eraser'){
-    const r = sz * (bd.widthMult||1) * 0.5;
-    ctx.globalAlpha = op * (bd.alpha||1) * (fl||1);
-    ctx.fillStyle = col;
-    ctx.beginPath();
-    ctx.arc(pts[0][0], pts[0][1], Math.max(0.5, r), 0, Math.PI*2);
-    ctx.fill();
-    ctx.restore(); return;
-  }
-  if(pts.length<2 && bt0!=='fill' && bt0!=='eyedrop') { ctx.restore(); return; }
+
   if(bt==='eraser'){
     ctx.globalCompositeOperation='destination-out';ctx.globalAlpha=1;
     ctx.strokeStyle='rgba(0,0,0,1)';ctx.lineWidth=sz*bd.widthMult;
-    ctx.lineCap='round';ctx.lineJoin='round';
+    ctx.lineCap='round';ctx.lineJoin='round';ctx.setLineDash([]);
     drawPath(ctx,pts,sm);ctx.stroke();ctx.restore();return;
   }
   if(bt==='line'){
-    ctx.globalAlpha=op*fl;ctx.strokeStyle=col;ctx.lineWidth=sz;ctx.lineCap='round';
+    ctx.globalCompositeOperation='source-over';ctx.globalAlpha=op*fl;
+    ctx.strokeStyle=col;ctx.lineWidth=sz;ctx.lineCap='round';ctx.setLineDash([]);
     ctx.beginPath();ctx.moveTo(pts[0][0],pts[0][1]);
     ctx.lineTo(pts[pts.length-1][0],pts[pts.length-1][1]);ctx.stroke();
     ctx.restore();return;
@@ -251,23 +232,27 @@ function renderStroke(ctx,s){
     ctx.restore();return;
   }
   if(bt==='eyedrop'){ctx.restore();return;}
+
+  // ── Airbrush: real foggy mist ──
   if(bt==='airbrush'){
-    ctx.fillStyle=col;
+    ctx.globalCompositeOperation='source-over';ctx.fillStyle=col;
     const rad=sz*3.5,count=Math.floor(rad*rad*0.35*fl);
     for(let i=0;i<pts.length;i++){
       for(let d=0;d<count;d++){
         const u1=Math.max(rng(),1e-10),u2=rng();
         const mag=Math.sqrt(-2*Math.log(u1))*Math.cos(2*Math.PI*u2);
         const r=Math.abs(mag)*rad*0.45,angle=rng()*Math.PI*2;
+        const px=pts[i][0]+Math.cos(angle)*r,py=pts[i][1]+Math.sin(angle)*r;
         const norm=Math.min(r/rad,1);
         ctx.globalAlpha=op*bd.alpha*(1-norm*norm*norm)*0.55;
-        ctx.beginPath();ctx.arc(pts[i][0]+Math.cos(angle)*r,pts[i][1]+Math.sin(angle)*r,0.3+rng()*1.8+norm*0.8,0,Math.PI*2);ctx.fill();
+        ctx.beginPath();ctx.arc(px,py,0.3+rng()*1.8+norm*0.8,0,Math.PI*2);ctx.fill();
       }
     }
     ctx.restore();return;
   }
+  // Watercolor
   if(bt==='watercolor'){
-    ctx.strokeStyle=col;ctx.lineCap='round';ctx.lineJoin='round';
+    ctx.globalCompositeOperation='source-over';ctx.strokeStyle=col;ctx.lineCap='round';ctx.lineJoin='round';
     for(let l=0;l<6;l++){
       ctx.globalAlpha=op*bd.alpha*fl/6;ctx.lineWidth=sz*bd.widthMult*(0.7+rng()*0.6);
       ctx.beginPath();ctx.moveTo(pts[0][0]+(rng()-.5)*sz*.3,pts[0][1]+(rng()-.5)*sz*.3);
@@ -276,8 +261,9 @@ function renderStroke(ctx,s){
     }
     ctx.restore();return;
   }
+  // Bristle
   if(bt==='bristle'){
-    ctx.lineCap='round';ctx.lineJoin='round';
+    ctx.globalCompositeOperation='source-over';ctx.lineCap='round';ctx.lineJoin='round';
     const br=Math.max(4,Math.floor(sz*0.7));ctx.lineWidth=Math.max(0.8,sz/br*1.2);
     for(let b=0;b<br;b++){
       ctx.globalAlpha=op*bd.alpha*fl*(0.5+rng()*.5);ctx.strokeStyle=col;
@@ -288,17 +274,20 @@ function renderStroke(ctx,s){
     }
     ctx.restore();return;
   }
+  // Ink
   if(bt==='ink'){
-    ctx.strokeStyle=col;ctx.lineCap='round';ctx.lineJoin='round';
+    ctx.globalCompositeOperation='source-over';ctx.strokeStyle=col;ctx.lineCap='round';ctx.lineJoin='round';ctx.setLineDash([]);
     for(let i=1;i<pts.length;i++){
       const p=pressure(pts,i);ctx.globalAlpha=op*fl*Math.min(1,p*0.9+0.1);
       ctx.lineWidth=sz*p*bd.widthMult;ctx.beginPath();ctx.moveTo(pts[i-1][0],pts[i-1][1]);ctx.lineTo(pts[i][0],pts[i][1]);ctx.stroke();
     }
     ctx.restore();return;
   }
+  // Pencil — textured via alpha variation, NO lineDash (unreliable cross-platform)
   if(bt==='pencil'){
-    ctx.strokeStyle=col;ctx.lineCap='round';ctx.lineJoin='round';
-    ctx.lineWidth=sz*bd.widthMult;
+    ctx.globalCompositeOperation='source-over';ctx.strokeStyle=col;ctx.lineCap='round';ctx.lineJoin='round';
+    ctx.setLineDash([]);ctx.lineWidth=sz*bd.widthMult;
+    // Two passes with slight jitter — gives pencil texture
     for(let pass=0;pass<2;pass++){
       ctx.globalAlpha=op*bd.alpha*fl*(pass===0?0.7:0.45);
       ctx.beginPath();ctx.moveTo(pts[0][0]+(rng()-.5)*1.5,pts[0][1]+(rng()-.5)*1.5);
@@ -307,8 +296,9 @@ function renderStroke(ctx,s){
     }
     ctx.restore();return;
   }
-  ctx.globalAlpha=op*bd.alpha*fl;
-  ctx.strokeStyle=col;ctx.lineCap=bd.cap||'round';ctx.lineJoin='round';
+  // Pen/Marker
+  ctx.globalCompositeOperation='source-over';ctx.globalAlpha=op*bd.alpha*fl;
+  ctx.strokeStyle=col;ctx.lineCap=bd.cap||'round';ctx.lineJoin='round';ctx.setLineDash([]);
   if(bd.pressure&&bt!=='marker'){
     for(let i=1;i<pts.length;i++){
       const p=pressure(pts,i);ctx.lineWidth=sz*bd.widthMult*p;
@@ -329,10 +319,8 @@ async function renderPNG(strokes){
 const games=new Map();
 function makeGame(chatId){
   return{chatId,phase:'idle',drawerTgId:null,drawerName:'',drawerWsId:null,
-    word:null,hintRevealed:[],strokes:[],strokesUndo:[],
-    roundStartTime:0,firstStrokeDrawn:false,lastHintAt:0,
-    roundTimer:null,hintTimer:null,updateTimer:null,
-    lastPushAt:0,retryAfterMs:0,
+    word:null,hintRevealed:[],strokes:[],strokesUndo:[],roundStartTime:0,
+    firstStrokeDrawn:false,lastHintAt:0,roundTimer:null,hintTimer:null,updateTimer:null,
     inviteMessageId:null,liveMessageId:null,scores:new Map(),clients:new Map()};
 }
 function getOrMakeGame(chatId){
@@ -382,17 +370,11 @@ function revealNextHint(game){
 
 async function pushCanvas(game){
   if(game.phase!=='drawing'||!game.word)return;
-  const now=Date.now();
-  if(game.retryAfterMs>0&&now<game.lastPushAt+game.retryAfterMs){
-    scheduleUpdate(game,game.lastPushAt+game.retryAfterMs-now+200,true);
-    return;
-  }
   let png;try{png=await renderPNG(game.strokes);}catch(e){console.error('[render]',e.message);return;}
   const hint=buildHint(game.word,game.hintRevealed);
   const caption=`🎨 *${game.drawerName}* is drawing!\n🔤 \`${hint}\`  —  ${game.word.length} letters\n\n💬 Type your guess in the chat!`;
-  const cd=Math.ceil((HINT_COOLDOWN_MS-(now-game.lastHintAt))/1000);
+  const cd=Math.ceil((HINT_COOLDOWN_MS-(Date.now()-game.lastHintAt))/1000);
   const kb=Markup.inlineKeyboard([[Markup.button.callback(cd<=0?'💡 Hint':`⏳ Hint (${cd}s)`,`hint:${game.chatId}`)]]);
-  game.lastPushAt=Date.now();game.retryAfterMs=0;
   try{
     if(game.liveMessageId){
       await bot.telegram.editMessageMedia(game.chatId,game.liveMessageId,null,{type:'photo',media:{source:png,filename:'drawing.png'},caption,parse_mode:'Markdown'},kb);
@@ -402,12 +384,6 @@ async function pushCanvas(game){
     }
   }catch(e){
     if(/not modified/i.test(e.message))return;
-    const retryMatch=e.message.match(/retry after (\d+)/i);
-    if(retryMatch){
-      const secs=parseInt(retryMatch[1])+1;game.retryAfterMs=secs*1000;
-      console.log(`[pushCanvas] 429 — backing off ${secs}s`);
-      scheduleUpdate(game,secs*1000,true);return;
-    }
     console.error('[pushCanvas]',e.message);
     if(/not found|deleted|message to edit|socket hang up|ECONNRESET|ETIMEDOUT/i.test(e.message)){
       game.liveMessageId=null;
@@ -415,9 +391,10 @@ async function pushCanvas(game){
     }
   }
 }
-
-function scheduleUpdate(game,delay=2000,force=false){
+function scheduleUpdate(game,delay=1500,force=false){
   if(!game.firstStrokeDrawn)return;
+  // force=true (undo/redo): always cancel and restart timer with current state
+  // force=false (draw): only schedule if no timer already running (debounce)
   if(force){clearTimeout(game.updateTimer);game.updateTimer=null;}
   if(game.updateTimer)return;
   game.updateTimer=setTimeout(async()=>{game.updateTimer=null;await pushCanvas(game);},delay);
@@ -464,13 +441,11 @@ bot.command('startgame',async(ctx)=>{
   game.inviteMessageId=msg.message_id;persistGame(game);
   console.log(`[bot] /startgame chatId=${chatId}`);
 });
-
 bot.command('stopgame',async(ctx)=>{
   const game=games.get(String(ctx.chat.id));
   if(!game||game.phase==='idle')return ctx.reply('No active game.');
   await endGame(game,null,'stopped');ctx.reply('🛑 Stopped.');
 });
-
 bot.command('skipword',async(ctx)=>{
   const game=games.get(String(ctx.chat.id));
   if(!game||game.phase!=='drawing')return ctx.reply('No active round.');
@@ -481,7 +456,6 @@ bot.command('skipword',async(ctx)=>{
   broadcast(game,{type:'clear'},game.drawerWsId);broadcast(game,{type:'word_skipped',hint:buildHint(nw,game.hintRevealed)},game.drawerWsId);
   ctx.reply('✅ Word skipped!');
 });
-
 bot.command('leaderboard',async(ctx)=>{
   const game=games.get(String(ctx.chat.id));
   if(!game)return ctx.reply('No game.');
@@ -492,25 +466,16 @@ bot.action(/^claim_draw:(.+)$/,async(ctx)=>{
   const chatId=ctx.match[1],game=games.get(chatId);
   if(!game)return ctx.answerCbQuery('❌ No active game.',{show_alert:true});
   if(game.phase!=='waiting_drawer')return ctx.answerCbQuery('❌ Already claimed!',{show_alert:true});
-  const tgId=String(ctx.from.id);
-  const uname=`${ctx.from.first_name||''} ${ctx.from.last_name||''}`.trim()||ctx.from.username||'Artist';
+  const tgId=String(ctx.from.id),uname=`${ctx.from.first_name||''} ${ctx.from.last_name||''}`.trim()||ctx.from.username||'Artist';
   game.drawerTgId=tgId;game.drawerName=uname;game.phase='drawing';
   game.word=pickWord();game.hintRevealed=new Array(game.word.length).fill(false);
   game.strokes=[];game.strokesUndo=[];game.roundStartTime=Date.now();persistGame(game);
   console.log(`[game] Drawer: ${uname}(${tgId}) word=${game.word} chatId=${chatId}`);
   await ctx.answerCbQuery('✅ Open your canvas!');
-
-  // ── FIX 1: name removed from startparam — avoids 64-char limit and Unicode issues
-  const startparam=`${chatId}__${tgId}`;
-  console.log(`[claim_draw] startparam="${startparam}" length=${startparam.length}`);
-  const url=`https://t.me/${botUsername}/${WEBAPP_SHORT_NAME}?startapp=${encodeURIComponent(startparam)}`;
-
-  try{
-    await bot.telegram.editMessageText(chatId,game.inviteMessageId,null,
-      `🎨 *${uname}* is drawing!\n🔤 \`${buildHint(game.word,game.hintRevealed)}\`  —  ${game.word.length} letters\n\n💬 Type your guess!`,
-      // ── FIX 2: use webApp button instead of url button — guaranteed to open Mini App
-      {parse_mode:'Markdown',...Markup.inlineKeyboard([[Markup.button.webApp('🖌 Open Canvas',url)]])});
-  }catch(e){console.error('[editInvite]',e.message);}
+  const url=`https://t.me/${botUsername}/${WEBAPP_SHORT_NAME}?startapp=${encodeURIComponent(`${chatId}__${tgId}__${uname}`)}`;
+  try{await bot.telegram.editMessageText(chatId,game.inviteMessageId,null,
+    `🎨 *${uname}* is drawing!\n🔤 \`${buildHint(game.word,game.hintRevealed)}\`  —  ${game.word.length} letters\n\n💬 Type your guess!`,
+    {parse_mode:'Markdown',...Markup.inlineKeyboard([[Markup.button.url('🖌 Open Canvas',url)]])});}catch(e){console.error('[editInvite]',e.message);}
 });
 
 bot.action(/^hint:(.+)$/,async(ctx)=>{
@@ -529,6 +494,7 @@ bot.on('text',async(ctx)=>{
   const chatId=String(ctx.chat.id),game=games.get(chatId);
   if(!game||game.phase!=='drawing'||!game.word)return;
   const text=(ctx.message.text||'').trim();if(text.startsWith('/'))return;
+
   const name=`${ctx.from.first_name||''} ${ctx.from.last_name||''}`.trim()||ctx.from.username||'Player';
   const correct=text.toLowerCase()===game.word.toLowerCase();
   broadcast(game,{type:'guess',name,text,correct});
@@ -550,6 +516,7 @@ wss.on('connection',(ws,req)=>{
   const game=getOrMakeGame(chatId);
   const isDrawer=tgId&&tgId===game.drawerTgId&&game.phase==='drawing';
 
+  // Close stale duplicate drawer connection
   if(isDrawer&&game.drawerWsId){
     const old=game.clients.get(game.drawerWsId);
     if(old&&old.ws.readyState===WebSocket.OPEN){console.log(`[ws] Closing stale drawer for ${name}`);old.ws.close();}
@@ -561,6 +528,7 @@ wss.on('connection',(ws,req)=>{
 
   if(isDrawer){
     game.drawerWsId=wsId;
+    // Restore: send existing strokes then role (so drawer sees their work on reconnect)
     ws.send(JSON.stringify({type:'init',strokes:game.strokes,players:game.clients.size,board:leaderboard(game)}));
     ws.send(JSON.stringify({type:'role',role:'drawer',word:game.word,round:1}));
     console.log(`[ws] ${name} = DRAWER restored, word=${game.word} strokes=${game.strokes.length}`);
@@ -580,16 +548,7 @@ wss.on('connection',(ws,req)=>{
     switch(msg.type){
       case'draw':
         if(wsId!==game.drawerWsId)return;
-        game.strokesUndo=[];
-        {
-          const sid=msg.stroke.strokeId;
-          if(sid){
-            const idx=game.strokes.findIndex(s=>s.strokeId===sid);
-            if(idx>=0){game.strokes[idx]=msg.stroke;}else{game.strokes.push(msg.stroke);}
-          }else{
-            game.strokes.push(msg.stroke);
-          }
-        }
+        game.strokesUndo.push({...msg.stroke});game.strokes.push(msg.stroke);
         broadcast(game,{type:'draw',stroke:msg.stroke},wsId);
         persistDebounced(game,600);
         if(!game.firstStrokeDrawn){
@@ -599,47 +558,41 @@ wss.on('connection',(ws,req)=>{
           setTimeout(()=>pushCanvas(game),500);
         }else{scheduleUpdate(game);}
         break;
-
       case'undo':
         if(wsId!==game.drawerWsId)return;
         if(game.strokes.length>0){
-          const undone=game.strokes.pop();
-          game.strokesUndo.push(undone);
-          if(game.strokesUndo.length>50)game.strokesUndo.shift();
+          game.strokes.pop();
+          // Broadcast snapshot so watching clients update immediately
           renderPNG(game.strokes).then(png=>{
             const b64='data:image/png;base64,'+png.toString('base64');
-            broadcast(game,{type:'snapshot',data:b64},game.drawerWsId);
-          }).catch(e=>console.error('[undo render]',e.message));
+            broadcast(game,{type:'snapshot',data:b64});
+          });
           persistDebounced(game);
-          scheduleUpdate(game,1500,true);
+          scheduleUpdate(game,800,true);
         }
         break;
-
       case'redo':
         if(wsId!==game.drawerWsId)return;
-        if(game.strokesUndo.length>0){
-          const redone=game.strokesUndo.pop();
-          game.strokes.push(redone);
+        {const next=game.strokesUndo[game.strokes.length];
+        if(next){
+          game.strokes.push(next);
           renderPNG(game.strokes).then(png=>{
             const b64='data:image/png;base64,'+png.toString('base64');
-            broadcast(game,{type:'snapshot',data:b64},game.drawerWsId);
-          }).catch(e=>console.error('[redo render]',e.message));
+            broadcast(game,{type:'snapshot',data:b64});
+          });
           persistDebounced(game);
-          scheduleUpdate(game,1500,true);
-        }
+          scheduleUpdate(game,800,true);
+        }}
         break;
-
       case'clear':
         if(wsId!==game.drawerWsId)return;
         game.strokes=[];game.strokesUndo=[];game.firstStrokeDrawn=false;
         broadcast(game,{type:'clear'});persistDebounced(game);
         break;
-
       case'snapshot':
         if(wsId!==game.drawerWsId)return;
         broadcast(game,{type:'snapshot',data:msg.data},wsId);
         break;
-
       case'guess':{
         const t=(msg.text||'').trim();if(!t)return;
         const ok=game.word&&t.toLowerCase()===game.word.toLowerCase();
@@ -654,7 +607,6 @@ wss.on('connection',(ws,req)=>{
         }
         break;
       }
-
       case'change_word':
         if(wsId!==game.drawerWsId)return;
         {const nw=pickWord();game.word=nw;game.hintRevealed=new Array(nw.length).fill(false);
@@ -662,7 +614,6 @@ wss.on('connection',(ws,req)=>{
         sendWs(game,wsId,{type:'role',role:'drawer',word:nw,round:1});
         broadcast(game,{type:'clear'},wsId);broadcast(game,{type:'word_skipped',hint:buildHint(nw,game.hintRevealed)},wsId);}
         break;
-
       case'skip_word':
         if(wsId!==game.drawerWsId)return;
         {const nw=pickWord();game.word=nw;game.hintRevealed=new Array(nw.length).fill(false);
@@ -671,22 +622,8 @@ wss.on('connection',(ws,req)=>{
         persistGame(game);sendWs(game,wsId,{type:'role',role:'drawer',word:nw,round:1});
         broadcast(game,{type:'clear'},wsId);broadcast(game,{type:'word_skipped',hint:buildHint(nw,game.hintRevealed)},wsId);}
         break;
-
       case'done_drawing':
         if(wsId!==game.drawerWsId)return;endGame(game,null,'done');break;
-
-      case'new_round':
-        if(game.phase==='idle'||game.phase==='ended'){
-          game.phase='waiting_drawer';game.scores=new Map();game.strokes=[];game.strokesUndo=[];
-          game.word=null;game.drawerTgId=null;game.drawerName='';game.drawerWsId=null;
-          persistDebounced(game);
-          if(botUsername){
-            bot.telegram.sendMessage(game.chatId,`🎨 *${name}* wants to start a new round! Who wants to draw?`,
-              {parse_mode:'Markdown',...Markup.inlineKeyboard([[Markup.button.callback('✏️ I Want to Draw!',`claim_draw:${game.chatId}`)]])}).catch(()=>{});
-          }
-        }
-        break;
-
       case'get_logs':
         ws.send(JSON.stringify({type:'logs',logs:[]}));break;
     }
@@ -711,7 +648,6 @@ function tgPost(method,body){
     r.on('error',rej);r.write(p);r.end();
   });
 }
-
 async function launchBot(){
   try{
     const me=await bot.telegram.getMe();botUsername=me.username;console.log(`🤖 @${botUsername} ready`);
@@ -729,7 +665,7 @@ async function launchBot(){
 
 server.listen(PORT,()=>{
   console.log(`✅ http://localhost:${PORT}  |  📡 ${PUBLIC_URL}`);
-  restoreAll();
+  restoreAll(); // restore before bot launches
   setTimeout(launchBot,1000);
   if(PUBLIC_URL){
     setInterval(()=>{

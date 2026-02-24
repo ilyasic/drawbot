@@ -657,6 +657,7 @@ function clearAll(){
     l.ctx.clearRect(0,0,CW,CH);l._committed=null;
     if(l.maskCtx){l.maskCtx.fillStyle='#fff';l.maskCtx.fillRect(0,0,CW,CH);}
   });
+  if(drawCtx)drawCtx.clearRect(0,0,CW,CH);
   bgCtx.fillStyle='#fff';bgCtx.fillRect(0,0,CW,CH);composite();
 }
 
@@ -1381,8 +1382,11 @@ function connect(){
     switch(m.type){
       case'init':
         clearAll();
-        // Render all incoming strokes onto active layer
-        (m.strokes||[]).forEach(s=>renderStroke(actCtx(),s));composite();
+        (m.strokes||[]).forEach(s=>renderStroke(actCtx(),s));
+        // Clear cv-draw so it doesn't sit on top and hide the composited layers
+        if(drawCtx)drawCtx.clearRect(0,0,CW,CH);
+        if(actLayer())actLayer()._committed=actCtx().getImageData(0,0,CW,CH);
+        composite();
         document.getElementById('word-display').textContent=`${m.players} player${m.players!==1?'s':''}`;
         if(m.board){updatePlayers(m.board);updateLb(m.board);}
         addLog(`Init: ${m.players} players, ${(m.strokes||[]).length} strokes restored`,'system');
@@ -1393,7 +1397,17 @@ function connect(){
         break;
       case'clear':
         clearAll();if(isDrawer)showSyncDone();addLog('Canvas cleared by server','draw');break;
-      case'snapshot':{const img=new Image();img.onload=()=>{clearAll();actCtx().drawImage(img,0,0,CW,CH);composite();};img.src=m.data;addLog('Snapshot received','system');break;}
+      case'snapshot':{
+        const img=new Image();
+        img.onload=()=>{
+          clearAll();
+          actCtx().drawImage(img,0,0,CW,CH);
+          if(drawCtx)drawCtx.clearRect(0,0,CW,CH);
+          if(actLayer())actLayer()._committed=actCtx().getImageData(0,0,CW,CH);
+          composite();
+        };
+        img.src=m.data;addLog('Snapshot received','system');break;
+      }
       case'role':
         clearAll();setRole(m.role,m.role==='drawer'?m.word:m.hint,m.round);break;
       case'hint':

@@ -1324,74 +1324,95 @@ document.getElementById('log-copy-btn').addEventListener('click',()=>{
 document.getElementById('start-btn').addEventListener('click',()=>{ws?.send(JSON.stringify({type:'new_round'}));document.getElementById('start-btn').style.display='none';addLog('New round requested','round');});
 
 // ─── WebSocket ─────────────────────────────────────────────────────────────────
-// ─── WebSocket ─────────────────────────────────────────────────────────────────
-let ws = null, myName = '', myRoom = '', myTgId = '';
+let ws=null,myName='',myRoom='',myTgId='';
 
-function connect() {
-    if (!myName || !myRoom) return;
-    addLog(`Connecting… room=${myRoom} name=${myName}`, 'system');
-
-    // Use Railway PUBLIC_URL instead of location.host
-    const proto = 'wss'; // always secure WebSocket
-    const host = 'perfect-trust-production-72da.up.railway.app'; // PUBLIC_URL hostname
-    ws = new WebSocket(`${proto}://${host}/ws?room=${encodeURIComponent(myRoom)}&name=${encodeURIComponent(myName)}&userId=${encodeURIComponent(myTgId)}`);
-
-    ws.onopen = () => {
-        document.getElementById('conn-dot').style.background = 'var(--green)';
-        addLog(`WebSocket connected`, 'connect');
-    };
-
-    ws.onmessage = ({ data }) => {
-        let m; try { m = JSON.parse(data); } catch { return; }
-        switch (m.type) {
-            case 'init':
-                clearAll();
-                (m.strokes || []).forEach(s => renderStroke(actCtx(), s));
-                composite();
-                document.getElementById('word-display').textContent = `${m.players} player${m.players !== 1 ? 's' : ''}`;
-                if (m.board) { updatePlayers(m.board); updateLb(m.board); }
-                addLog(`Init: ${m.players} players, ${(m.strokes || []).length} strokes restored`, 'system');
-                break;
-
-            case 'draw':
-                if (!isDrawer) incomingStroke(m.stroke);
-                else showSyncDone();
-                break;
-
-            case 'clear':
-                clearAll();
-                if (actLayer()) { actLayer()._committed = null; actLayer()._partialId = null; }
-                gs(actLayer(), US).length = 0; gs(actLayer(), RS).length = 0;
-                if (isDrawer) showSyncDone();
-                addLog('Canvas cleared by server', 'draw');
-                break;
-
-            // … keep all other cases exactly as before …
+function connect(){
+  if(!myName||!myRoom)return;
+  addLog(`Connecting… room=${myRoom} name=${myName}`,'system');
+  const proto=location.protocol==='https:'?'wss':'ws';
+  ws=new WebSocket(`${proto}://${location.host}/ws?room=${encodeURIComponent(myRoom)}&name=${encodeURIComponent(myName)}&userId=${encodeURIComponent(myTgId)}`);
+  ws.onopen=()=>{document.getElementById('conn-dot').style.background='var(--green)';addLog(`WebSocket connected`,'connect');};
+  ws.onmessage=({data})=>{
+    let m;try{m=JSON.parse(data);}catch{return;}
+    switch(m.type){
+      case'init':
+        clearAll();
+        (m.strokes||[]).forEach(s=>renderStroke(actCtx(),s));composite();
+        document.getElementById('word-display').textContent=`${m.players} player${m.players!==1?'s':''}`;
+        if(m.board){updatePlayers(m.board);updateLb(m.board);}
+        addLog(`Init: ${m.players} players, ${(m.strokes||[]).length} strokes restored`,'system');
+        break;
+      case'draw':
+        // ✅ Drawer ignores incoming draw echoes — they already drew it locally
+        if(!isDrawer)incomingStroke(m.stroke);
+        else showSyncDone();
+        break;
+      case'clear':
+        clearAll();
+        if(actLayer()){actLayer()._committed=null;actLayer()._partialId=null;}
+        gs(actLayer(),US).length=0;gs(actLayer(),RS).length=0;
+        if(isDrawer)showSyncDone();
+        addLog('Canvas cleared by server','draw');
+        break;
+      case'snapshot':
+        // ✅ Drawer ignores snapshots — they manage their own canvas locally
+        if(!isDrawer){
+          const img=new Image();
+          img.onload=()=>{
+            clearAll();actCtx().drawImage(img,0,0,CW,CH);
+            if(actLayer())actLayer()._committed=actCtx().getImageData(0,0,CW,CH);
+            composite();
+          };
+          img.src=m.data;
         }
-    };
-
-    ws.onclose = () => {
-        document.getElementById('conn-dot').style.background = 'var(--red)';
-        addLog('WebSocket disconnected — reconnecting…', 'disconnect');
-        scheduleReconnect();
-    };
-    ws.onerror = e => {
-        addLog(`WebSocket error: ${e.message || 'unknown'}`, 'error');
-        ws.close();
-    };
+        addLog(isDrawer?'Snapshot ignored (drawer)':'Snapshot received','system');
+        break;
+      case'role':
+        clearAll();setRole(m.role,m.role==='drawer'?m.word:m.hint,m.round);break;
+      case'hint':
+        document.getElementById('word-display').textContent=m.hint;
+        addChat('sys',`💡 Hint: ${m.hint}`);showToast('💡 New hint!');sfxHint();
+        addLog(`Hint: ${m.hint}`,'round');break;
+      case'word_skipped':
+        document.getElementById('word-display').textContent=m.hint;addChat('sys','Word skipped');clearAll();addLog('Word skipped','round');break;
+      case'guess':
+        addChat(m.correct?'ok':'',`<span class="cn">${m.name}:</span> ${m.text}${m.correct?' ✅':''}`);
+        if(m.correct){showToast(`🎉 ${m.name} got it!`,'ok');sfxCorrect();}
+        addLog(`Guess: ${m.name} → "${m.text}" ${m.correct?'✓':'✗'}`,'guess');break;
+      case'score_update':
+        addChat('ok',`🏆 ${m.name} +${m.pts}pts${m.timeBonus?' ⚡+'+m.timeBonus:''}`);
+        if(m.board){updatePlayers(m.board);updateLb(m.board);}
+        addLog(`Score: ${m.name} +${m.pts}pts`,'round');break;
+      case'round_end':
+        sfxRoundEnd();
+        if(m.drawerFinish&&isDrawer){
+          const dfo=document.getElementById('drawer-finish-overlay');
+          document.getElementById('dfo-emoji').textContent=m.guesser?'🎉':'😮';
+          document.getElementById('dfo-title').textContent=m.guesser?`${m.guesser} guessed it!`:m.reason==='all_hints'?'All hints shown!':'Round over';
+          document.getElementById('dfo-word').textContent=`"${m.word}"`;
+          document.getElementById('dfo-sub').textContent='Keep drawing or close.';
+          dfo.style.display='flex';
+        }else{
+          showResult(m.guesser?'🎉':(m.reason==='all_hints'?'🔤':'😮'),m.guesser?`${m.guesser} got it!`:(m.reason==='all_hints'?'All hints shown!':'Round over'),m.word,m.guesser?`Artist: ${m.drawerName}`:`Word was: ${m.word}`);
+        }
+        if(m.board){updatePlayers(m.board);updateLb(m.board);}
+        if(m.word&&m.drawerName)saveToGallery(m.word,m.drawerName);
+        document.getElementById('word-display').textContent='waiting…';
+        document.getElementById('role-pill').className='role-pill';document.getElementById('role-pill').textContent='—';
+        if(!m.drawerFinish||!isDrawer){document.getElementById('toolbar').classList.remove('visible');isDrawer=false;}
+        addLog(`Round end: word=${m.word} guesser=${m.guesser||'none'} reason=${m.reason}`,'round');break;
+      case'leaderboard':if(m.board){updatePlayers(m.board);updateLb(m.board);}break;
+      case'status':document.getElementById('word-display').textContent=m.message;addChat('sys',m.message);addLog(`Status: ${m.message}`,'system');break;
+      case'player_joined':addChat('sys',`${m.name} joined (${m.count})`);sfxJoin();addLog(`Player joined: ${m.name} (${m.count} total)`,'connect');break;
+      case'player_left':addChat('sys',`${m.name} left (${m.count})`);addLog(`Player left: ${m.name} (${m.count} total)`,'disconnect');break;
+    }
+  };
+  ws.onclose=()=>{document.getElementById('conn-dot').style.background='var(--red)';addLog('WebSocket disconnected — reconnecting…','disconnect');scheduleReconnect();};
+  ws.onerror=e=>{addLog(`WebSocket error: ${e.message||'unknown'}`,'error');ws.close();};
 }
-
-let _rcT = null;
-function scheduleReconnect() {
-    clearTimeout(_rcT);
-    _rcT = setTimeout(() => {
-        if (myName && myRoom && (!ws || ws.readyState === WebSocket.CLOSED)) connect();
-    }, 1500);
-}
-
-document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && myRoom && (!ws || ws.readyState === WebSocket.CLOSED)) connect();
-});
+let _rcT=null;
+function scheduleReconnect(){clearTimeout(_rcT);_rcT=setTimeout(()=>{if(myName&&myRoom&&(!ws||ws.readyState===WebSocket.CLOSED))connect();},1500);}
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&myRoom&&(!ws||ws.readyState===WebSocket.CLOSED))connect();});
 
 // ─── Auto-join ─────────────────────────────────────────────────────────────────
 function getTgName(){if(!tg)return null;const u=tg.initDataUnsafe?.user;if(!u)return null;return`${u.first_name||''} ${u.last_name||''}`.trim()||u.username||null;}

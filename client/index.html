@@ -503,6 +503,21 @@ input[type=range].pop-slider::-webkit-slider-thumb{-webkit-appearance:none;width
 <div id="toast"></div>
 
 <script>
+// Global error display — shows JS errors on screen for debugging
+window.onerror=function(msg,src,line,col,err){
+  const d=document.createElement('div');
+  d.style.cssText='position:fixed;top:0;left:0;right:0;background:#c00;color:#fff;padding:10px;font-size:12px;z-index:9999;word-break:break-all;font-family:monospace;';
+  d.textContent='JS ERROR: '+msg+' @ line '+line+(err?' | '+err.stack:'');
+  document.body.appendChild(d);
+};
+window.addEventListener('unhandledrejection',function(e){
+  const d=document.createElement('div');
+  d.style.cssText='position:fixed;top:40px;left:0;right:0;background:#900;color:#fff;padding:10px;font-size:12px;z-index:9999;word-break:break-all;font-family:monospace;';
+  d.textContent='PROMISE ERROR: '+(e.reason?.message||e.reason||'unknown');
+  document.body.appendChild(d);
+});
+</script>
+<script>
 (function(){'use strict';
 
 // ─── Logging ─────────────────────────────────────────────────────────────────
@@ -1065,14 +1080,19 @@ function drawHueBar(){
   const cur=document.getElementById('cp-hue-cursor');if(cur)cur.style.left=(_cpH/360*100)+'%';
 }
 function syncPickerFromColor(hex){
-  const[r,g,b]=hexToRgb(hex);
-  [_cpH,_cpS,_cpV]=rgbToHsv(r,g,b);
-  document.getElementById('cp-r').value=r;document.getElementById('cp-r-lbl').textContent=r;
-  document.getElementById('cp-g').value=g;document.getElementById('cp-g-lbl').textContent=g;
-  document.getElementById('cp-b').value=b;document.getElementById('cp-b-lbl').textContent=b;
-  document.getElementById('cp-hex').value=hex;
-  document.getElementById('cp-preview').style.background=hex;
-  drawSBCanvas();drawHueBar();
+  try{
+    const[r,g,b]=hexToRgb(hex);
+    [_cpH,_cpS,_cpV]=rgbToHsv(r,g,b);
+    const er=document.getElementById('cp-r');if(er)er.value=r;
+    const erg=document.getElementById('cp-r-lbl');if(erg)erg.textContent=r;
+    const eg=document.getElementById('cp-g');if(eg)eg.value=g;
+    const egl=document.getElementById('cp-g-lbl');if(egl)egl.textContent=g;
+    const eb=document.getElementById('cp-b');if(eb)eb.value=b;
+    const ebl=document.getElementById('cp-b-lbl');if(ebl)ebl.textContent=b;
+    const eh=document.getElementById('cp-hex');if(eh)eh.value=hex;
+    const ep=document.getElementById('cp-preview');if(ep)ep.style.background=hex;
+    drawSBCanvas();drawHueBar();
+  }catch(e){console.warn('syncPicker err:',e);}
 }
 function applyPickerColor(){
   const[r,g,b]=hsvToRgb(_cpH,_cpS,_cpV);
@@ -1452,8 +1472,10 @@ function parseStart(){
 let _joined=false,_canvasInited=false;
 function initOnce(){
   if(_canvasInited)return;_canvasInited=true;
-  initCanvases();renderPalette();syncPickerFromColor(currentColor);updateSzLbl();
-  setTimeout(fitCanvas,100);setTimeout(fitCanvas,400);setTimeout(fitCanvas,800);
+  try{
+    initCanvases();renderPalette();syncPickerFromColor(currentColor);updateSzLbl();
+    setTimeout(fitCanvas,100);setTimeout(fitCanvas,400);setTimeout(fitCanvas,800);
+  }catch(e){console.error('initOnce error:',e);}
 }
 function doJoin(roomId,playerName,tgId){
   if(_joined)return;_joined=true;

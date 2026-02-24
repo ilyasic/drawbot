@@ -182,7 +182,11 @@ function drawPath(ctx,pts,sm){
 }
 
 function renderStroke(ctx,s){
-  const pts=s.points||[];if(pts.length<2)return;
+  const pts=s.points||[];
+  const bt0=s.brushType||'pen';
+  // fill/eyedrop only need 1 point — skip the length<2 guard for them
+  if(pts.length<1)return;
+  if(pts.length<2&&bt0!=='fill'&&bt0!=='eyedrop')return;
   const bt=s.brushType||'pen',sz=s.size||6,col=s.color||'#000',
         op=s.opacity!=null?s.opacity:1.0,fl=s.flow!=null?s.flow:0.8,
         sm=s.smoothing!=null?s.smoothing:(BD[bt]?.smoothing??0.5),

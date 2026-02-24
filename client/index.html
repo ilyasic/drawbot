@@ -1382,18 +1382,33 @@ function connect(){
     switch(m.type){
       case'init':
         clearAll();
-        (m.strokes||[]).forEach(s=>renderStroke(actCtx(),s));
-        // Clear cv-draw so it doesn't sit on top and hide the composited layers
-        if(drawCtx)drawCtx.clearRect(0,0,CW,CH);
-        if(actLayer())actLayer()._committed=actCtx().getImageData(0,0,CW,CH);
+        if(m.strokes?.length){
+          (m.strokes).forEach(s=>renderStroke(drawCtx,s));
+          // Also store in layer so undo/local ops work
+          if(actLayer()){
+            actLayer().ctx.clearRect(0,0,CW,CH);
+            actLayer().ctx.drawImage(drawCv,0,0);
+            actLayer()._committed=actLayer().ctx.getImageData(0,0,CW,CH);
+          }
+        }
         composite();
         document.getElementById('word-display').textContent=`${m.players} player${m.players!==1?'s':''}`;
         if(m.board){updatePlayers(m.board);updateLb(m.board);}
         addLog(`Init: ${m.players} players, ${(m.strokes||[]).length} strokes restored`,'system');
         break;
       case'draw':
-        renderStroke(actCtx(),m.stroke);composite();
-        if(isDrawer)showSyncDone();
+        if(isDrawer){
+          // Drawer already drew this locally — just confirm sync
+          showSyncDone();
+        }else{
+          // Guesser: render incoming stroke directly to drawCtx (visible canvas)
+          renderStroke(drawCtx,m.stroke);
+          if(actLayer()){
+            actLayer().ctx.clearRect(0,0,CW,CH);
+            actLayer().ctx.drawImage(drawCv,0,0);
+            actLayer()._committed=actLayer().ctx.getImageData(0,0,CW,CH);
+          }
+        }
         break;
       case'clear':
         clearAll();if(isDrawer)showSyncDone();addLog('Canvas cleared by server','draw');break;
@@ -1401,10 +1416,13 @@ function connect(){
         const img=new Image();
         img.onload=()=>{
           clearAll();
-          actCtx().drawImage(img,0,0,CW,CH);
-          if(drawCtx)drawCtx.clearRect(0,0,CW,CH);
-          if(actLayer())actLayer()._committed=actCtx().getImageData(0,0,CW,CH);
-          composite();
+          drawCtx.clearRect(0,0,CW,CH);
+          drawCtx.drawImage(img,0,0,CW,CH);
+          if(actLayer()){
+            actLayer().ctx.clearRect(0,0,CW,CH);
+            actLayer().ctx.drawImage(img,0,0,CW,CH);
+            actLayer()._committed=actLayer().ctx.getImageData(0,0,CW,CH);
+          }
         };
         img.src=m.data;addLog('Snapshot received','system');break;
       }

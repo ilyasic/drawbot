@@ -311,7 +311,7 @@ input[type=range].pop-slider::-webkit-slider-thumb{-webkit-appearance:none;width
   </div>
 </div>
 
-<!-- Color popup — full RGB picker -->
+<!-- Color popup -->
 <div class="popup" id="color-popup">
   <div style="position:relative;width:100%;height:140px;border-radius:8px;overflow:hidden;flex-shrink:0">
     <canvas id="cp-sb" width="220" height="140" style="width:100%;height:140px;display:block;cursor:crosshair;border-radius:8px;"></canvas>
@@ -744,7 +744,6 @@ function renderStroke(ctx,s){
   ctx.globalAlpha=1;
   ctx.globalCompositeOperation='source-over';
 
-  // Dot fix: single tap → filled circle
   const isDot=pts.length===1||(pts.length===2&&Math.abs(pts[1][0]-pts[0][0])<1.5&&Math.abs(pts[1][1]-pts[0][1])<1.5);
   if(isDot&&bt!=='fill'&&bt!=='eyedrop'&&bt!=='eraser'){
     const r=sz*(bd.widthMult||1)*.5;
@@ -871,7 +870,6 @@ function onDown(e){
   }
   ptrId=e.pointerId;area.setPointerCapture?.(ptrId);saveUndo();isDrawing=true;lastX=x;lastY=y;lsx=x;lsy=y;
   const sm=bSettings[brushType]?.smoothing??BD[brushType]?.smoothing??.5;
-  // ✅ strokeId: unique ID so server replaces partials instead of stacking them
   const strokeId=Date.now().toString(36)+Math.random().toString(36).slice(2,7);
   const seed=Math.floor(Math.random()*0xFFFFFF);
   const flow=bSettings[brushType]?.flow??BD[brushType]?.flow??.8;
@@ -913,7 +911,6 @@ document.addEventListener('touchstart',e=>{_toc=!!e.target.closest('#canvas-area
 document.addEventListener('touchmove',e=>{if(_toc)e.preventDefault();},{passive:false});
 
 function incomingStroke(s){
-  // ✅ Watcher dedup: same strokeId arriving multiple times = replace partial
   if(s.strokeId&&actLayer()?._partialId===s.strokeId){
     actCtx().clearRect(0,0,CW,CH);
     if(actLayer()._committed)actCtx().putImageData(actLayer()._committed,0,0);
@@ -1120,7 +1117,6 @@ function renderPalette(){
 function setColorRaw(hex){
   if(!/^#[0-9a-fA-F]{6}$/.test(hex))return;
   currentColor=hex;
-  // ✅ Update brush button color dot AND the btn-brush icon stays in sync
   updateColorDot(hex);
   document.querySelectorAll('.cswatch').forEach(s=>{
     const bg=s.style.background;const sw=bg.startsWith('#')?bg:cssToHex(bg);
@@ -1137,7 +1133,6 @@ function setColor(hex){
   setColorRaw(hex);syncPickerFromColor(hex);closeAllPanels();
 }
 function updateColorDot(hex){
-  // ✅ Keep brush button dot AND sz-preview dot in sync with current color
   const d=document.getElementById('color-dot');if(d)d.style.background=hex;
   const s=document.querySelector('#sz-preview div');if(s)s.style.background=hex;
 }
@@ -1145,7 +1140,6 @@ function updateColorDot(hex){
 function updateBrushBtn(){
   const IC={pen:'🖊',pencil:'✏️',marker:'🖍',bristle:'🎨',ink:'🪶',watercolor:'💧',airbrush:'🌫',line:'╱',eraser:'🧽',fill:'🪣',eyedrop:'💉'};
   const btn=document.getElementById('btn-brush');
-  // ✅ Color dot inside brush button always matches currentColor
   if(btn)btn.innerHTML=(IC[brushType]||'🖊')+`<div class="color-dot" id="color-dot" style="background:${currentColor}"></div>`;
   document.getElementById('btn-fill')?.classList.toggle('on',brushType==='fill');
   document.getElementById('btn-eyedrop')?.classList.toggle('on',brushType==='eyedrop');
@@ -1343,7 +1337,6 @@ function connect(){
         addLog(`Init: ${m.players} players, ${(m.strokes||[]).length} strokes restored`,'system');
         break;
       case'draw':
-        // ✅ Drawer ignores incoming draw echoes — they already drew it locally
         if(!isDrawer)incomingStroke(m.stroke);
         else showSyncDone();
         break;
@@ -1355,7 +1348,6 @@ function connect(){
         addLog('Canvas cleared by server','draw');
         break;
       case'snapshot':
-        // ✅ Drawer ignores snapshots — they manage their own canvas locally
         if(!isDrawer){
           const img=new Image();
           img.onload=()=>{
@@ -1417,12 +1409,19 @@ document.addEventListener('visibilitychange',()=>{if(document.visibilityState===
 // ─── Auto-join ─────────────────────────────────────────────────────────────────
 function getTgName(){if(!tg)return null;const u=tg.initDataUnsafe?.user;if(!u)return null;return`${u.first_name||''} ${u.last_name||''}`.trim()||u.username||null;}
 function getTgId(){if(tg){const u=tg.initDataUnsafe?.user;if(u?.id)return String(u.id);}try{let r=tg?.initDataUnsafe?.start_param||new URLSearchParams(location.search).get('startapp')||'';try{r=decodeURIComponent(r);}catch{}const p=r.split('__');if(p.length>=2&&p[1])return p[1];}catch{}return'';}
+
+// ── FIXED: parseStart now uses Telegram's own user data for the name
+// instead of trusting the URL param, which breaks for Unicode names like 𝑱𝑶𝑳𝑰𝑬 🌺
 function parseStart(){
   let raw='';
   if(tg){const sp=tg.initDataUnsafe?.start_param;if(sp)try{raw=decodeURIComponent(sp);}catch{raw=sp;}}
   if(!raw){const u=new URLSearchParams(location.search);raw=u.get('startapp')||u.get('room')||'';try{raw=decodeURIComponent(raw);}catch{}}
-  const p=raw.split('__');return{roomId:p[0]||'',tgId:p[1]||'',name:p.length>2?p.slice(2).join('__'):''};
+  const p=raw.split('__');
+  const nameFromUrl=p.length>2?p.slice(2).join('__'):'';
+  const nameFromTg=getTgName()||'';
+  return{roomId:p[0]||'',tgId:p[1]||'',name:nameFromTg||nameFromUrl||''};
 }
+
 function doJoin(roomId,playerName,tgId){
   myName=playerName;myRoom=roomId;myTgId=tgId||'';
   try{sessionStorage.setItem('dgN',myName);sessionStorage.setItem('dgR',myRoom);sessionStorage.setItem('dgT',myTgId);}catch{}

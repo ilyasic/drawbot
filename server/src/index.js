@@ -139,6 +139,48 @@ function renderStrokeProper(ctx, s) {
     ctx.restore(); return;
   }
 
+  // Straight line
+  if (btype === 'line') {
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = opacity; ctx.strokeStyle = color;
+    ctx.lineWidth = size; ctx.lineCap = 'round'; ctx.setLineDash([]);
+    ctx.beginPath(); ctx.moveTo(pts[0][0],pts[0][1]);
+    ctx.lineTo(pts[pts.length-1][0],pts[pts.length-1][1]); ctx.stroke();
+    ctx.restore(); return;
+  }
+
+  // Flood fill — server-side implementation
+  if (btype === 'fill') {
+    const [fx,fy] = pts[0];
+    const sx=Math.round(fx), sy=Math.round(fy);
+    const w=ctx.canvas.width, h=ctx.canvas.height;
+    if(sx>=0&&sx<w&&sy>=0&&sy<h){
+      const imgData=ctx.getImageData(0,0,w,h); const data=imgData.data;
+      const idx=(sy*w+sx)*4;
+      const sr=data[idx],sg=data[idx+1],sb=data[idx+2],sa=data[idx+3];
+      const fr=parseInt(color.slice(1,3),16),fg=parseInt(color.slice(3,5),16),fb=parseInt(color.slice(5,7),16);
+      if(!(sr===fr&&sg===fg&&sb===fb&&sa===255)){
+        const tol=900;
+        const match=i=>{ const dr=data[i]-sr,dg=data[i+1]-sg,db=data[i+2]-sb,da=data[i+3]-sa; return dr*dr+dg*dg+db*db+da*da<=tol; };
+        const stack=[sx+sy*w]; const visited=new Uint8Array(w*h); visited[sx+sy*w]=1;
+        while(stack.length){
+          const pos=stack.pop(); const x=pos%w,y=(pos/w)|0; const i=pos*4;
+          data[i]=fr;data[i+1]=fg;data[i+2]=fb;data[i+3]=255;
+          const L=x-1,R=x+1,U=y-1,D=y+1;
+          if(L>=0&&!visited[L+y*w]&&match((L+y*w)*4)){visited[L+y*w]=1;stack.push(L+y*w);}
+          if(R<w &&!visited[R+y*w]&&match((R+y*w)*4)){visited[R+y*w]=1;stack.push(R+y*w);}
+          if(U>=0&&!visited[x+U*w]&&match((x+U*w)*4)){visited[x+U*w]=1;stack.push(x+U*w);}
+          if(D<h &&!visited[x+D*w]&&match((x+D*w)*4)){visited[x+D*w]=1;stack.push(x+D*w);}
+        }
+        ctx.putImageData(imgData,0,0);
+      }
+    }
+    ctx.restore(); return;
+  }
+
+  // eyedrop — no rendering
+  if (btype === 'eyedrop') { ctx.restore(); return; }
+
   if (btype === 'spray') {
     ctx.globalCompositeOperation = 'source-over';
     ctx.fillStyle = color;
@@ -348,34 +390,44 @@ async function pushCanvasToChat(game) {
     `🔤 \`${hint}\`  —  ${game.word.length} letters\n\n` +
     `💬 Type your guess in the chat!`;
 
-  // Hint button — shows cooldown remaining if pressed recently
   const now          = Date.now();
   const cooldownLeft = Math.ceil((HINT_COOLDOWN_MS - (now - game.lastHintAt)) / 1000);
-  const hintReady    = cooldownLeft <= 0;
-  const hintLabel    = hintReady ? '💡 Hint' : `⏳ Hint (${cooldownLeft}s)`;
+  const hintLabel    = cooldownLeft <= 0 ? '💡 Hint' : `⏳ Hint (${cooldownLeft}s)`;
   const keyboard     = Markup.inlineKeyboard([[
     Markup.button.callback(hintLabel, `hint:${game.chatId}`),
   ]]);
 
   try {
-    if (!game.liveMessageId) {
+    if (game.liveMessageId) {
+      // Edit existing message (works whether it was a drawing or result)
+      await bot.telegram.editMessageMedia(
+        game.chatId, game.liveMessageId, null,
+        { type:'photo', media:{ source:png, filename:'drawing.png' }, caption, parse_mode:'Markdown' },
+        keyboard
+      );
+    } else {
       const m = await bot.telegram.sendPhoto(
         game.chatId,
         { source: png, filename: 'drawing.png' },
         { caption, parse_mode:'Markdown', ...keyboard }
       );
       game.liveMessageId = m.message_id;
-    } else {
-      await bot.telegram.editMessageMedia(
-        game.chatId, game.liveMessageId, null,
-        { type:'photo', media:{ source:png, filename:'drawing.png' }, caption, parse_mode:'Markdown' },
-        keyboard
-      );
     }
   } catch(e) {
     if (/not modified/i.test(e.message)) return;
     console.error('[pushCanvas]', e.message);
-    if (/not found|deleted|message to edit|socket hang up|ECONNRESET|ETIMEDOUT/i.test(e.message)) game.liveMessageId = null;
+    if (/not found|deleted|message to edit|socket hang up|ECONNRESET|ETIMEDOUT/i.test(e.message)) {
+      game.liveMessageId = null;
+      // Retry as new message
+      try {
+        const m = await bot.telegram.sendPhoto(
+          game.chatId,
+          { source: png, filename: 'drawing.png' },
+          { caption, parse_mode:'Markdown', ...keyboard }
+        );
+        game.liveMessageId = m.message_id;
+      } catch{}
+    }
   }
 }
 
@@ -439,25 +491,17 @@ async function endGame(game, guesserName, reason) {
   game.drawerName       = '';
   game.drawerWsId       = null;
   game.inviteMessageId  = null;
-  game.liveMessageId    = null;
+  // ✅ Keep liveMessageId — next round edits same message instead of spamming new ones
   setTimeout(() => { game.phase = 'idle'; }, 3000);
 }
 
 async function postGameResult(game, guesserName, reason) {
-  // Render final image
   let png;
   try { png = await renderPNG(game.strokes); }
   catch(e) { console.error('[endGame render]', e.message); }
 
-  // Delete the live drawing message
-  if (game.liveMessageId) {
-    try { await bot.telegram.deleteMessage(game.chatId, game.liveMessageId); } catch{}
-    game.liveMessageId = null;
-  }
-
-  // Build result message
   const lines = [
-    `✅ *Game Over!*`,
+    `✅ *Round Over!*`,
     ``,
     `🖌 Drawer: *${game.drawerName}*`,
     `🎯 Word: *${game.word}*`,
@@ -476,7 +520,14 @@ async function postGameResult(game, guesserName, reason) {
   ].join('\n');
 
   try {
-    if (png) {
+    if (game.liveMessageId && png) {
+      // ✅ Edit existing live message — same message, no new notification spam
+      await bot.telegram.editMessageMedia(
+        game.chatId, game.liveMessageId, null,
+        { type:'photo', media:{ source:png, filename:`${game.word}.png` }, caption:lines, parse_mode:'Markdown' },
+        Markup.inlineKeyboard([]) // remove hint button
+      );
+    } else if (png) {
       await bot.telegram.sendPhoto(
         game.chatId,
         { source: png, filename: `${game.word}.png` },
@@ -485,7 +536,14 @@ async function postGameResult(game, guesserName, reason) {
     } else {
       await bot.telegram.sendMessage(game.chatId, lines, { parse_mode:'Markdown' });
     }
-  } catch(e) { console.error('[endGame send]', e.message); }
+  } catch(e) {
+    console.error('[postGameResult]', e.message);
+    // If edit failed, try fresh send
+    try {
+      await bot.telegram.sendMessage(game.chatId, lines, { parse_mode:'Markdown' });
+    } catch{}
+  }
+  // Keep liveMessageId — next round will reset it only if a new photo is sent
 }
 
 // ── Bot commands ──────────────────────────────────────────────────────────────
@@ -823,6 +881,31 @@ wss.on('connection', (ws, req) => {
         }
         break;
       }
+
+      case 'undo':
+        // Remove last stroke from server state — keeps server in sync with client
+        if (wsId !== game.drawerWsId) return;
+        if (game.strokes.length > 0) {
+          game.strokes.pop();
+          scheduleCanvasUpdate(game);
+        }
+        break;
+
+      case 'change_word':
+        // Drawer requests a new word mid-round
+        if (wsId !== game.drawerWsId) return;
+        {
+          const nw = pickWord();
+          game.word         = nw;
+          game.hintRevealed = new Array(nw.length).fill(false);
+          game.strokes      = [];
+          game.firstStrokeDrawn = false;
+          game.lastHintAt   = 0;
+          sendToWs(game, wsId, { type:'role', role:'drawer', word:nw, round:1 });
+          broadcastToGame(game, { type:'clear' }, wsId);
+          broadcastToGame(game, { type:'word_skipped', hint:buildHint(nw,game.hintRevealed) }, wsId);
+        }
+        break;
 
       case 'done_drawing':
         if (wsId !== game.drawerWsId) return;

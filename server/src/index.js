@@ -97,8 +97,6 @@ function rowToGame(row) {
   g.word             = row.word || null;
   g.hintRevealed     = JSON.parse(row.hint_revealed || '[]');
   g.strokes          = JSON.parse(row.strokes || '[]');
-  // ✅ FIX: strokesUndo is a separate redo stack, initialized EMPTY (not a copy)
-  // It holds strokes that were undone and can be redone
   g.strokesUndo      = [];
   g.roundStartTime   = row.round_start || 0;
   g.firstStrokeDrawn = row.first_stroke === 1;
@@ -128,7 +126,18 @@ app.post(WEBHOOK_PATH, async(req,res)=>{
   try { await bot.handleUpdate(req.body); } catch(e){ console.error('[webhook]',e.message); }
 });
 app.get(WEBHOOK_PATH, (_req,res)=>res.send('Webhook active ✅'));
-app.use(express.static(path.join(__dirname,'../../client')));
+
+// ── FIX: log the static path so we can verify it on Railway ──────────────────
+const clientPath = path.join(__dirname, '../../client');
+console.log(`[static] serving files from: ${clientPath}`);
+app.use(express.static(clientPath));
+
+// ── FIX: explicit GET / handler so we can see in logs if page is being served ─
+app.get('/', (req, res) => {
+  const filePath = path.join(clientPath, 'index.html');
+  console.log(`[GET /] from ${req.headers['x-forwarded-for'] || req.ip} serving ${filePath}`);
+  res.sendFile(filePath);
+});
 
 // ── Words ─────────────────────────────────────────────────────────────────────
 const WORDS=['cat','dog','sun','car','fish','bird','moon','tree','house','flower','apple','pizza',
@@ -139,7 +148,7 @@ const WORDS=['cat','dog','sun','car','fish','bird','moon','tree','house','flower
   'alien','crown','bridge'];
 function pickWord(){ return WORDS[Math.floor(Math.random()*WORDS.length)]; }
 
-// ── Deterministic PRNG (mulberry32) — IDENTICAL on client and server ──────────
+// ── Deterministic PRNG (mulberry32) ──────────────────────────────────────────
 function makePRNG(seed){
   let s=seed>>>0;
   return function(){
@@ -195,14 +204,11 @@ function renderStroke(ctx,s){
   ctx.setLineDash([]);
   ctx.globalAlpha=1;
   ctx.globalCompositeOperation='source-over';
-
-  // ── Dot fix: single tap or nearly-identical 2 points → filled circle ──────
   const isDot = pts.length===1 || (pts.length===2 &&
     Math.abs(pts[1][0]-pts[0][0])<1.5 && Math.abs(pts[1][1]-pts[0][1])<1.5);
   if(isDot && bt0!=='fill' && bt0!=='eyedrop' && bt0!=='eraser'){
     const r = sz * (bd.widthMult||1) * 0.5;
     ctx.globalAlpha = op * (bd.alpha||1) * (fl||1);
-    ctx.globalCompositeOperation = 'source-over';
     ctx.fillStyle = col;
     ctx.beginPath();
     ctx.arc(pts[0][0], pts[0][1], Math.max(0.5, r), 0, Math.PI*2);
@@ -210,16 +216,14 @@ function renderStroke(ctx,s){
     ctx.restore(); return;
   }
   if(pts.length<2 && bt0!=='fill' && bt0!=='eyedrop') { ctx.restore(); return; }
-
   if(bt==='eraser'){
     ctx.globalCompositeOperation='destination-out';ctx.globalAlpha=1;
     ctx.strokeStyle='rgba(0,0,0,1)';ctx.lineWidth=sz*bd.widthMult;
-    ctx.lineCap='round';ctx.lineJoin='round';ctx.setLineDash([]);
+    ctx.lineCap='round';ctx.lineJoin='round';
     drawPath(ctx,pts,sm);ctx.stroke();ctx.restore();return;
   }
   if(bt==='line'){
-    ctx.globalCompositeOperation='source-over';ctx.globalAlpha=op*fl;
-    ctx.strokeStyle=col;ctx.lineWidth=sz;ctx.lineCap='round';ctx.setLineDash([]);
+    ctx.globalAlpha=op*fl;ctx.strokeStyle=col;ctx.lineWidth=sz;ctx.lineCap='round';
     ctx.beginPath();ctx.moveTo(pts[0][0],pts[0][1]);
     ctx.lineTo(pts[pts.length-1][0],pts[pts.length-1][1]);ctx.stroke();
     ctx.restore();return;
@@ -247,25 +251,23 @@ function renderStroke(ctx,s){
     ctx.restore();return;
   }
   if(bt==='eyedrop'){ctx.restore();return;}
-
   if(bt==='airbrush'){
-    ctx.globalCompositeOperation='source-over';ctx.fillStyle=col;
+    ctx.fillStyle=col;
     const rad=sz*3.5,count=Math.floor(rad*rad*0.35*fl);
     for(let i=0;i<pts.length;i++){
       for(let d=0;d<count;d++){
         const u1=Math.max(rng(),1e-10),u2=rng();
         const mag=Math.sqrt(-2*Math.log(u1))*Math.cos(2*Math.PI*u2);
         const r=Math.abs(mag)*rad*0.45,angle=rng()*Math.PI*2;
-        const px=pts[i][0]+Math.cos(angle)*r,py=pts[i][1]+Math.sin(angle)*r;
         const norm=Math.min(r/rad,1);
         ctx.globalAlpha=op*bd.alpha*(1-norm*norm*norm)*0.55;
-        ctx.beginPath();ctx.arc(px,py,0.3+rng()*1.8+norm*0.8,0,Math.PI*2);ctx.fill();
+        ctx.beginPath();ctx.arc(pts[i][0]+Math.cos(angle)*r,pts[i][1]+Math.sin(angle)*r,0.3+rng()*1.8+norm*0.8,0,Math.PI*2);ctx.fill();
       }
     }
     ctx.restore();return;
   }
   if(bt==='watercolor'){
-    ctx.globalCompositeOperation='source-over';ctx.strokeStyle=col;ctx.lineCap='round';ctx.lineJoin='round';
+    ctx.strokeStyle=col;ctx.lineCap='round';ctx.lineJoin='round';
     for(let l=0;l<6;l++){
       ctx.globalAlpha=op*bd.alpha*fl/6;ctx.lineWidth=sz*bd.widthMult*(0.7+rng()*0.6);
       ctx.beginPath();ctx.moveTo(pts[0][0]+(rng()-.5)*sz*.3,pts[0][1]+(rng()-.5)*sz*.3);
@@ -275,7 +277,7 @@ function renderStroke(ctx,s){
     ctx.restore();return;
   }
   if(bt==='bristle'){
-    ctx.globalCompositeOperation='source-over';ctx.lineCap='round';ctx.lineJoin='round';
+    ctx.lineCap='round';ctx.lineJoin='round';
     const br=Math.max(4,Math.floor(sz*0.7));ctx.lineWidth=Math.max(0.8,sz/br*1.2);
     for(let b=0;b<br;b++){
       ctx.globalAlpha=op*bd.alpha*fl*(0.5+rng()*.5);ctx.strokeStyle=col;
@@ -287,7 +289,7 @@ function renderStroke(ctx,s){
     ctx.restore();return;
   }
   if(bt==='ink'){
-    ctx.globalCompositeOperation='source-over';ctx.strokeStyle=col;ctx.lineCap='round';ctx.lineJoin='round';ctx.setLineDash([]);
+    ctx.strokeStyle=col;ctx.lineCap='round';ctx.lineJoin='round';
     for(let i=1;i<pts.length;i++){
       const p=pressure(pts,i);ctx.globalAlpha=op*fl*Math.min(1,p*0.9+0.1);
       ctx.lineWidth=sz*p*bd.widthMult;ctx.beginPath();ctx.moveTo(pts[i-1][0],pts[i-1][1]);ctx.lineTo(pts[i][0],pts[i][1]);ctx.stroke();
@@ -295,8 +297,8 @@ function renderStroke(ctx,s){
     ctx.restore();return;
   }
   if(bt==='pencil'){
-    ctx.globalCompositeOperation='source-over';ctx.strokeStyle=col;ctx.lineCap='round';ctx.lineJoin='round';
-    ctx.setLineDash([]);ctx.lineWidth=sz*bd.widthMult;
+    ctx.strokeStyle=col;ctx.lineCap='round';ctx.lineJoin='round';
+    ctx.lineWidth=sz*bd.widthMult;
     for(let pass=0;pass<2;pass++){
       ctx.globalAlpha=op*bd.alpha*fl*(pass===0?0.7:0.45);
       ctx.beginPath();ctx.moveTo(pts[0][0]+(rng()-.5)*1.5,pts[0][1]+(rng()-.5)*1.5);
@@ -305,8 +307,8 @@ function renderStroke(ctx,s){
     }
     ctx.restore();return;
   }
-  ctx.globalCompositeOperation='source-over';ctx.globalAlpha=op*bd.alpha*fl;
-  ctx.strokeStyle=col;ctx.lineCap=bd.cap||'round';ctx.lineJoin='round';ctx.setLineDash([]);
+  ctx.globalAlpha=op*bd.alpha*fl;
+  ctx.strokeStyle=col;ctx.lineCap=bd.cap||'round';ctx.lineJoin='round';
   if(bd.pressure&&bt!=='marker'){
     for(let i=1;i<pts.length;i++){
       const p=pressure(pts,i);ctx.lineWidth=sz*bd.widthMult*p;
@@ -323,18 +325,14 @@ async function renderPNG(strokes){
   return canvas.toBuffer('image/png');
 }
 
-// ── Game state ─────────────────────────────────────────────────────────────────
+// ── Game state ────────────────────────────────────────────────────────────────
 const games=new Map();
 function makeGame(chatId){
   return{chatId,phase:'idle',drawerTgId:null,drawerName:'',drawerWsId:null,
-    word:null,hintRevealed:[],strokes:[],
-    // ✅ strokesUndo is the REDO stack — strokes popped by undo go here
-    // It is CLEARED whenever a new stroke is drawn (standard undo/redo model)
-    strokesUndo:[],
+    word:null,hintRevealed:[],strokes:[],strokesUndo:[],
     roundStartTime:0,firstStrokeDrawn:false,lastHintAt:0,
     roundTimer:null,hintTimer:null,updateTimer:null,
-    // ✅ Rate limit tracking: don't hammer Telegram during undo spam
-    lastPushAt:0, retryAfterMs:0,
+    lastPushAt:0,retryAfterMs:0,
     inviteMessageId:null,liveMessageId:null,scores:new Map(),clients:new Map()};
 }
 function getOrMakeGame(chatId){
@@ -382,28 +380,19 @@ function revealNextHint(game){
   return hint;
 }
 
-// ── Canvas push with rate-limit handling ──────────────────────────────────────
 async function pushCanvas(game){
   if(game.phase!=='drawing'||!game.word)return;
-
-  // ✅ Respect Telegram's retry-after: if we got a 429, wait it out
   const now=Date.now();
   if(game.retryAfterMs>0&&now<game.lastPushAt+game.retryAfterMs){
-    // Re-schedule after the cooldown expires
-    const wait=game.lastPushAt+game.retryAfterMs-now+200;
-    scheduleUpdate(game,wait,true);
+    scheduleUpdate(game,game.lastPushAt+game.retryAfterMs-now+200,true);
     return;
   }
-
   let png;try{png=await renderPNG(game.strokes);}catch(e){console.error('[render]',e.message);return;}
   const hint=buildHint(game.word,game.hintRevealed);
   const caption=`🎨 *${game.drawerName}* is drawing!\n🔤 \`${hint}\`  —  ${game.word.length} letters\n\n💬 Type your guess in the chat!`;
   const cd=Math.ceil((HINT_COOLDOWN_MS-(now-game.lastHintAt))/1000);
   const kb=Markup.inlineKeyboard([[Markup.button.callback(cd<=0?'💡 Hint':`⏳ Hint (${cd}s)`,`hint:${game.chatId}`)]]);
-
-  game.lastPushAt=Date.now();
-  game.retryAfterMs=0;
-
+  game.lastPushAt=Date.now();game.retryAfterMs=0;
   try{
     if(game.liveMessageId){
       await bot.telegram.editMessageMedia(game.chatId,game.liveMessageId,null,{type:'photo',media:{source:png,filename:'drawing.png'},caption,parse_mode:'Markdown'},kb);
@@ -413,14 +402,11 @@ async function pushCanvas(game){
     }
   }catch(e){
     if(/not modified/i.test(e.message))return;
-    // ✅ Parse retry-after from 429 response and back off
     const retryMatch=e.message.match(/retry after (\d+)/i);
     if(retryMatch){
-      const secs=parseInt(retryMatch[1])+1;
-      game.retryAfterMs=secs*1000;
+      const secs=parseInt(retryMatch[1])+1;game.retryAfterMs=secs*1000;
       console.log(`[pushCanvas] 429 — backing off ${secs}s`);
-      scheduleUpdate(game,secs*1000,true); // re-try after backoff
-      return;
+      scheduleUpdate(game,secs*1000,true);return;
     }
     console.error('[pushCanvas]',e.message);
     if(/not found|deleted|message to edit|socket hang up|ECONNRESET|ETIMEDOUT/i.test(e.message)){
@@ -430,8 +416,6 @@ async function pushCanvas(game){
   }
 }
 
-// ✅ scheduleUpdate: force=true cancels pending timer (for undo/redo bursts)
-// force=false debounces (normal drawing — don't queue up while one is pending)
 function scheduleUpdate(game,delay=2000,force=false){
   if(!game.firstStrokeDrawn)return;
   if(force){clearTimeout(game.updateTimer);game.updateTimer=null;}
@@ -480,11 +464,13 @@ bot.command('startgame',async(ctx)=>{
   game.inviteMessageId=msg.message_id;persistGame(game);
   console.log(`[bot] /startgame chatId=${chatId}`);
 });
+
 bot.command('stopgame',async(ctx)=>{
   const game=games.get(String(ctx.chat.id));
   if(!game||game.phase==='idle')return ctx.reply('No active game.');
   await endGame(game,null,'stopped');ctx.reply('🛑 Stopped.');
 });
+
 bot.command('skipword',async(ctx)=>{
   const game=games.get(String(ctx.chat.id));
   if(!game||game.phase!=='drawing')return ctx.reply('No active round.');
@@ -495,6 +481,7 @@ bot.command('skipword',async(ctx)=>{
   broadcast(game,{type:'clear'},game.drawerWsId);broadcast(game,{type:'word_skipped',hint:buildHint(nw,game.hintRevealed)},game.drawerWsId);
   ctx.reply('✅ Word skipped!');
 });
+
 bot.command('leaderboard',async(ctx)=>{
   const game=games.get(String(ctx.chat.id));
   if(!game)return ctx.reply('No game.');
@@ -505,16 +492,25 @@ bot.action(/^claim_draw:(.+)$/,async(ctx)=>{
   const chatId=ctx.match[1],game=games.get(chatId);
   if(!game)return ctx.answerCbQuery('❌ No active game.',{show_alert:true});
   if(game.phase!=='waiting_drawer')return ctx.answerCbQuery('❌ Already claimed!',{show_alert:true});
-  const tgId=String(ctx.from.id),uname=`${ctx.from.first_name||''} ${ctx.from.last_name||''}`.trim()||ctx.from.username||'Artist';
+  const tgId=String(ctx.from.id);
+  const uname=`${ctx.from.first_name||''} ${ctx.from.last_name||''}`.trim()||ctx.from.username||'Artist';
   game.drawerTgId=tgId;game.drawerName=uname;game.phase='drawing';
   game.word=pickWord();game.hintRevealed=new Array(game.word.length).fill(false);
   game.strokes=[];game.strokesUndo=[];game.roundStartTime=Date.now();persistGame(game);
   console.log(`[game] Drawer: ${uname}(${tgId}) word=${game.word} chatId=${chatId}`);
   await ctx.answerCbQuery('✅ Open your canvas!');
-  const url=`https://t.me/${botUsername}/${WEBAPP_SHORT_NAME}?startapp=${encodeURIComponent(`${chatId}__${tgId}__${uname}`)}`;
-  try{await bot.telegram.editMessageText(chatId,game.inviteMessageId,null,
-    `🎨 *${uname}* is drawing!\n🔤 \`${buildHint(game.word,game.hintRevealed)}\`  —  ${game.word.length} letters\n\n💬 Type your guess!`,
-    {parse_mode:'Markdown',...Markup.inlineKeyboard([[Markup.button.url('🖌 Open Canvas',url)]])});}catch(e){console.error('[editInvite]',e.message);}
+
+  // ── FIX 1: name removed from startparam — avoids 64-char limit and Unicode issues
+  const startparam=`${chatId}__${tgId}`;
+  console.log(`[claim_draw] startparam="${startparam}" length=${startparam.length}`);
+  const url=`https://t.me/${botUsername}/${WEBAPP_SHORT_NAME}?startapp=${encodeURIComponent(startparam)}`;
+
+  try{
+    await bot.telegram.editMessageText(chatId,game.inviteMessageId,null,
+      `🎨 *${uname}* is drawing!\n🔤 \`${buildHint(game.word,game.hintRevealed)}\`  —  ${game.word.length} letters\n\n💬 Type your guess!`,
+      // ── FIX 2: use webApp button instead of url button — guaranteed to open Mini App
+      {parse_mode:'Markdown',...Markup.inlineKeyboard([[Markup.button.webApp('🖌 Open Canvas',url)]])});
+  }catch(e){console.error('[editInvite]',e.message);}
 });
 
 bot.action(/^hint:(.+)$/,async(ctx)=>{
@@ -533,7 +529,6 @@ bot.on('text',async(ctx)=>{
   const chatId=String(ctx.chat.id),game=games.get(chatId);
   if(!game||game.phase!=='drawing'||!game.word)return;
   const text=(ctx.message.text||'').trim();if(text.startsWith('/'))return;
-
   const name=`${ctx.from.first_name||''} ${ctx.from.last_name||''}`.trim()||ctx.from.username||'Player';
   const correct=text.toLowerCase()===game.word.toLowerCase();
   broadcast(game,{type:'guess',name,text,correct});
@@ -583,21 +578,16 @@ wss.on('connection',(ws,req)=>{
   ws.on('message',data=>{
     let msg;try{msg=JSON.parse(data);}catch{return;}
     switch(msg.type){
-
       case'draw':
         if(wsId!==game.drawerWsId)return;
-        // ✅ New stroke clears the redo stack (standard behavior)
         game.strokesUndo=[];
         {
-          // ✅ Deduplicate partial strokes: client sends every 8 pts + final pointerUp.
-          // Use strokeId to replace the existing partial instead of stacking duplicates.
-          // Without this: a 69-pt stroke = 9 entries → 9x overdraw in Telegram image.
           const sid=msg.stroke.strokeId;
           if(sid){
             const idx=game.strokes.findIndex(s=>s.strokeId===sid);
             if(idx>=0){game.strokes[idx]=msg.stroke;}else{game.strokes.push(msg.stroke);}
           }else{
-            game.strokes.push(msg.stroke); // fill/legacy strokes without strokeId
+            game.strokes.push(msg.stroke);
           }
         }
         broadcast(game,{type:'draw',stroke:msg.stroke},wsId);
@@ -613,15 +603,12 @@ wss.on('connection',(ws,req)=>{
       case'undo':
         if(wsId!==game.drawerWsId)return;
         if(game.strokes.length>0){
-          // ✅ Pop from strokes, push to redo stack
           const undone=game.strokes.pop();
           game.strokesUndo.push(undone);
-          if(game.strokesUndo.length>50)game.strokesUndo.shift(); // cap redo stack
-          // ✅ Send snapshot ONLY to non-drawer clients (watchers/guessers)
-          // Drawer manages their own canvas locally — sending snapshot back causes the bug
+          if(game.strokesUndo.length>50)game.strokesUndo.shift();
           renderPNG(game.strokes).then(png=>{
             const b64='data:image/png;base64,'+png.toString('base64');
-            broadcast(game,{type:'snapshot',data:b64},game.drawerWsId); // skip drawer
+            broadcast(game,{type:'snapshot',data:b64},game.drawerWsId);
           }).catch(e=>console.error('[undo render]',e.message));
           persistDebounced(game);
           scheduleUpdate(game,1500,true);
@@ -631,13 +618,11 @@ wss.on('connection',(ws,req)=>{
       case'redo':
         if(wsId!==game.drawerWsId)return;
         if(game.strokesUndo.length>0){
-          // ✅ Pop from redo stack, push back to strokes
           const redone=game.strokesUndo.pop();
           game.strokes.push(redone);
-          // ✅ Also skip drawer for redo snapshots
           renderPNG(game.strokes).then(png=>{
             const b64='data:image/png;base64,'+png.toString('base64');
-            broadcast(game,{type:'snapshot',data:b64},game.drawerWsId); // skip drawer
+            broadcast(game,{type:'snapshot',data:b64},game.drawerWsId);
           }).catch(e=>console.error('[redo render]',e.message));
           persistDebounced(game);
           scheduleUpdate(game,1500,true);
@@ -652,7 +637,6 @@ wss.on('connection',(ws,req)=>{
 
       case'snapshot':
         if(wsId!==game.drawerWsId)return;
-        // Manual snapshot from sendToTg — broadcast to everyone except drawer
         broadcast(game,{type:'snapshot',data:msg.data},wsId);
         break;
 
@@ -692,15 +676,11 @@ wss.on('connection',(ws,req)=>{
         if(wsId!==game.drawerWsId)return;endGame(game,null,'done');break;
 
       case'new_round':
-        // ✅ Handle new_round from Mini App start button
         if(game.phase==='idle'||game.phase==='ended'){
-          // Only admins/anyone can trigger — same logic as /startgame
           game.phase='waiting_drawer';game.scores=new Map();game.strokes=[];game.strokesUndo=[];
           game.word=null;game.drawerTgId=null;game.drawerName='';game.drawerWsId=null;
           persistDebounced(game);
-          // Notify group chat
           if(botUsername){
-            const canvasUrl=`https://t.me/${botUsername}/${WEBAPP_SHORT_NAME}?startapp=${encodeURIComponent(game.chatId+'__'+tgId+'__'+name)}`;
             bot.telegram.sendMessage(game.chatId,`🎨 *${name}* wants to start a new round! Who wants to draw?`,
               {parse_mode:'Markdown',...Markup.inlineKeyboard([[Markup.button.callback('✏️ I Want to Draw!',`claim_draw:${game.chatId}`)]])}).catch(()=>{});
           }
@@ -731,6 +711,7 @@ function tgPost(method,body){
     r.on('error',rej);r.write(p);r.end();
   });
 }
+
 async function launchBot(){
   try{
     const me=await bot.telegram.getMe();botUsername=me.username;console.log(`🤖 @${botUsername} ready`);

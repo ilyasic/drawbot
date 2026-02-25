@@ -85,7 +85,8 @@ function rowToGame(row) {
   g.drawerName = row.drawer_name||''; g.word = row.word||null;
   g.hintRevealed = JSON.parse(row.hint_revealed||'[]');
   g.strokes = JSON.parse(row.strokes||'[]');
-  g.strokesUndo = [...g.strokes];
+  // FIX S1: strokesUndo must start empty after restore — redo stack is always empty on restart
+  g.strokesUndo = [];
   g.roundStartTime = row.round_start||0; g.firstStrokeDrawn = row.first_stroke===1;
   g.lastHintAt = row.last_hint_at||0;
   g.inviteMessageId = row.invite_msg_id||null; g.liveMessageId = row.live_msg_id||null;
@@ -295,7 +296,8 @@ function makeGame(chatId){
     word:null,hintRevealed:[],strokes:[],strokesUndo:[],roundStartTime:0,
     firstStrokeDrawn:false,lastHintAt:0,roundTimer:null,hintTimer:null,updateTimer:null,
     inviteMessageId:null,liveMessageId:null,scores:new Map(),clients:new Map(),
-    canvasW:DEFAULT_CW,canvasH:DEFAULT_CH};
+    canvasW:DEFAULT_CW,canvasH:DEFAULT_CH,
+    retryAfterUntil:0};  // FIX S4: track 429 retry-after
 }
 function getOrMakeGame(chatId){
   const k=String(chatId);
@@ -343,6 +345,13 @@ function revealNextHint(game){
 
 async function pushCanvas(game){
   if(game.phase!=='drawing'||!game.word)return;
+  // FIX S4: respect Telegram 429 retry-after
+  if(game.retryAfterUntil&&Date.now()<game.retryAfterUntil){
+    const wait=game.retryAfterUntil-Date.now();
+    console.log(`[pushCanvas] Rate limited, retry in ${Math.ceil(wait/1000)}s`);
+    setTimeout(()=>pushCanvas(game),wait+200);
+    return;
+  }
   let png;try{png=await renderPNG(game.strokes,game.canvasW,game.canvasH);}catch(e){console.error('[render]',e.message);return;}
   const hint=buildHint(game.word,game.hintRevealed);
   const caption=`🎨 *${game.drawerName}* is drawing!\n🔤 \`${hint}\`  —  ${game.word.length} letters\n\n💬 Type your guess in the chat!`;
@@ -357,6 +366,14 @@ async function pushCanvas(game){
     }
   }catch(e){
     if(/not modified/i.test(e.message))return;
+    // FIX S4: handle 429 Too Many Requests
+    if(e.response?.error_code===429||/too many requests/i.test(e.message)){
+      const retryAfter=(e.response?.parameters?.retry_after||10)*1000+500;
+      game.retryAfterUntil=Date.now()+retryAfter;
+      console.warn(`[pushCanvas] 429 — backing off ${Math.ceil(retryAfter/1000)}s`);
+      setTimeout(()=>pushCanvas(game),retryAfter);
+      return;
+    }
     console.error('[pushCanvas]',e.message);
     if(/not found|deleted|message to edit|socket hang up|ECONNRESET|ETIMEDOUT/i.test(e.message)){
       game.liveMessageId=null;
@@ -521,25 +538,45 @@ wss.on('connection',(ws,req)=>{
         break;
       case'draw':
         if(wsId!==game.drawerWsId)return;
-        game.strokesUndo.push({...msg.stroke});game.strokes.push(msg.stroke);
-        broadcast(game,{type:'draw',stroke:msg.stroke},wsId);
-        persistDebounced(game,600);
-        // Flatten to snapshot every 60 strokes — keeps memory and init payload small
-        if(game.strokes.length>0&&game.strokes.length%60===0){
-          renderPNG(game.strokes,game.canvasW,game.canvasH).then(png=>{
-            const pngB64=png.toString('base64');
-            game.strokes=[{brushType:'_snapshot',pngB64}];
-            game.strokesUndo=[];
+        {
+          // FIX S2: Use strokeId to replace partials — prevents N copies of same stroke being rendered
+          const incoming=msg.stroke;
+          if(incoming.strokeId){
+            const existingIdx=game.strokes.findIndex(s=>s.strokeId===incoming.strokeId);
+            if(existingIdx!==-1){
+              // Replace the existing partial with the latest (longer) version
+              game.strokes[existingIdx]=incoming;
+            }else{
+              // New stroke we haven't seen before
+              game.strokesUndo.push(incoming);
+              game.strokes.push(incoming);
+            }
+          }else{
+            // No strokeId (legacy / fill): always append
+            game.strokesUndo.push(incoming);
+            game.strokes.push(incoming);
+          }
+          broadcast(game,{type:'draw',stroke:incoming},wsId);
+          persistDebounced(game,600);
+          // Flatten to snapshot every 60 strokes — keeps memory and init payload small
+          if(game.strokes.length>0&&game.strokes.length%60===0){
+            renderPNG(game.strokes,game.canvasW,game.canvasH).then(png=>{
+              const pngB64=png.toString('base64');
+              // FIX S6: mirror strokes and strokesUndo so undo/redo work after flatten
+              const snap={brushType:'_snapshot',pngB64};
+              game.strokes=[snap];
+              game.strokesUndo=[snap];
+              persistDebounced(game,200);
+              console.log(`[game] Flattened strokes to snapshot`);
+            }).catch(e=>console.error('[flatten]',e.message));
+          }
+          if(!game.firstStrokeDrawn){
+            game.firstStrokeDrawn=true;game.roundStartTime=Date.now();
             persistDebounced(game,200);
-            console.log(`[game] Flattened strokes to snapshot`);
-          }).catch(e=>console.error('[flatten]',e.message));
+            console.log(`[game] First stroke — pushing canvas to chat`);
+            setTimeout(()=>pushCanvas(game),500);
+          }else{scheduleUpdate(game);}
         }
-        if(!game.firstStrokeDrawn){
-          game.firstStrokeDrawn=true;game.roundStartTime=Date.now();
-          persistDebounced(game,200);
-          console.log(`[game] First stroke — pushing canvas to chat`);
-          setTimeout(()=>pushCanvas(game),500);
-        }else{scheduleUpdate(game);}
         break;
       case'undo':
         if(wsId!==game.drawerWsId)return;
@@ -547,7 +584,8 @@ wss.on('connection',(ws,req)=>{
           game.strokes.pop();
           renderPNG(game.strokes,game.canvasW,game.canvasH).then(png=>{
             const b64='data:image/png;base64,'+png.toString('base64');
-            broadcast(game,{type:'snapshot',data:b64});
+            // FIX S3: skip drawerWsId so drawer doesn't destroy their own layered canvas
+            broadcast(game,{type:'snapshot',data:b64},game.drawerWsId);
           }).catch(()=>{});
           persistDebounced(game);
           scheduleUpdate(game,800,true);
@@ -560,7 +598,8 @@ wss.on('connection',(ws,req)=>{
           game.strokes.push(next);
           renderPNG(game.strokes,game.canvasW,game.canvasH).then(png=>{
             const b64='data:image/png;base64,'+png.toString('base64');
-            broadcast(game,{type:'snapshot',data:b64});
+            // FIX S3: skip drawerWsId here too
+            broadcast(game,{type:'snapshot',data:b64},game.drawerWsId);
           }).catch(()=>{});
           persistDebounced(game);scheduleUpdate(game,800,true);
         }}
@@ -605,6 +644,24 @@ wss.on('connection',(ws,req)=>{
         break;
       case'done_drawing':
         if(wsId!==game.drawerWsId)return;endGame(game,null,'done');break;
+      // FIX S5: handle 'new_round' from the client start button
+      case'new_round':
+        {
+          if(game.phase==='drawing')return; // already running
+          if(game.phase==='waiting_drawer')return; // already waiting
+          if(!botUsername)return;
+          game.phase='waiting_drawer';
+          game.scores=new Map();game.strokes=[];game.strokesUndo=[];
+          game.word=null;game.drawerTgId=null;game.drawerName='';game.drawerWsId=null;game.liveMessageId=null;
+          persistGame(game);
+          const url=`https://t.me/${botUsername}/${WEBAPP_SHORT_NAME}`;
+          bot.telegram.sendMessage(game.chatId,
+            `🎨 *Draw & Guess!*\n\nWho wants to draw? ✏️`,
+            {parse_mode:'Markdown',...Markup.inlineKeyboard([[Markup.button.callback('✏️ I Want to Draw!',`claim_draw:${game.chatId}`)]])}
+          ).then(m=>{game.inviteMessageId=m.message_id;persistDebounced(game);}).catch(e=>console.error('[new_round]',e.message));
+          broadcast(game,{type:'status',message:'Waiting for a drawer… check the group!'});
+        }
+        break;
       case'get_logs':
         ws.send(JSON.stringify({type:'logs',logs:[]}));break;
     }

@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -37,7 +36,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(
 #sync-indicator{display:flex;align-items:center;flex-shrink:0;width:16px;justify-content:center;}
 @keyframes spin{to{transform:rotate(360deg);}}
 
-#canvas-area{flex:1 1 0;position:relative;overflow:hidden;min-height:0;background:#141e1f;}
+#canvas-area{flex:1 1 0;position:relative;overflow:hidden;min-height:0;background:#1a2a2b;}
 #canvas-wrap{position:absolute;transform-origin:0 0;will-change:transform;}
 .cvl{position:absolute;top:0;left:0;}
 #cv-bg{background:#fff;z-index:1;box-shadow:0 4px 40px rgba(0,0,0,.7);}
@@ -681,10 +680,15 @@ function showZHUD(z){
 }
 function fitCanvas(){
   const r=area.getBoundingClientRect();let aw=r.width,ah=r.height;
-  if(aw<10){const tb=document.getElementById('topbar'),bar=document.getElementById('toolbar'),cp=document.getElementById('chat-panel');
-    aw=window.innerWidth;ah=window.innerHeight-(tb?tb.getBoundingClientRect().height:44)-(bar&&bar.classList.contains('visible')?bar.getBoundingClientRect().height:0)-(cp&&cp.classList.contains('visible')?cp.getBoundingClientRect().height:0);}
+  if(aw<10){const tb=document.getElementById('topbar');
+    aw=window.innerWidth;ah=window.innerHeight-(tb?tb.getBoundingClientRect().height:44);}
   if(aw<10){requestAnimationFrame(fitCanvas);return;}
-  const fz=Math.min(aw/CW,ah/CH,1);_fz=fz;_tz=fz;_tx=(aw-CW*fz)/2;_ty=Math.max(0,(ah-CH*fz)/2);
+  // On portrait mobile: scale to fill full width, ignore height overflow (scroll not needed, canvas clips)
+  const portrait=aw<ah;
+  const fz=portrait?Math.min(aw/CW,1):Math.min(aw/CW,ah/CH,1);
+  _fz=fz;_tz=fz;
+  _tx=(aw-CW*fz)/2;
+  _ty=portrait?4:Math.max(0,(ah-CH*fz)/2);
   zoom=_tz;panX=_tx;panY=_ty;applyT();btnFit?.classList.remove('visible');
 }
 setTimeout(fitCanvas,0);setTimeout(fitCanvas,100);setTimeout(fitCanvas,400);
@@ -738,14 +742,14 @@ function doUndo(){
   const ctx=actCtx(),us=gs(l,US),rs=gs(l,RS);if(!us.length)return;
   rs.push(ctx.getImageData(0,0,CW,CH));if(rs.length>20)rs.shift();
   ctx.putImageData(us.pop(),0,0);l._committed=ctx.getImageData(0,0,CW,CH);
-  composite();ws?.send(JSON.stringify({type:'undo'}));showSyncDone();addLog('Undo','draw');
+  composite();wsSend({type:'undo'});showSyncDone();addLog('Undo','draw');
 }
 function doRedo(){
   const l=actLayer();if(!l)return;
   const ctx=actCtx(),us=gs(l,US),rs=gs(l,RS);if(!rs.length)return;
   us.push(ctx.getImageData(0,0,CW,CH));if(us.length>20)us.shift();
   ctx.putImageData(rs.pop(),0,0);l._committed=ctx.getImageData(0,0,CW,CH);
-  composite();ws?.send(JSON.stringify({type:'redo'}));showSyncDone();addLog('Redo','draw');
+  composite();wsSend({type:'redo'});showSyncDone();addLog('Redo','draw');
 }
 
 // ─── Path helpers ─────────────────────────────────────────────────────────────
@@ -897,7 +901,7 @@ function onDown(e){
   if(brushType==='fill'){
     saveUndo();const ctx=actCtx();floodFill(ctx,x,y,currentColor,30);
     if(actLayer())actLayer()._committed=ctx.getImageData(0,0,CW,CH);composite();
-    ws?.send(JSON.stringify({type:'draw',stroke:{color:currentColor,size:brushSize,opacity:brushOpacity,flow:brushFlow,brushType:'fill',smoothing:0,points:[[x,y]],seed:0,isMask:editMask}}));
+    wsSend({type:'draw',stroke:{color:currentColor,size:brushSize,opacity:brushOpacity,flow:brushFlow,brushType:'fill',smoothing:0,points:[[x,y]],seed:0,isMask:editMask}});
     showSyncSpin();addLog(`Fill (${~~x},${~~y})=${currentColor}`,'draw');return;
   }
   ptrId=e.pointerId;area.setPointerCapture?.(ptrId);saveUndo();isDrawing=true;lastX=x;lastY=y;lsx=x;lsy=y;
@@ -916,18 +920,28 @@ function onMove(e){
     renderStroke(actCtx(),{...curStroke,points:[[lsx,lsy],[x,y]]});
     curStroke.points=[[lsx,lsy],[x,y]];lastX=x;lastY=y;composite();return;
   }
+  const prev=curStroke.points[curStroke.points.length-1];
   curStroke.points.push([x,y]);lastX=x;lastY=y;
-  actCtx().clearRect(0,0,CW,CH);
-  if(actLayer()?._committed)actCtx().putImageData(actLayer()._committed,0,0);
-  renderStroke(actCtx(),curStroke);composite();
-  if(curStroke.points.length%8===0){ws?.send(JSON.stringify({type:'draw',stroke:{...curStroke}}));showSyncSpin();}
+  // Incremental: only draw the new tail segment, not the whole stroke
+  // Brushes that need full redraw (pressure-sensitive, watercolor, bristle): redraw from scratch
+  const needsFullRedraw=(brushType==='ink'||brushType==='pencil'||brushType==='watercolor'||brushType==='bristle');
+  if(needsFullRedraw){
+    actCtx().clearRect(0,0,CW,CH);
+    if(actLayer()?._committed)actCtx().putImageData(actLayer()._committed,0,0);
+    renderStroke(actCtx(),curStroke);
+  }else{
+    // Draw only last 2 points — fast incremental append
+    renderStroke(actCtx(),{...curStroke,points:[prev,[x,y]]});
+  }
+  composite();
+  if(curStroke.points.length%8===0){wsSend({type:'draw',stroke:{...curStroke}});showSyncSpin();}
 }
 function onUp(){
   if(!isDrawing||!isDrawer)return;isDrawing=false;ptrId=null;
   if(curStroke?.points.length>0){
     renderStroke(actCtx(),curStroke);
     if(actLayer())actLayer()._committed=actCtx().getImageData(0,0,CW,CH);
-    composite();ws?.send(JSON.stringify({type:'draw',stroke:curStroke}));showSyncSpin();
+    composite();wsSend({type:'draw',stroke:curStroke});showSyncSpin();
     addLog(`Stroke: ${curStroke.brushType} pts=${curStroke.points.length} seed=${curStroke.seed}${editMask?' [MASK]':''}`,'draw');
   }
   curStroke=null;
@@ -1222,7 +1236,7 @@ document.getElementById('btn-undo').addEventListener('click',doUndo);
 document.getElementById('btn-redo').addEventListener('click',doRedo);
 document.getElementById('btn-clear').addEventListener('click',()=>{
   if(!isDrawer)return;if(!confirm('Clear canvas?'))return;
-  saveUndo();clearAll();ws?.send(JSON.stringify({type:'clear'}));showSyncSpin();addLog('Canvas cleared','draw');
+  saveUndo();clearAll();wsSend({type:'clear'});showSyncSpin();addLog('Canvas cleared','draw');
 });
 document.getElementById('btn-fill').addEventListener('click',()=>{setBrush('fill');closeAllPanels();showToast('Flood fill — tap to fill 🪣');});
 document.getElementById('btn-eyedrop').addEventListener('click',()=>{setBrush('eyedrop');closeAllPanels();showToast('Pick color 💉');});
@@ -1300,6 +1314,7 @@ function setRole(role,wordOrHint,round){
     wd.textContent=hint;setTimeout(fitCanvas,50);addLog(`Role: GUESSER — hint: ${hint}`,'round');
   }
   if(round)addChat('sys',`Round ${round}`);
+  setTimeout(fitCanvas,50);setTimeout(fitCanvas,300);
 }
 
 // ─── Sound ────────────────────────────────────────────────────────────────────
@@ -1339,15 +1354,15 @@ function openGallery(){
 // ─── Settings ─────────────────────────────────────────────────────────────────
 document.getElementById('s-players').addEventListener('click',()=>togglePanel('players-popup'));
 document.getElementById('s-leaderboard').addEventListener('click',()=>togglePanel('lb-popup'));
-document.getElementById('s-skip').addEventListener('click',()=>{if(!isDrawer){showToast('Only drawer can skip','warn');return;}if(confirm('Skip word?'))ws?.send(JSON.stringify({type:'skip_word'}));closeAllPanels();});
-document.getElementById('s-done').addEventListener('click',()=>{if(!isDrawer){showToast('Only drawer can finish','warn');return;}if(confirm('Finish?'))ws?.send(JSON.stringify({type:'done_drawing'}));closeAllPanels();});
+document.getElementById('s-skip').addEventListener('click',()=>{if(!isDrawer){showToast('Only drawer can skip','warn');return;}if(confirm('Skip word?'))wsSend({type:'skip_word'});closeAllPanels();});
+document.getElementById('s-done').addEventListener('click',()=>{if(!isDrawer){showToast('Only drawer can finish','warn');return;}if(confirm('Finish?'))wsSend({type:'done_drawing'});closeAllPanels();});
 document.getElementById('s-theme').addEventListener('click',()=>{isDark=!isDark;applyTheme(isDark);document.getElementById('s-theme-val').textContent=isDark?'Off':'On';document.querySelector('#s-theme .s-icon').textContent=isDark?'☀️':'🌙';});
 document.getElementById('s-sound').addEventListener('click',()=>{soundEnabled=!soundEnabled;document.getElementById('s-sound-val').textContent=soundEnabled?'On':'Off';showToast(soundEnabled?'Sound on 🔊':'Sound off 🔇');});
 document.getElementById('s-save-drawing').addEventListener('click',()=>{saveToGallery(currentWord||'drawing',myName);showToast('Saved ✅','ok');closeAllPanels();});
 document.getElementById('s-send-bot').addEventListener('click',()=>{sendToTg();closeAllPanels();});
 document.getElementById('s-logs').addEventListener('click',()=>{closeAllPanels();setTimeout(()=>{togglePanel('logs-popup');renderAllLogs();},10);});
 document.getElementById('s-gallery').addEventListener('click',()=>{openGallery();closeAllPanels();});
-document.getElementById('s-change-word').addEventListener('click',()=>{if(!isDrawer){showToast('Only drawer can change word','warn');return;}ws?.send(JSON.stringify({type:'change_word'}));showToast('New word…');closeAllPanels();});
+document.getElementById('s-change-word').addEventListener('click',()=>{if(!isDrawer){showToast('Only drawer can change word','warn');return;}wsSend({type:'change_word'});showToast('New word…');closeAllPanels();});
 
 function sendToTg(){
   try{const tmp=document.createElement('canvas');tmp.width=CW;tmp.height=CH;flattenTo(tmp.getContext('2d'));
@@ -1367,11 +1382,12 @@ document.getElementById('log-copy-btn').addEventListener('click',()=>{
 });
 
 // ─── Start button ─────────────────────────────────────────────────────────────
-document.getElementById('start-btn').addEventListener('click',()=>{ws?.send(JSON.stringify({type:'new_round'}));document.getElementById('start-btn').style.display='none';addLog('New round requested','round');});
+document.getElementById('start-btn').addEventListener('click',()=>{wsSend({type:'new_round'});document.getElementById('start-btn').style.display='none';addLog('New round requested','round');});
 
 // ─── WebSocket ────────────────────────────────────────────────────────────────
 let ws=null,myName='',myRoom='',myTgId='';
 
+function wsSend(obj){if(ws&&ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify(obj));}
 function connect(){
   if(!myName||!myRoom)return;
   addLog(`Connecting… room=${myRoom} name=${myName}`,'system');
@@ -1384,12 +1400,21 @@ function connect(){
       case'init':
         clearAll();
         if(m.strokes?.length){
-          (m.strokes).forEach(s=>renderStroke(drawCtx,s));
-          // Also store in layer so undo/local ops work
-          if(actLayer()){
-            actLayer().ctx.clearRect(0,0,CW,CH);
-            actLayer().ctx.drawImage(drawCv,0,0);
-            actLayer()._committed=actLayer().ctx.getImageData(0,0,CW,CH);
+          // Check if first stroke is a flattened snapshot
+          const first=m.strokes[0];
+          if(first?.brushType==='_snapshot'&&first.pngB64){
+            const img=new Image();
+            img.onload=()=>{
+              drawCtx.clearRect(0,0,CW,CH);
+              drawCtx.drawImage(img,0,0,CW,CH);
+              if(actLayer()){actLayer().ctx.clearRect(0,0,CW,CH);actLayer().ctx.drawImage(img,0,0,CW,CH);actLayer()._committed=actLayer().ctx.getImageData(0,0,CW,CH);}
+              // Render any strokes after the snapshot
+              m.strokes.slice(1).forEach(s=>renderStroke(drawCtx,s));
+            };
+            img.src='data:image/png;base64,'+first.pngB64;
+          }else{
+            m.strokes.forEach(s=>renderStroke(drawCtx,s));
+            if(actLayer()){actLayer().ctx.clearRect(0,0,CW,CH);actLayer().ctx.drawImage(drawCv,0,0);actLayer()._committed=actLayer().ctx.getImageData(0,0,CW,CH);}
           }
         }
         composite();
@@ -1475,6 +1500,7 @@ function connect(){
 }
 let _rcT=null;
 function scheduleReconnect(){clearTimeout(_rcT);_rcT=setTimeout(()=>{if(myName&&myRoom&&(!ws||ws.readyState===WebSocket.CLOSED))connect();},1500);}
+
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&myRoom&&(!ws||ws.readyState===WebSocket.CLOSED))connect();});
 
 // ─── Auto-join ────────────────────────────────────────────────────────────────

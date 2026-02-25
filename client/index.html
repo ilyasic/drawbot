@@ -167,7 +167,12 @@ input[type=range].pop-slider::-webkit-slider-thumb{-webkit-appearance:none;width
 .lact:hover{background:var(--surface3);color:var(--text);}
 .lact:active{transform:scale(.93);}
 
-.setting-row{display:flex;align-items:center;gap:8px;padding:8px 7px;border-radius:8px;cursor:pointer;
+.canvas-size-btn{background:var(--surface2);border:1px solid var(--border);color:var(--text2);
+  padding:4px 8px;border-radius:6px;font-size:.65rem;font-weight:700;cursor:pointer;
+  font-family:'JetBrains Mono',monospace;transition:all .1s;}
+.canvas-size-btn:active{transform:scale(.93);}
+.canvas-size-btn.on{background:rgba(196,149,106,.2);border-color:var(--btn-bg);color:var(--accent);}
+align-items:center;gap:8px;padding:8px 7px;border-radius:8px;cursor:pointer;
   font-size:.8rem;font-weight:500;border:1px solid transparent;transition:background .1s;color:var(--text2);}
 .setting-row:hover,.setting-row:active{background:var(--surface2);color:var(--text);}
 .setting-row .s-icon{font-size:1rem;width:20px;text-align:center;flex-shrink:0;}
@@ -400,6 +405,17 @@ input[type=range].pop-slider::-webkit-slider-thumb{-webkit-appearance:none;width
   <div class="setting-row" id="s-leaderboard"><span class="s-icon">🏆</span><span class="s-label">Leaderboard</span></div>
   <div class="setting-row" id="s-gallery">    <span class="s-icon">🖼</span><span class="s-label">Gallery</span></div>
   <div class="pop-divider"></div>
+  <div class="s-section">Canvas Size</div>
+  <div style="display:flex;flex-wrap:wrap;gap:5px;padding:4px 2px">
+    <button class="canvas-size-btn on" data-w="1920" data-h="1080">Full HD</button>
+    <button class="canvas-size-btn" data-w="1280" data-h="720">HD 720p</button>
+    <button class="canvas-size-btn" data-w="800"  data-h="500">Default</button>
+    <button class="canvas-size-btn" data-w="794"  data-h="1123">A4</button>
+    <button class="canvas-size-btn" data-w="559"  data-h="794">A5</button>
+    <button class="canvas-size-btn" data-w="1080" data-h="1080">Square</button>
+  </div>
+  <div id="s-canvas-info" style="font-size:.6rem;color:var(--text3);padding:1px 3px;font-family:'JetBrains Mono',monospace">1920 × 1080 px</div>
+  <div class="pop-divider"></div>
   <div class="s-section">Export</div>
   <div class="setting-row" id="s-save-drawing"><span class="s-icon">💾</span><span class="s-label">Save drawing</span></div>
   <div class="setting-row" id="s-send-bot">   <span class="s-icon">📤</span><span class="s-label">Send to chat</span></div>
@@ -569,7 +585,7 @@ function makePRNG(seed){
 }
 
 // ─── Canvas / Layer setup ─────────────────────────────────────────────────────
-const CW=800,CH=500;
+let CW=1920,CH=1080;
 const bgCv  =document.getElementById('cv-bg');
 const layersCv=document.getElementById('cv-layers'); // composite display canvas
 const drawCv=document.getElementById('cv-draw');
@@ -611,6 +627,28 @@ function initCanvases(){
   layers.push(mkLayer('Layer 1'));
   renderLayerPanel();composite();
   setTimeout(fitCanvas,0);setTimeout(fitCanvas,100);setTimeout(fitCanvas,350);setTimeout(fitCanvas,700);
+}
+
+function resizeCanvas(newW,newH){
+  if(newW===CW&&newH===CH)return;
+  if(!confirm(`Resize canvas to ${newW}×${newH}? This will clear all layers.`))return;
+  CW=newW;CH=newH;
+  // Resize all DOM canvases
+  [bgCv,layersCv,drawCv,prevCv].forEach(c=>{c.width=CW;c.height=CH;c.style.width=CW+'px';c.style.height=CH+'px';});
+  wrap.style.width=CW+'px';wrap.style.height=CH+'px';
+  // Reinit contexts (canvas resize clears them)
+  bgCtx=bgCv.getContext('2d');layersCtx=layersCv.getContext('2d');
+  drawCtx=drawCv.getContext('2d');prevCtx=prevCv.getContext('2d');
+  drawCtx.lineCap=drawCtx.lineJoin='round';
+  bgCtx.fillStyle='#fff';bgCtx.fillRect(0,0,CW,CH);
+  // Rebuild layers at new size
+  layers=[];actIdx=0;editMask=false;
+  layers.push(mkLayer('Layer 1'));
+  renderLayerPanel();composite();
+  fitCanvas();
+  document.getElementById('s-canvas-info').textContent=`${CW} × ${CH} px`;
+  showToast(`Canvas: ${CW}×${CH}`,'ok');
+  addLog(`Canvas resized to ${CW}×${CH}`,'system');
 }
 
 function actLayer(){return layers[actIdx];}
@@ -1515,6 +1553,14 @@ document.getElementById('s-save-drawing').addEventListener('click',()=>{saveToGa
 document.getElementById('s-send-bot').addEventListener('click',()=>{sendToTg();closeAllPanels();});
 document.getElementById('s-logs').addEventListener('click',()=>{closeAllPanels();setTimeout(()=>{togglePanel('logs-popup');renderAllLogs();},10);});
 document.getElementById('s-gallery').addEventListener('click',()=>{openGallery();closeAllPanels();});
+document.querySelectorAll('.canvas-size-btn').forEach(btn=>{
+  btn.addEventListener('click',()=>{
+    const w=+btn.dataset.w,h=+btn.dataset.h;
+    resizeCanvas(w,h);
+    document.querySelectorAll('.canvas-size-btn').forEach(b=>b.classList.remove('on'));
+    btn.classList.add('on');
+  });
+});
 document.getElementById('s-change-word').addEventListener('click',()=>{if(!isDrawer){showToast('Only drawer can change word','warn');return;}wsSend({type:'change_word'});showToast('New word…');closeAllPanels();});
 
 function sendToTg(){

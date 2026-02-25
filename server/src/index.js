@@ -33,23 +33,29 @@ db.exec(`
     hint_revealed TEXT, strokes TEXT, scores TEXT,
     round_start INTEGER, first_stroke INTEGER DEFAULT 0,
     last_hint_at INTEGER DEFAULT 0,
-    invite_msg_id INTEGER, live_msg_id INTEGER, updated_at INTEGER
+    invite_msg_id INTEGER, live_msg_id INTEGER, updated_at INTEGER,
+    canvas_w INTEGER DEFAULT 1920, canvas_h INTEGER DEFAULT 1080
   );
 `);
 const stmtUpsert = db.prepare(`
   INSERT INTO games (chat_id,phase,drawer_tg_id,drawer_name,word,hint_revealed,
-    strokes,scores,round_start,first_stroke,last_hint_at,invite_msg_id,live_msg_id,updated_at)
+    strokes,scores,round_start,first_stroke,last_hint_at,invite_msg_id,live_msg_id,canvas_w,canvas_h,updated_at)
   VALUES (@chat_id,@phase,@drawer_tg_id,@drawer_name,@word,@hint_revealed,
-    @strokes,@scores,@round_start,@first_stroke,@last_hint_at,@invite_msg_id,@live_msg_id,@updated_at)
+    @strokes,@scores,@round_start,@first_stroke,@last_hint_at,@invite_msg_id,@live_msg_id,@canvas_w,@canvas_h,@updated_at)
   ON CONFLICT(chat_id) DO UPDATE SET
     phase=excluded.phase,drawer_tg_id=excluded.drawer_tg_id,drawer_name=excluded.drawer_name,
     word=excluded.word,hint_revealed=excluded.hint_revealed,strokes=excluded.strokes,
     scores=excluded.scores,round_start=excluded.round_start,first_stroke=excluded.first_stroke,
     last_hint_at=excluded.last_hint_at,invite_msg_id=excluded.invite_msg_id,
-    live_msg_id=excluded.live_msg_id,updated_at=excluded.updated_at
+    live_msg_id=excluded.live_msg_id,canvas_w=excluded.canvas_w,canvas_h=excluded.canvas_h,
+    updated_at=excluded.updated_at
 `);
 const stmtGet = db.prepare(`SELECT * FROM games WHERE chat_id = ?`);
 const stmtAll = db.prepare(`SELECT * FROM games WHERE phase != 'idle'`);
+
+// Migration: add canvas_w/canvas_h columns if they don't exist yet
+try{db.exec(`ALTER TABLE games ADD COLUMN canvas_w INTEGER DEFAULT 1920`);}catch{}
+try{db.exec(`ALTER TABLE games ADD COLUMN canvas_h INTEGER DEFAULT 1080`);}catch{}
 
 function persistGame(game) {
   try {
@@ -61,7 +67,9 @@ function persistGame(game) {
       scores: JSON.stringify(Object.fromEntries(game.scores||new Map())),
       round_start: game.roundStartTime||0, first_stroke: game.firstStrokeDrawn?1:0,
       last_hint_at: game.lastHintAt||0, invite_msg_id: game.inviteMessageId||null,
-      live_msg_id: game.liveMessageId||null, updated_at: Date.now(),
+      live_msg_id: game.liveMessageId||null,
+      canvas_w: game.canvasW||DEFAULT_CW, canvas_h: game.canvasH||DEFAULT_CH,
+      updated_at: Date.now(),
     });
   } catch(e) { console.error('[db] persist error:', e.message); }
 }
@@ -82,6 +90,7 @@ function rowToGame(row) {
   g.lastHintAt = row.last_hint_at||0;
   g.inviteMessageId = row.invite_msg_id||null; g.liveMessageId = row.live_msg_id||null;
   g.scores = new Map(Object.entries(JSON.parse(row.scores||'{}')));
+  g.canvasW = row.canvas_w||DEFAULT_CW; g.canvasH = row.canvas_h||DEFAULT_CH;
   return g;
 }
 
@@ -121,7 +130,7 @@ function makePRNG(seed){
 }
 
 // ── Render engine ─────────────────────────────────────────────────────────────
-const CW=800,CH=500;
+const DEFAULT_CW=1920,DEFAULT_CH=1080;
 const BD={
   pen:      {smoothing:.5,alpha:1.0,widthMult:1.0,cap:'round',pressure:true, flow:.8},
   pencil:   {smoothing:.3,alpha:.75,widthMult:.8, cap:'round',pressure:true, flow:.7},
@@ -267,9 +276,10 @@ function renderStroke(ctx,s){
   ctx.restore();
 }
 
-async function renderPNG(strokes){
-  const canvas=createCanvas(CW,CH);const ctx=canvas.getContext('2d');
-  ctx.fillStyle='#ffffff';ctx.fillRect(0,0,CW,CH);
+async function renderPNG(strokes,cw,ch){
+  cw=cw||DEFAULT_CW;ch=ch||DEFAULT_CH;
+  const canvas=createCanvas(cw,ch);const ctx=canvas.getContext('2d');
+  ctx.fillStyle='#ffffff';ctx.fillRect(0,0,cw,ch);
   for(const s of(strokes||[])){
     if(s.brushType==='_snapshot'){
       if(s.pngB64){try{const img=await loadImage(Buffer.from(s.pngB64,'base64'));ctx.drawImage(img,0,0);}catch(e){console.error('[renderPNG] snapshot err',e);}}
@@ -284,7 +294,8 @@ function makeGame(chatId){
   return{chatId,phase:'idle',drawerTgId:null,drawerName:'',drawerWsId:null,
     word:null,hintRevealed:[],strokes:[],strokesUndo:[],roundStartTime:0,
     firstStrokeDrawn:false,lastHintAt:0,roundTimer:null,hintTimer:null,updateTimer:null,
-    inviteMessageId:null,liveMessageId:null,scores:new Map(),clients:new Map()};
+    inviteMessageId:null,liveMessageId:null,scores:new Map(),clients:new Map(),
+    canvasW:DEFAULT_CW,canvasH:DEFAULT_CH};
 }
 function getOrMakeGame(chatId){
   const k=String(chatId);
@@ -332,7 +343,7 @@ function revealNextHint(game){
 
 async function pushCanvas(game){
   if(game.phase!=='drawing'||!game.word)return;
-  let png;try{png=await renderPNG(game.strokes);}catch(e){console.error('[render]',e.message);return;}
+  let png;try{png=await renderPNG(game.strokes,game.canvasW,game.canvasH);}catch(e){console.error('[render]',e.message);return;}
   const hint=buildHint(game.word,game.hintRevealed);
   const caption=`🎨 *${game.drawerName}* is drawing!\n🔤 \`${hint}\`  —  ${game.word.length} letters\n\n💬 Type your guess in the chat!`;
   const cd=Math.ceil((HINT_COOLDOWN_MS-(Date.now()-game.lastHintAt))/1000);
@@ -376,7 +387,7 @@ async function endGame(game,guesser,reason){
   setTimeout(()=>{game.phase='idle';persistGame(game);},3000);
 }
 async function postResult(game,guesser,reason){
-  let png;try{png=await renderPNG(game.strokes);}catch(e){console.error('[postResult render]',e.message);}
+  let png;try{png=await renderPNG(game.strokes,game.canvasW,game.canvasH);}catch(e){console.error('[postResult render]',e.message);}
   const lines=[`✅ *Round Over!*`,``,`🖌 Drawer: *${game.drawerName}*`,`🎯 Word: *${game.word}*`,
     guesser?`🏆 Guessed by: *${guesser}*`:reason==='all_hints'?`🔤 All hints revealed!`:reason==='stopped'?`🛑 Stopped.`:`😮 Round ended.`,
     ``,`📊 *Leaderboard:*`,fmtLb(game),``,`_Use /startgame to play again!_`].join('\n');
@@ -500,6 +511,14 @@ wss.on('connection',(ws,req)=>{
   ws.on('message',data=>{
     let msg;try{msg=JSON.parse(data);}catch{return;}
     switch(msg.type){
+      case'canvas_size':
+        if(wsId!==game.drawerWsId)return;
+        if(msg.w>0&&msg.h>0&&msg.w<=4096&&msg.h<=4096){
+          game.canvasW=msg.w;game.canvasH=msg.h;
+          console.log(`[game] Canvas size set to ${msg.w}×${msg.h}`);
+          persistDebounced(game,200);
+        }
+        break;
       case'draw':
         if(wsId!==game.drawerWsId)return;
         game.strokesUndo.push({...msg.stroke});game.strokes.push(msg.stroke);
@@ -507,7 +526,7 @@ wss.on('connection',(ws,req)=>{
         persistDebounced(game,600);
         // Flatten to snapshot every 60 strokes — keeps memory and init payload small
         if(game.strokes.length>0&&game.strokes.length%60===0){
-          renderPNG(game.strokes).then(png=>{
+          renderPNG(game.strokes,game.canvasW,game.canvasH).then(png=>{
             const pngB64=png.toString('base64');
             game.strokes=[{brushType:'_snapshot',pngB64}];
             game.strokesUndo=[];
@@ -526,7 +545,7 @@ wss.on('connection',(ws,req)=>{
         if(wsId!==game.drawerWsId)return;
         if(game.strokes.length>0){
           game.strokes.pop();
-          renderPNG(game.strokes).then(png=>{
+          renderPNG(game.strokes,game.canvasW,game.canvasH).then(png=>{
             const b64='data:image/png;base64,'+png.toString('base64');
             broadcast(game,{type:'snapshot',data:b64});
           }).catch(()=>{});
@@ -539,7 +558,7 @@ wss.on('connection',(ws,req)=>{
         {const next=game.strokesUndo[game.strokes.length];
         if(next){
           game.strokes.push(next);
-          renderPNG(game.strokes).then(png=>{
+          renderPNG(game.strokes,game.canvasW,game.canvasH).then(png=>{
             const b64='data:image/png;base64,'+png.toString('base64');
             broadcast(game,{type:'snapshot',data:b64});
           }).catch(()=>{});

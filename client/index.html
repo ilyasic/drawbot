@@ -148,12 +148,14 @@ input[type=range].pop-slider::-webkit-slider-thumb{-webkit-appearance:none;width
 .layer-name-input{flex:1;background:var(--surface3);border:1px solid var(--btn-bg);border-radius:4px;
   color:var(--text);padding:2px 5px;font-size:.76rem;outline:none;
   font-family:'Space Grotesk',sans-serif;min-width:0;-webkit-user-select:text;user-select:text;}
-/* Tap-to-cycle blend mode button (replaces broken <select>) */
+/* Blend mode select */
 .blend-btn{background:var(--surface3);border:1px solid var(--border);border-radius:5px;
-  color:var(--text2);padding:2px 5px;font-size:.6rem;font-weight:700;cursor:pointer;
-  flex-shrink:0;max-width:60px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
-  font-family:'JetBrains Mono',monospace;transition:background .1s,color .1s,border-color .1s;text-align:center;}
-.blend-btn:active{background:var(--btn-bg);color:#fff;border-color:var(--btn-bg);}
+  color:var(--text2);padding:2px 3px;font-size:.6rem;font-weight:700;cursor:pointer;
+  flex-shrink:0;max-width:62px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font-family:'JetBrains Mono',monospace;text-align:center;
+  -webkit-appearance:none;appearance:none;}
+.blend-btn:focus{outline:1px solid var(--btn-bg);}
+.blend-btn option{background:var(--surface);color:var(--text);}
 .layer-op-slider{-webkit-appearance:none;width:42px;height:3px;background:var(--border);border-radius:2px;outline:none;flex-shrink:0;}
 .layer-op-slider::-webkit-slider-thumb{-webkit-appearance:none;width:11px;height:11px;border-radius:50%;background:var(--text2);cursor:pointer;}
 .layer-lock{font-size:.72rem;opacity:.4;cursor:pointer;flex-shrink:0;transition:opacity .15s;}
@@ -369,7 +371,7 @@ input[type=range].pop-slider::-webkit-slider-thumb{-webkit-appearance:none;width
   <div id="layer-list"></div>
   <div class="layer-actions">
     <button class="lact" id="layer-add">+ Layer</button>
-    <button class="lact" id="layer-add-mask">+ Mask</button>
+    <button class="lact" id="layer-add-mask">± Mask</button>
     <button class="lact" id="layer-duplicate">Dup</button>
     <button class="lact" id="layer-merge-down">Merge↓</button>
     <button class="lact" id="layer-flatten">Flatten</button>
@@ -613,41 +615,41 @@ function actCtx(){
 }
 
 // ─── Live composite — shows all layers+masks in real time ─────────────────────
+function makeTmp(){const c=document.createElement('canvas');c.width=CW;c.height=CH;return c;}
 function composite(){
   layersCtx.clearRect(0,0,CW,CH);
   layers.forEach(l=>{
     if(!l.visible)return;
+    let src=l.canvas;
+    if(l.maskCanvas){
+      const tmp=makeTmp();const tc=tmp.getContext('2d');
+      tc.drawImage(l.canvas,0,0);
+      tc.globalCompositeOperation='destination-in';
+      tc.drawImage(l.maskCanvas,0,0);
+      src=tmp;
+    }
     layersCtx.save();
     layersCtx.globalAlpha=l.opacity;
     layersCtx.globalCompositeOperation=l.blendMode||'source-over';
-    if(l.maskCanvas){
-      // Apply mask: draw layer through its mask
-      const tmp=new OffscreenCanvas?OffscreenCanvas(CW,CH):document.createElement('canvas');
-      if(!tmp.width){tmp.width=CW;tmp.height=CH;}
-      const tc=tmp.getContext('2d');
-      tc.clearRect(0,0,CW,CH);tc.drawImage(l.canvas,0,0);
-      tc.globalCompositeOperation='destination-in';tc.drawImage(l.maskCanvas,0,0);
-      layersCtx.drawImage(tmp,0,0);
-    }else{
-      layersCtx.drawImage(l.canvas,0,0);
-    }
+    layersCtx.drawImage(src,0,0);
     layersCtx.restore();
   });
 }
 
-// Flatten for export
 function flattenTo(tc){
   tc.fillStyle='#fff';tc.fillRect(0,0,CW,CH);
   layers.forEach(l=>{
     if(!l.visible)return;
-    tc.save();tc.globalAlpha=l.opacity;tc.globalCompositeOperation=l.blendMode||'source-over';
+    let src=l.canvas;
     if(l.maskCanvas){
-      const tmp=document.createElement('canvas');tmp.width=CW;tmp.height=CH;
-      const t2=tmp.getContext('2d');t2.drawImage(l.canvas,0,0);
-      t2.globalCompositeOperation='destination-in';t2.drawImage(l.maskCanvas,0,0);
-      tc.drawImage(tmp,0,0);
-    }else tc.drawImage(l.canvas,0,0);
-    tc.restore();
+      const tmp=makeTmp();const t2=tmp.getContext('2d');
+      t2.drawImage(l.canvas,0,0);
+      t2.globalCompositeOperation='destination-in';
+      t2.drawImage(l.maskCanvas,0,0);
+      src=tmp;
+    }
+    tc.save();tc.globalAlpha=l.opacity;tc.globalCompositeOperation=l.blendMode||'source-over';
+    tc.drawImage(src,0,0);tc.restore();
   });
   tc.globalAlpha=1;tc.globalCompositeOperation='source-over';
 }
@@ -960,6 +962,11 @@ function incomingStroke(s){renderStroke(actCtx(),s);composite();}
 // ─── Layer panel ──────────────────────────────────────────────────────────────
 function renderLayerPanel(){
   const list=document.getElementById('layer-list');list.innerHTML='';
+  // Update mask button label based on active layer
+  const al=actLayer();
+  const maskBtn=document.getElementById('layer-add-mask');
+  if(maskBtn)maskBtn.textContent=al?.maskCanvas?'✕ Mask':'+ Mask';
+
   for(let i=layers.length-1;i>=0;i--){
     const l=layers[i],isAct=i===actIdx,isMaskEd=isAct&&editMask&&l.maskCtx;
     const row=document.createElement('div');
@@ -975,15 +982,15 @@ function renderLayerPanel(){
       const inp=document.createElement('input');inp.className='layer-name-input';inp.value=l.name;
       nm.replaceWith(inp);inp.focus();inp.select();
       const done=()=>{l.name=inp.value||l.name;renderLayerPanel();};
-      inp.addEventListener('blur',done);inp.addEventListener('keydown',ev2=>{if(ev2.key==='Enter')done();ev2.stopPropagation();});
+      inp.addEventListener('blur',done);
+      inp.addEventListener('keydown',ev2=>{if(ev2.key==='Enter')done();ev2.stopPropagation();});
       inp.addEventListener('pointerdown',ev2=>ev2.stopPropagation());});
 
-    // Blend mode — tap to cycle
-    const bb=document.createElement('button');bb.className='blend-btn';
-    bb.textContent=BLEND_LBL[l.blendMode]||'Normal';bb.title='Tap to cycle blend mode';
-    bb.addEventListener('click',ev=>{ev.stopPropagation();
-      l.blendMode=BLENDS[(BLENDS.indexOf(l.blendMode)+1)%BLENDS.length];
-      bb.textContent=BLEND_LBL[l.blendMode]||l.blendMode;composite();});
+    // Blend mode — native select for full access to all modes
+    const bb=document.createElement('select');bb.className='blend-btn';
+    bb.title='Blend mode';
+    BLENDS.forEach(b=>{const o=document.createElement('option');o.value=b;o.textContent=BLEND_LBL[b]||b;if(b===l.blendMode)o.selected=true;bb.appendChild(o);});
+    bb.addEventListener('change',ev=>{ev.stopPropagation();l.blendMode=bb.value;composite();});
     bb.addEventListener('pointerdown',ev=>ev.stopPropagation());
 
     // Opacity slider
@@ -1006,11 +1013,19 @@ function renderLayerPanel(){
     row.addEventListener('click',()=>{actIdx=i;editMask=false;renderLayerPanel();updateMaskInd();});
     list.appendChild(row);
 
-    // Mask sub-row (shown below the layer it belongs to)
+    // Mask sub-row
     if(l.maskCanvas){
       const mr=document.createElement('div');
       mr.className='layer-row mask-sub'+(isMaskEd?' mask-editing':'');
-      mr.innerHTML=`<span style="font-size:.75rem;width:20px;text-align:center">🎭</span><span class="layer-name" style="color:var(--orange);font-size:.73rem">Mask${isMaskEd?' ✎':''}</span>`;
+      const mLabel=document.createElement('span');mLabel.style.cssText='font-size:.75rem;width:20px;text-align:center';mLabel.textContent='🎭';
+      const mName=document.createElement('span');mName.className='layer-name';mName.style.cssText='color:var(--orange);font-size:.73rem';mName.textContent='Mask'+(isMaskEd?' ✎':'');
+      // Exit mask edit button
+      const mExit=document.createElement('span');mExit.style.cssText='font-size:.65rem;color:var(--text3);cursor:pointer;flex-shrink:0;padding:2px 4px;border-radius:4px;border:1px solid var(--border)';mExit.textContent=isMaskEd?'✓ Done':'Edit';
+      mExit.addEventListener('click',ev=>{ev.stopPropagation();actIdx=i;editMask=!isMaskEd;renderLayerPanel();updateMaskInd();if(!isMaskEd)showToast('Painting mask — black hides, white reveals');});
+      // Delete mask button
+      const mDel=document.createElement('span');mDel.style.cssText='font-size:.65rem;color:var(--red);cursor:pointer;flex-shrink:0;padding:2px 4px;';mDel.textContent='✕';
+      mDel.addEventListener('click',ev=>{ev.stopPropagation();layers[i].maskCanvas=null;layers[i].maskCtx=null;if(actIdx===i)editMask=false;composite();renderLayerPanel();updateMaskInd();showToast('Mask removed');});
+      mr.appendChild(mLabel);mr.appendChild(mName);mr.appendChild(mExit);mr.appendChild(mDel);
       mr.addEventListener('click',ev=>{ev.stopPropagation();actIdx=i;editMask=true;renderLayerPanel();updateMaskInd();showToast('Painting on mask — black hides, white reveals');});
       list.appendChild(mr);
     }
@@ -1027,17 +1042,32 @@ document.getElementById('layer-add').addEventListener('click',()=>{
 });
 document.getElementById('layer-add-mask').addEventListener('click',()=>{
   const l=actLayer();if(!l){showToast('Select a layer first','warn');return;}
-  if(l.maskCanvas){showToast('Layer already has a mask','warn');return;}
+  if(l.maskCanvas){
+    // Toggle: remove mask if already has one
+    if(!confirm('Remove mask from this layer?'))return;
+    l.maskCanvas=null;l.maskCtx=null;editMask=false;
+    renderLayerPanel();updateMaskInd();composite();showToast('Mask removed');return;
+  }
   const mc=document.createElement('canvas');mc.width=CW;mc.height=CH;
   const mctx=mc.getContext('2d');mctx.fillStyle='#fff';mctx.fillRect(0,0,CW,CH);
   l.maskCanvas=mc;l.maskCtx=mctx;editMask=true;
-  renderLayerPanel();updateMaskInd();showToast('Mask added — paint black to hide 🎭');addLog(`Mask added to ${l.name}`,'system');
+  renderLayerPanel();updateMaskInd();composite();showToast('Mask added — paint black to hide 🎭');addLog(`Mask added to ${l.name}`,'system');
 });
 document.getElementById('layer-duplicate').addEventListener('click',()=>{
   if(layers.length>=MAX_LAYERS){showToast('Max layers','warn');return;}
   const l=actLayer();if(!l)return;
-  const nl=mkLayer(l.name+' copy');nl.ctx.drawImage(l.canvas,0,0);nl.opacity=l.opacity;nl.blendMode=l.blendMode;
-  actIdx=layers.length-1;renderLayerPanel();composite();addLog('Layer duplicated','system');
+  const nl=mkLayer(l.name+' copy');
+  nl.ctx.drawImage(l.canvas,0,0);
+  nl.opacity=l.opacity;nl.blendMode=l.blendMode;
+  nl._committed=nl.ctx.getImageData(0,0,CW,CH);
+  // Also duplicate mask if present
+  if(l.maskCanvas){
+    const mc=document.createElement('canvas');mc.width=CW;mc.height=CH;
+    const mctx=mc.getContext('2d');mctx.drawImage(l.maskCanvas,0,0);
+    nl.maskCanvas=mc;nl.maskCtx=mctx;
+  }
+  layers.push(nl);actIdx=layers.length-1;
+  renderLayerPanel();composite();showToast('Layer duplicated');addLog('Layer duplicated','system');
 });
 document.getElementById('layer-merge-down').addEventListener('click',()=>{
   if(actIdx===0){showToast('Nothing below','warn');return;}

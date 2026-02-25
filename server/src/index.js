@@ -130,7 +130,7 @@ function makePRNG(seed){
   return function(){ s+=0x6D2B79F5;let t=s;t=Math.imul(t^(t>>>15),t|1);t^=t+Math.imul(t^(t>>>7),t|61);return((t^(t>>>14))>>>0)/4294967296; };
 }
 
-// ── Render engine ─────────────────────────────────────────────────────────────
+// ── Render engine — kept identical to client for pixel-perfect Telegram images ─
 const DEFAULT_CW=1920,DEFAULT_CH=1080;
 const BD={
   pen:      {smoothing:.5,alpha:1.0,widthMult:1.0,cap:'round',pressure:true, flow:.8},
@@ -143,19 +143,38 @@ const BD={
   line:     {smoothing:.0,alpha:1.0,widthMult:1.0,cap:'round',pressure:false,flow:1.0},
   eraser:   {smoothing:.5,alpha:1.0,widthMult:1.0,cap:'round',pressure:false,flow:1.0},
 };
+// Centripetal Catmull-Rom — eliminates bunching on tight curves (matches client)
 function smoothPts(pts,sm){
   if(pts.length<3||sm<0.05)return null;
   const s=sm*0.4,cp=[];
   for(let i=0;i<pts.length-1;i++){
     const p0=pts[Math.max(0,i-1)],p1=pts[i],p2=pts[i+1],p3=pts[Math.min(pts.length-1,i+2)];
-    cp.push([p1[0]+(p2[0]-p0[0])*s,p1[1]+(p2[1]-p0[1])*s,p2[0]-(p3[0]-p1[0])*s,p2[1]-(p3[1]-p1[1])*s]);
+    const d1=Math.hypot(p1[0]-p0[0],p1[1]-p0[1])||1;
+    const d2=Math.hypot(p2[0]-p1[0],p2[1]-p1[1])||1;
+    const d3=Math.hypot(p3[0]-p2[0],p3[1]-p2[1])||1;
+    const t1x=(p2[0]-p0[0])*s*(d2/(d1+d2)),t1y=(p2[1]-p0[1])*s*(d2/(d1+d2));
+    const t2x=(p3[0]-p1[0])*s*(d2/(d2+d3)),t2y=(p3[1]-p1[1])*s*(d2/(d2+d3));
+    cp.push([p1[0]+t1x,p1[1]+t1y,p2[0]-t2x,p2[1]-t2y]);
   }
   return cp;
 }
-function pressure(pts,i){
-  if(i===0||i>=pts.length-1)return 0.8;
+// Pressure: real stylus data OR speed-based fallback (matches client calcP)
+function calcP(pts,pressures,i){
+  if(pressures&&pressures[i]!=null&&pressures[i]>0)
+    return Math.max(0.15,Math.min(1.2,pressures[i]*1.3));
+  if(i===0||i>=pts.length-1)return 0.7;
   const dx=pts[i+1][0]-pts[i-1][0],dy=pts[i+1][1]-pts[i-1][1];
-  return Math.max(0.3,Math.min(1.2,1.4-Math.sqrt(dx*dx+dy*dy)*0.018));
+  const speed=Math.sqrt(dx*dx+dy*dy);
+  return Math.max(0.2,Math.min(1.0,0.35+speed*0.013));
+}
+// Taper: smooth fade at stroke start and end (matches client getTaper)
+function getTaper(i,total){
+  if(total<4)return 1;
+  const head=Math.min(6,total*0.12),tail=Math.min(10,total*0.18);
+  let t=1.0;
+  if(i<head)t=Math.min(t,Math.sin((i/head)*Math.PI*0.5));
+  if(i>total-tail)t=Math.min(t,Math.sin(((total-i)/tail)*Math.PI*0.5));
+  return Math.max(0.04,t);
 }
 function drawPath(ctx,pts,sm){
   const cp=smoothPts(pts,sm);
@@ -172,7 +191,8 @@ function renderStroke(ctx,s){
   const bt=s.brushType||'pen',sz=s.size||6,col=s.color||'#000',
         op=s.opacity!=null?s.opacity:1.0,fl=s.flow!=null?s.flow:0.8,
         sm=s.smoothing!=null?s.smoothing:(BD[bt]?.smoothing??0.5),
-        bd=BD[bt]||BD.pen,rng=makePRNG(s.seed||12345);
+        bd=BD[bt]||BD.pen,rng=makePRNG(s.seed||12345),
+        prs=s.pressures||null;
   ctx.save();
   ctx.setLineDash([]);ctx.globalAlpha=1;ctx.globalCompositeOperation='source-over';
   if(bt==='eraser'){
@@ -210,6 +230,7 @@ function renderStroke(ctx,s){
     ctx.restore();return;
   }
   if(bt==='eyedrop'){ctx.restore();return;}
+  // ── Airbrush: Gaussian falloff particle cloud ────────────────────────────
   if(bt==='airbrush'){
     ctx.globalCompositeOperation='source-over';ctx.fillStyle=col;
     const rad=sz*3.5,count=Math.floor(rad*rad*0.35*fl);
@@ -225,55 +246,104 @@ function renderStroke(ctx,s){
     }
     ctx.restore();return;
   }
+  // ── Watercolor: soft body + dark pigment bloom ring at edges ─────────────
   if(bt==='watercolor'){
-    ctx.globalCompositeOperation='source-over';ctx.strokeStyle=col;ctx.lineCap='round';ctx.lineJoin='round';
-    for(let l=0;l<6;l++){
-      ctx.globalAlpha=op*bd.alpha*fl/6;ctx.lineWidth=sz*bd.widthMult*(0.7+rng()*0.6);
-      ctx.beginPath();ctx.moveTo(pts[0][0]+(rng()-.5)*sz*.3,pts[0][1]+(rng()-.5)*sz*.3);
-      for(let i=1;i<pts.length;i++)ctx.lineTo(pts[i][0]+(rng()-.5)*sz*.4,pts[i][1]+(rng()-.5)*sz*.4);
+    ctx.strokeStyle=col;ctx.lineCap='round';ctx.lineJoin='round';
+    // Pass 1: soft wet body
+    for(let l=0;l<5;l++){
+      ctx.globalAlpha=op*0.025*fl;ctx.lineWidth=sz*bd.widthMult*(0.75+rng()*0.5);
+      ctx.beginPath();ctx.moveTo(pts[0][0]+(rng()-.5)*sz*.25,pts[0][1]+(rng()-.5)*sz*.25);
+      for(let i=1;i<pts.length;i++)ctx.lineTo(pts[i][0]+(rng()-.5)*sz*.3,pts[i][1]+(rng()-.5)*sz*.3);
       ctx.stroke();
     }
+    // Pass 2: dark bloom ring (wide stroke minus interior = edge-only)
+    const {createCanvas:cc2}=require('@napi-rs/canvas');
+    const edge=cc2(ctx.canvas.width,ctx.canvas.height);const ec=edge.getContext('2d');
+    ec.strokeStyle=col;ec.lineCap='round';ec.lineJoin='round';
+    ec.lineWidth=sz*bd.widthMult+4;ec.globalAlpha=op*0.28*fl;
+    ec.beginPath();ec.moveTo(pts[0][0],pts[0][1]);
+    for(let i=1;i<pts.length;i++)ec.lineTo(pts[i][0],pts[i][1]);ec.stroke();
+    ec.globalCompositeOperation='destination-out';ec.lineWidth=sz*bd.widthMult-1;ec.globalAlpha=1;
+    ec.beginPath();ec.moveTo(pts[0][0],pts[0][1]);
+    for(let i=1;i<pts.length;i++)ec.lineTo(pts[i][0],pts[i][1]);ec.stroke();
+    ctx.globalAlpha=1;ctx.drawImage(edge,0,0);
     ctx.restore();return;
   }
+  // ── Bristle: individual fibers that flex and converge at taper ends ───────
   if(bt==='bristle'){
-    ctx.globalCompositeOperation='source-over';ctx.lineCap='round';ctx.lineJoin='round';
-    const br=Math.max(4,Math.floor(sz*0.7));ctx.lineWidth=Math.max(0.8,sz/br*1.2);
-    for(let b=0;b<br;b++){
-      ctx.globalAlpha=op*bd.alpha*fl*(0.5+rng()*.5);ctx.strokeStyle=col;
-      const r=sz*0.55,ox=(rng()-.5)*r*2,oy=(rng()-.5)*r*2;
-      ctx.beginPath();ctx.moveTo(pts[0][0]+ox,pts[0][1]+oy);
-      for(let i=1;i<pts.length;i++)ctx.lineTo(pts[i][0]+ox*(0.85+rng()*.3),pts[i][1]+oy*(0.85+rng()*.3));
+    const fiberCount=Math.max(6,Math.floor(sz*0.85));
+    const spread=sz*0.5;
+    const fibers=Array.from({length:fiberCount},()=>({
+      ox:(rng()-.5)*spread*2,oy:(rng()-.5)*spread*2,
+      stiffness:0.3+rng()*0.7,thick:0.5+rng()*0.9,
+    }));
+    ctx.lineCap='round';
+    for(let b=0;b<fiberCount;b++){
+      const f=fibers[b];
+      ctx.lineWidth=Math.max(0.4,f.thick*sz/fiberCount*1.4);
+      ctx.strokeStyle=col;ctx.beginPath();
+      for(let i=0;i<pts.length;i++){
+        const nx=pts[Math.min(i+1,pts.length-1)][0],ny=pts[Math.min(i+1,pts.length-1)][1];
+        const px=pts[Math.max(i-1,0)][0],py=pts[Math.max(i-1,0)][1];
+        const vx=(nx-px)*0.18*(1-f.stiffness),vy=(ny-py)*0.18*(1-f.stiffness);
+        const taper=getTaper(i,pts.length);
+        const fx=pts[i][0]+(f.ox+vx)*taper,fy=pts[i][1]+(f.oy+vy)*taper;
+        ctx.globalAlpha=op*bd.alpha*fl*f.stiffness*taper;
+        i===0?ctx.moveTo(fx,fy):ctx.lineTo(fx,fy);
+      }
       ctx.stroke();
     }
     ctx.restore();return;
   }
+  // ── Ink: pressure-modulated width + alpha with taper ─────────────────────
   if(bt==='ink'){
-    ctx.globalCompositeOperation='source-over';ctx.strokeStyle=col;ctx.lineCap='round';ctx.lineJoin='round';ctx.setLineDash([]);
+    ctx.strokeStyle=col;ctx.lineCap='round';ctx.lineJoin='round';ctx.setLineDash([]);
     for(let i=1;i<pts.length;i++){
-      const p=pressure(pts,i);ctx.globalAlpha=op*fl*Math.min(1,p*0.9+0.1);
-      ctx.lineWidth=sz*p*bd.widthMult;ctx.beginPath();ctx.moveTo(pts[i-1][0],pts[i-1][1]);ctx.lineTo(pts[i][0],pts[i][1]);ctx.stroke();
+      const p=calcP(pts,prs,i),taper=getTaper(i,pts.length);
+      ctx.globalAlpha=op*fl*Math.min(1,p*0.85+0.15)*taper;
+      ctx.lineWidth=sz*p*bd.widthMult*taper;
+      ctx.beginPath();ctx.moveTo(pts[i-1][0],pts[i-1][1]);ctx.lineTo(pts[i][0],pts[i][1]);ctx.stroke();
     }
     ctx.restore();return;
   }
+  // ── Pencil: grain particle scatter — graphite on paper ───────────────────
   if(bt==='pencil'){
-    ctx.globalCompositeOperation='source-over';ctx.strokeStyle=col;ctx.lineCap='round';ctx.lineJoin='round';
-    ctx.setLineDash([]);ctx.lineWidth=sz*bd.widthMult;
-    for(let pass=0;pass<2;pass++){
-      ctx.globalAlpha=op*bd.alpha*fl*(pass===0?0.7:0.45);
-      ctx.beginPath();ctx.moveTo(pts[0][0]+(rng()-.5)*1.5,pts[0][1]+(rng()-.5)*1.5);
-      for(let i=1;i<pts.length;i++)ctx.lineTo(pts[i][0]+(rng()-.5)*1.5,pts[i][1]+(rng()-.5)*1.5);
-      ctx.stroke();
+    ctx.fillStyle=col;
+    const grainSz=Math.max(0.8,sz*0.13),coverage=0.6*fl;
+    for(let i=1;i<pts.length;i++){
+      const taper=getTaper(i,pts.length),p=calcP(pts,prs,i);
+      const hw=sz*0.5*bd.widthMult*taper*p;
+      const dist=Math.hypot(pts[i][0]-pts[i-1][0],pts[i][1]-pts[i-1][1]);
+      const steps=Math.max(1,Math.ceil(dist/(grainSz*1.2)));
+      for(let st=0;st<steps;st++){
+        const t=st/steps;
+        const sx=pts[i-1][0]+(pts[i][0]-pts[i-1][0])*t;
+        const sy=pts[i-1][1]+(pts[i][1]-pts[i-1][1])*t;
+        const particleN=Math.floor(hw*2*coverage);
+        for(let g=0;g<particleN;g++){
+          const ox=(rng()-.5)*hw*2,oy=(rng()-.5)*hw*2;
+          if((ox*ox)/(hw*hw)+(oy*oy)/(hw*0.45*hw*0.45)>1)continue;
+          const edgeDist=Math.sqrt((ox*ox)/(hw*hw)+(oy*oy)/(hw*hw));
+          ctx.globalAlpha=op*(0.25+rng()*0.55)*(1-edgeDist*0.4)*taper;
+          ctx.fillRect(sx+ox,sy+oy,grainSz,grainSz);
+        }
+      }
     }
     ctx.restore();return;
   }
-  ctx.globalCompositeOperation='source-over';ctx.globalAlpha=op*bd.alpha*fl;
+  // ── Pen / Marker — pressure-sensitive width with taper ───────────────────
   ctx.strokeStyle=col;ctx.lineCap=bd.cap||'round';ctx.lineJoin='round';ctx.setLineDash([]);
   if(bd.pressure&&bt!=='marker'){
     for(let i=1;i<pts.length;i++){
-      const p=pressure(pts,i);ctx.lineWidth=sz*bd.widthMult*p;
+      const p=calcP(pts,prs,i),taper=getTaper(i,pts.length);
+      ctx.globalAlpha=op*bd.alpha*fl;
+      ctx.lineWidth=sz*bd.widthMult*p*taper;
       ctx.beginPath();ctx.moveTo(pts[i-1][0],pts[i-1][1]);ctx.lineTo(pts[i][0],pts[i][1]);ctx.stroke();
     }
-  }else{ctx.lineWidth=sz*bd.widthMult;drawPath(ctx,pts,sm);ctx.stroke();}
+  }else{
+    ctx.globalAlpha=op*bd.alpha*fl;
+    ctx.lineWidth=sz*bd.widthMult;drawPath(ctx,pts,sm);ctx.stroke();
+  }
   ctx.restore();
 }
 

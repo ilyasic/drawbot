@@ -1,137 +1,644 @@
-require('dotenv').config();
-const express     = require('express');
-const http        = require('http');
-const WebSocket   = require('ws');
-const path        = require('path');
-const { v4: uuidv4 } = require('uuid');
-const { Telegraf, Markup } = require('telegraf');
-const { createCanvas, loadImage } = require('@napi-rs/canvas');
-const Database    = require('better-sqlite3');
-
-// ── Config ────────────────────────────────────────────────────────────────────
-const BOT_TOKEN         = process.env.BOT_TOKEN;
-const PUBLIC_URL        = (process.env.PUBLIC_URL || '').replace(/\/$/, '');
-const PORT              = process.env.PORT || 3000;
-const WEBAPP_SHORT_NAME = process.env.WEBAPP_SHORT_NAME || 'draw1';
-const HINT_COOLDOWN_MS  = parseInt(process.env.HINT_COOLDOWN_MS || '30000');
-const WEBHOOK_SECRET    = process.env.WEBHOOK_SECRET || 'tgbot';
-const DB_PATH           = process.env.DB_PATH || path.join(__dirname, 'drawbot.db');
-
-if (!BOT_TOKEN)  { console.error('BOT_TOKEN missing');  process.exit(1); }
-if (!PUBLIC_URL) { console.error('PUBLIC_URL missing'); process.exit(1); }
-
-console.log(`[config] WEBAPP=${WEBAPP_SHORT_NAME} HINT_COOLDOWN=${HINT_COOLDOWN_MS/1000}s DB=${DB_PATH}`);
-
-// ── SQLite ────────────────────────────────────────────────────────────────────
-const db = new Database(DB_PATH);
-db.pragma('journal_mode = WAL');
-db.pragma('synchronous = NORMAL');
-db.exec(`
-  CREATE TABLE IF NOT EXISTS games (
-    chat_id TEXT PRIMARY KEY, phase TEXT NOT NULL DEFAULT 'idle',
-    drawer_tg_id TEXT, drawer_name TEXT, word TEXT,
-    hint_revealed TEXT, strokes TEXT, scores TEXT,
-    round_start INTEGER, first_stroke INTEGER DEFAULT 0,
-    last_hint_at INTEGER DEFAULT 0,
-    invite_msg_id INTEGER, live_msg_id INTEGER, updated_at INTEGER,
-    canvas_w INTEGER DEFAULT 1920, canvas_h INTEGER DEFAULT 1080
-  );
-`);
-const stmtUpsert = db.prepare(`
-  INSERT INTO games (chat_id,phase,drawer_tg_id,drawer_name,word,hint_revealed,
-    strokes,scores,round_start,first_stroke,last_hint_at,invite_msg_id,live_msg_id,canvas_w,canvas_h,updated_at)
-  VALUES (@chat_id,@phase,@drawer_tg_id,@drawer_name,@word,@hint_revealed,
-    @strokes,@scores,@round_start,@first_stroke,@last_hint_at,@invite_msg_id,@live_msg_id,@canvas_w,@canvas_h,@updated_at)
-  ON CONFLICT(chat_id) DO UPDATE SET
-    phase=excluded.phase,drawer_tg_id=excluded.drawer_tg_id,drawer_name=excluded.drawer_name,
-    word=excluded.word,hint_revealed=excluded.hint_revealed,strokes=excluded.strokes,
-    scores=excluded.scores,round_start=excluded.round_start,first_stroke=excluded.first_stroke,
-    last_hint_at=excluded.last_hint_at,invite_msg_id=excluded.invite_msg_id,
-    live_msg_id=excluded.live_msg_id,canvas_w=excluded.canvas_w,canvas_h=excluded.canvas_h,
-    updated_at=excluded.updated_at
-`);
-const stmtGet = db.prepare(`SELECT * FROM games WHERE chat_id = ?`);
-const stmtAll = db.prepare(`SELECT * FROM games WHERE phase != 'idle'`);
-
-// Migration: add canvas_w/canvas_h columns if they don't exist yet
-try{db.exec(`ALTER TABLE games ADD COLUMN canvas_w INTEGER DEFAULT 1920`);}catch{}
-try{db.exec(`ALTER TABLE games ADD COLUMN canvas_h INTEGER DEFAULT 1080`);}catch{}
-
-function persistGame(game) {
-  try {
-    stmtUpsert.run({
-      chat_id: game.chatId, phase: game.phase,
-      drawer_tg_id: game.drawerTgId||null, drawer_name: game.drawerName||'',
-      word: game.word||null, hint_revealed: JSON.stringify(game.hintRevealed||[]),
-      strokes: JSON.stringify(game.strokes||[]),
-      scores: JSON.stringify(Object.fromEntries(game.scores||new Map())),
-      round_start: game.roundStartTime||0, first_stroke: game.firstStrokeDrawn?1:0,
-      last_hint_at: game.lastHintAt||0, invite_msg_id: game.inviteMessageId||null,
-      live_msg_id: game.liveMessageId||null,
-      canvas_w: game.canvasW||DEFAULT_CW, canvas_h: game.canvasH||DEFAULT_CH,
-      updated_at: Date.now(),
-    });
-  } catch(e) { console.error('[db] persist error:', e.message); }
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+<title>Draw & Guess</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<style>
+:root {
+  --bg:#1e2a2b; --surface:#253334; --surface2:#2d3f40; --surface3:#354849;
+  --border:#3d5355; --btn-bg:#c4956a; --btn-hover:#d9a87a; --accent:#e0b070;
+  --green:#3dd68c; --yellow:#ffd166; --red:#e05555; --orange:#e08040;
+  --text:#eef2f2; --text2:#8aabac; --text3:#4a6a6b;
+  --r:10px; --topbar-h:44px; --toolbar-h:82px;
+  --safe-b:env(safe-area-inset-bottom,0px); --safe-t:env(safe-area-inset-top,0px);
 }
-const _persistTimers = new Map();
-function persistDebounced(game, ms=500) {
-  const k = game.chatId;
-  if (_persistTimers.has(k)) clearTimeout(_persistTimers.get(k));
-  _persistTimers.set(k, setTimeout(()=>{ _persistTimers.delete(k); persistGame(game); }, ms));
-}
-function rowToGame(row) {
-  const g = makeGame(row.chat_id);
-  g.phase = row.phase; g.drawerTgId = row.drawer_tg_id||null;
-  g.drawerName = row.drawer_name||''; g.word = row.word||null;
-  g.hintRevealed = JSON.parse(row.hint_revealed||'[]');
-  g.strokes = JSON.parse(row.strokes||'[]');
-  // FIX S1: strokesUndo must start empty after restore — redo stack is always empty on restart
-  g.strokesUndo = [];
-  g.roundStartTime = row.round_start||0; g.firstStrokeDrawn = row.first_stroke===1;
-  g.lastHintAt = row.last_hint_at||0;
-  g.inviteMessageId = row.invite_msg_id||null; g.liveMessageId = row.live_msg_id||null;
-  g.scores = new Map(Object.entries(JSON.parse(row.scores||'{}')));
-  g.canvasW = row.canvas_w||DEFAULT_CW; g.canvasH = row.canvas_h||DEFAULT_CH;
-  return g;
-}
-
-// ── Express / WS / Bot ────────────────────────────────────────────────────────
-const app    = express();
-const server = http.createServer(app);
-const wss    = new WebSocket.Server({ server, path: '/ws' });
-const bot    = new Telegraf(BOT_TOKEN);
-let botUsername = '';
-
-app.use(express.json());
-app.use((req,res,next)=>{ if(req.path!=='/ping') console.log(`[http] ${req.method} ${req.path}`); next(); });
-app.get('/ping', (_req,res)=>res.send('pong'));
-const WEBHOOK_PATH = `/webhook/${WEBHOOK_SECRET}`;
-const WEBHOOK_URL  = `${PUBLIC_URL}${WEBHOOK_PATH}`;
-app.post(WEBHOOK_PATH, async(req,res)=>{
-  res.sendStatus(200);
-  console.log('[webhook] update:', JSON.stringify(req.body).slice(0,120));
-  try { await bot.handleUpdate(req.body); } catch(e){ console.error('[webhook]',e.message); }
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
+html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(--text);
+  font-family:'Space Grotesk',sans-serif;touch-action:none;-webkit-user-select:none;user-select:none;}
+#app{display:flex;flex-direction:column;position:fixed;inset:0;padding-top:var(--safe-t);}
+#topbar{height:var(--topbar-h);min-height:var(--topbar-h);flex-shrink:0;display:flex;align-items:center;
+  gap:8px;padding:0 10px;background:var(--surface);border-bottom:1px solid var(--border);z-index:20;}
+#conn-dot{width:6px;height:6px;border-radius:50%;background:var(--green);flex-shrink:0;transition:background .3s;}
+#word-display{flex:1;text-align:center;font-size:.82rem;font-weight:600;letter-spacing:.06em;
+  color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;}
+#role-pill{font-size:.58rem;font-weight:700;padding:2px 7px;border-radius:20px;background:var(--surface2);
+  color:var(--text2);text-transform:uppercase;white-space:nowrap;flex-shrink:0;letter-spacing:.06em;}
+#role-pill.drawer{background:rgba(196,149,106,.25);color:var(--accent);}
+#role-pill.guesser{background:rgba(61,214,140,.18);color:var(--green);}
+.top-icon{width:32px;height:32px;border-radius:8px;flex-shrink:0;background:var(--surface2);
+  border:1px solid var(--border);color:var(--text2);font-size:.95rem;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;transition:background .12s,color .12s;}
+.top-icon:active{background:var(--surface3);color:var(--text);}
+#sync-indicator{display:flex;align-items:center;flex-shrink:0;width:16px;justify-content:center;}
+@keyframes spin{to{transform:rotate(360deg);}}
+#canvas-area{flex:1 1 0;position:relative;overflow:hidden;min-height:0;background:#1a2a2b;}
+#canvas-wrap{position:absolute;transform-origin:0 0;will-change:transform;}
+.cvl{position:absolute;top:0;left:0;}
+#cv-bg{background:#fff;z-index:1;box-shadow:0 4px 40px rgba(0,0,0,.7);}
+#cv-layers{z-index:2;pointer-events:none;}
+#cv-draw{z-index:3;cursor:crosshair;}
+#cv-preview{z-index:4;pointer-events:none;}
+#waiting-overlay{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;
+  justify-content:center;gap:12px;z-index:10;pointer-events:none;}
+#start-btn{background:var(--btn-bg);color:#fff;border:none;padding:12px 32px;border-radius:var(--r);
+  font-size:.9rem;font-family:'Space Grotesk',sans-serif;font-weight:700;cursor:pointer;
+  box-shadow:0 4px 20px rgba(196,149,106,.4);pointer-events:all;display:none;
+  letter-spacing:.04em;transition:transform .12s,background .12s;}
+#start-btn:active{transform:scale(.94);background:var(--btn-hover);}
+#chat-panel{flex-shrink:0;display:none;flex-direction:column;gap:4px;
+  padding:5px 10px calc(5px + var(--safe-b));background:var(--surface);
+  border-top:1px solid var(--border);z-index:15;max-height:100px;}
+#chat-panel.visible{display:flex;}
+#chat-log{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:1px;
+  scrollbar-width:none;max-height:40px;}
+#chat-log::-webkit-scrollbar{display:none;}
+.cmsg{font-size:.72rem;color:var(--text2);line-height:1.4;}
+.cmsg .cn{color:var(--text);font-weight:600;}
+.cmsg.ok{color:var(--green);font-weight:700;}
+.cmsg.sys{color:var(--text3);font-style:italic;}
+#guess-row{display:flex;gap:6px;}
+#guess-in{flex:1;background:var(--surface2);border:1.5px solid var(--border);border-radius:8px;
+  color:var(--text);padding:7px 10px;font-size:.85rem;outline:none;
+  font-family:'Space Grotesk',sans-serif;min-width:0;
+  -webkit-user-select:text;user-select:text;transition:border-color .15s;}
+#guess-in:focus{border-color:var(--btn-bg);}
+#guess-go{background:var(--btn-bg);color:#fff;border:none;padding:7px 14px;border-radius:8px;
+  font-size:.82rem;font-weight:700;cursor:pointer;}
+#guess-go:active{background:var(--btn-hover);}
+#toolbar{flex-shrink:0;display:none;flex-direction:column;align-items:center;justify-content:center;
+  gap:5px;padding:6px 10px calc(6px + var(--safe-b));background:var(--surface);
+  border-top:1px solid var(--border);z-index:20;}
+#toolbar.visible{display:flex;}
+.tb-row{display:flex;gap:6px;align-items:center;justify-content:center;}
+.tbtn{width:46px;height:46px;min-width:46px;border-radius:10px;border:1px solid var(--border);
+  background:var(--surface2);color:var(--text2);font-size:1.1rem;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;flex-shrink:0;position:relative;
+  transition:transform .1s,background .12s,color .12s,border-color .12s;}
+.tbtn:active{transform:scale(.84);}
+.tbtn.on{background:var(--btn-bg);color:#fff;border-color:var(--btn-bg);}
+.tbtn.tred{background:rgba(224,85,85,.2);color:var(--red);border-color:rgba(224,85,85,.3);}
+.tbtn.tred:active{background:rgba(224,85,85,.35);}
+.color-dot{position:absolute;bottom:3px;right:3px;width:8px;height:8px;
+  border-radius:50%;border:1.5px solid rgba(255,255,255,.6);pointer-events:none;}
+#sz-op-label{font-size:.6rem;color:var(--text2);font-weight:600;line-height:1.7;text-align:center;
+  min-width:34px;display:flex;flex-direction:column;align-items:center;font-family:'JetBrains Mono',monospace;}
+.popup{position:fixed;background:var(--surface);border:1px solid var(--border);border-radius:12px;
+  padding:10px;z-index:500;display:none;flex-direction:column;gap:7px;
+  box-shadow:0 16px 48px rgba(0,0,0,.75);max-height:75vh;overflow-y:auto;
+  animation:popUp .14s cubic-bezier(.17,.67,.41,1.3);
+  scrollbar-width:thin;scrollbar-color:var(--surface3) transparent;}
+.popup.open{display:flex;}
+@keyframes popUp{from{opacity:0;transform:scale(.9) translateY(6px);}to{opacity:1;transform:scale(1) translateY(0);}}
+#brush-popup  {bottom:calc(var(--toolbar-h) + var(--safe-b) + 6px);left:4px;min-width:230px;}
+#color-popup  {bottom:calc(var(--toolbar-h) + var(--safe-b) + 6px);left:50%;transform:translateX(-50%);min-width:240px;}
+#opacity-popup{bottom:calc(var(--toolbar-h) + var(--safe-b) + 6px);left:50%;transform:translateX(-50%);min-width:220px;}
+#layer-popup  {bottom:calc(var(--toolbar-h) + var(--safe-b) + 6px);right:4px;min-width:244px;max-height:72vh;}
+#settings-popup{bottom:calc(var(--toolbar-h) + var(--safe-b) + 6px);right:4px;min-width:232px;max-height:72vh;}
+#players-popup{top:calc(var(--topbar-h) + 6px);left:50%;transform:translateX(-50%);min-width:160px;max-height:280px;}
+#lb-popup     {top:calc(var(--topbar-h) + 6px);left:50%;transform:translateX(-50%);min-width:210px;}
+#logs-popup   {top:calc(var(--topbar-h) + 6px);left:50%;transform:translateX(-50%);width:min(460px,96vw);max-height:62vh;}
+.pop-label{font-size:.58rem;color:var(--text3);font-weight:700;letter-spacing:.08em;
+  text-transform:uppercase;font-family:'JetBrains Mono',monospace;}
+.pop-divider{height:1px;background:var(--border);margin:1px 0;}
+.brush-opt{display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:8px;cursor:pointer;
+  font-size:.8rem;font-weight:500;border:1px solid transparent;transition:all .1s;
+  white-space:nowrap;color:var(--text2);}
+.brush-opt:hover,.brush-opt:active{background:var(--surface2);color:var(--text);}
+.brush-opt.on{border-color:var(--btn-bg);background:rgba(196,149,106,.15);color:var(--accent);}
+.brush-icon{font-size:.95rem;width:20px;text-align:center;}
+.color-row{display:flex;gap:6px;flex-wrap:wrap;}
+.cswatch{width:28px;height:28px;min-width:28px;border-radius:50%;border:2px solid transparent;
+  cursor:pointer;flex-shrink:0;transition:transform .1s;}
+.cswatch:active{transform:scale(.78);}
+.cswatch.on{border-color:#fff;transform:scale(1.15);box-shadow:0 0 0 2px var(--btn-bg);}
+.pop-slider-wrap{display:flex;align-items:center;gap:8px;}
+input[type=range].pop-slider{-webkit-appearance:none;flex:1;height:3px;border-radius:2px;background:var(--border);outline:none;}
+input[type=range].pop-slider::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;
+  border-radius:50%;background:var(--btn-bg);border:2px solid #fff;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.4);}
+.pop-slider-lbl{font-size:.72rem;color:var(--text2);font-weight:600;min-width:36px;
+  text-align:right;font-family:'JetBrains Mono',monospace;}
+#sz-preview{width:20px;height:20px;display:flex;align-items:center;justify-content:center;}
+#layer-list{display:flex;flex-direction:column;gap:3px;}
+.layer-row{display:flex;align-items:center;gap:5px;padding:6px 7px;border-radius:8px;cursor:pointer;
+  font-size:.78rem;font-weight:500;border:1px solid transparent;color:var(--text2);transition:all .1s;}
+.layer-row:hover{background:var(--surface2);color:var(--text);}
+.layer-row.active{border-color:var(--btn-bg);background:rgba(196,149,106,.12);color:var(--accent);}
+.layer-row.mask-sub{padding-left:16px;border-left:2px solid var(--orange);margin-left:6px;}
+.layer-row.mask-editing{border-color:var(--orange);background:rgba(224,128,64,.12);color:var(--orange);}
+.layer-vis{font-size:.8rem;opacity:.35;transition:opacity .15s;cursor:pointer;flex-shrink:0;}
+.layer-vis.on{opacity:1;}
+.layer-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.76rem;}
+.layer-name-input{flex:1;background:var(--surface3);border:1px solid var(--btn-bg);border-radius:4px;
+  color:var(--text);padding:2px 5px;font-size:.76rem;outline:none;
+  font-family:'Space Grotesk',sans-serif;min-width:0;-webkit-user-select:text;user-select:text;}
+.blend-btn{background:var(--surface3);border:1px solid var(--border);border-radius:5px;
+  color:var(--text2);padding:2px 3px;font-size:.6rem;font-weight:700;cursor:pointer;
+  flex-shrink:0;max-width:62px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font-family:'JetBrains Mono',monospace;text-align:center;
+  -webkit-appearance:none;appearance:none;}
+.blend-btn:focus{outline:1px solid var(--btn-bg);}
+.blend-btn option{background:var(--surface);color:var(--text);}
+.layer-op-slider{-webkit-appearance:none;width:42px;height:3px;background:var(--border);border-radius:2px;outline:none;flex-shrink:0;}
+.layer-op-slider::-webkit-slider-thumb{-webkit-appearance:none;width:11px;height:11px;border-radius:50%;background:var(--text2);cursor:pointer;}
+.layer-lock{font-size:.72rem;opacity:.4;cursor:pointer;flex-shrink:0;transition:opacity .15s;}
+.layer-lock.on{opacity:1;color:var(--yellow);}
+.layer-actions{display:flex;gap:4px;flex-wrap:wrap;margin-top:2px;}
+.lact{flex:1;min-width:0;padding:5px 4px;border-radius:7px;background:var(--surface2);
+  border:1px solid var(--border);color:var(--text2);font-size:.65rem;font-weight:600;cursor:pointer;
+  text-align:center;font-family:'Space Grotesk',sans-serif;white-space:nowrap;transition:background .1s,color .1s;}
+.lact:hover{background:var(--surface3);color:var(--text);}
+.lact:active{transform:scale(.93);}
+.canvas-size-btn{background:var(--surface2);border:1px solid var(--border);color:var(--text2);
+  padding:4px 8px;border-radius:6px;font-size:.65rem;font-weight:700;cursor:pointer;
+  font-family:'JetBrains Mono',monospace;transition:all .1s;}
+.canvas-size-btn:active{transform:scale(.93);}
+.canvas-size-btn.on{background:rgba(196,149,106,.2);border-color:var(--btn-bg);color:var(--accent);}
+.setting-row{display:flex;align-items:center;gap:8px;padding:8px 7px;border-radius:8px;cursor:pointer;
+  font-size:.8rem;font-weight:500;border:1px solid transparent;transition:background .1s;color:var(--text2);}
+.setting-row:hover,.setting-row:active{background:var(--surface2);color:var(--text);}
+.setting-row .s-icon{font-size:1rem;width:20px;text-align:center;flex-shrink:0;}
+.setting-row .s-label{flex:1;}
+.setting-row .s-value{font-size:.7rem;color:var(--text3);font-weight:600;font-family:'JetBrains Mono',monospace;}
+.s-section{font-family:'JetBrains Mono',monospace;font-size:.6rem;font-weight:700;
+  color:var(--btn-bg);letter-spacing:.08em;text-transform:uppercase;padding:2px 3px;}
+.lb-row{display:flex;align-items:center;gap:7px;padding:4px 5px;font-size:.8rem;border-radius:6px;}
+.lb-row:nth-child(2){background:rgba(255,209,102,.06);}
+.lb-rank{font-weight:700;color:var(--text3);min-width:16px;font-family:'JetBrains Mono',monospace;}
+.lb-name{flex:1;font-weight:500;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.lb-pts{color:var(--yellow);font-weight:700;white-space:nowrap;font-family:'JetBrains Mono',monospace;}
+#log-entries{font-family:'JetBrains Mono',monospace;font-size:.63rem;color:var(--text2);
+  overflow-y:auto;max-height:calc(62vh - 80px);
+  scrollbar-width:thin;scrollbar-color:var(--surface3) transparent;}
+.log-entry{display:grid;grid-template-columns:68px 60px 1fr;gap:0 5px;padding:2px 3px;
+  border-bottom:1px solid rgba(255,255,255,.025);line-height:1.6;}
+.log-entry:hover{background:rgba(255,255,255,.03);}
+.log-ts,.log-delta{color:var(--text3);text-align:right;}
+.log-msg{color:var(--text2);}
+.log-entry.ev-connect .log-msg{color:var(--green);}
+.log-entry.ev-disconnect .log-msg{color:var(--red);}
+.log-entry.ev-draw .log-msg{color:#8aabff;}
+.log-entry.ev-guess .log-msg{color:#c4a8ff;}
+.log-entry.ev-round .log-msg{color:var(--yellow);}
+.log-entry.ev-error .log-msg{color:var(--red);}
+.log-ctrl-btn{font-size:.7rem;padding:4px 10px;border-radius:7px;background:var(--surface2);
+  border:1px solid var(--border);color:var(--text2);cursor:pointer;}
+#toast{position:fixed;top:calc(var(--topbar-h) + 8px);left:50%;
+  transform:translateX(-50%) translateY(-4px);background:var(--surface);color:var(--text);
+  padding:6px 14px;border-radius:20px;font-size:.76rem;font-weight:600;
+  border:1px solid var(--border);opacity:0;transition:opacity .18s,transform .18s;
+  z-index:600;pointer-events:none;white-space:nowrap;max-width:86vw;overflow:hidden;text-overflow:ellipsis;}
+#toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+#toast.ok{background:rgba(61,214,140,.12);border-color:var(--green);color:var(--green);}
+#toast.warn{background:rgba(224,85,85,.12);border-color:var(--red);color:var(--red);}
+#round-overlay{position:fixed;inset:0;background:rgba(0,0,0,.85);display:none;
+  align-items:center;justify-content:center;z-index:700;backdrop-filter:blur(8px);}
+#round-overlay.show{display:flex;}
+#round-box{background:var(--surface);border:1px solid var(--border);border-radius:16px;
+  padding:24px 20px;text-align:center;width:min(290px,90vw);
+  animation:popUp .28s cubic-bezier(.17,.67,.41,1.4);}
+.re-emoji{font-size:2.4rem;margin-bottom:6px;}
+.re-title{font-size:1.05rem;font-weight:700;margin-bottom:3px;}
+.re-word{font-size:1.3rem;font-weight:700;color:var(--accent);margin:7px 0;letter-spacing:.04em;}
+.re-sub{color:var(--text2);font-size:.8rem;margin-bottom:12px;}
+#re-newround{background:var(--btn-bg);color:#fff;border:none;padding:10px;border-radius:var(--r);
+  font-size:.86rem;font-weight:700;cursor:pointer;font-family:'Space Grotesk',sans-serif;width:100%;}
+#join-overlay{position:fixed;inset:0;background:rgba(15,20,21,.97);display:flex;
+  align-items:center;justify-content:center;z-index:800;backdrop-filter:blur(12px);}
+#join-box{background:var(--surface);border:1px solid var(--border);border-radius:16px;
+  padding:24px 20px;width:min(310px,92vw);display:flex;flex-direction:column;gap:10px;}
+#join-box h2{text-align:center;font-size:1.35rem;font-weight:700;color:var(--accent);}
+#join-box input{background:var(--surface2);border:1.5px solid var(--border);border-radius:var(--r);
+  color:var(--text);padding:10px 12px;font-size:.88rem;outline:none;
+  font-family:'Space Grotesk',sans-serif;-webkit-user-select:text;user-select:text;
+  transition:border-color .15s;}
+#join-box input:focus{border-color:var(--btn-bg);}
+#join-btn{background:var(--btn-bg);color:#fff;border:none;padding:11px;border-radius:var(--r);
+  font-size:.9rem;font-weight:700;cursor:pointer;font-family:'Space Grotesk',sans-serif;}
+#join-btn:active{background:var(--btn-hover);}
+#drawer-finish-overlay{display:none;position:fixed;inset:0;z-index:550;
+  background:rgba(0,0,0,.65);backdrop-filter:blur(5px);
+  align-items:flex-end;justify-content:center;padding-bottom:36px;}
+#dfo-box{background:var(--surface);border:1px solid var(--border);border-radius:16px;
+  padding:20px 18px;width:min(310px,92vw);text-align:center;
+  animation:popUp .28s cubic-bezier(.17,.67,.41,1.4);}
+#mask-indicator{position:absolute;top:8px;left:50%;transform:translateX(-50%);z-index:15;
+  background:rgba(224,128,64,.2);border:1px solid var(--orange);color:var(--orange);
+  padding:3px 10px;border-radius:20px;font-size:.64rem;font-weight:700;
+  pointer-events:none;display:none;letter-spacing:.04em;font-family:'JetBrains Mono',monospace;}
+#mask-indicator.show{display:block;}
+#btn-fit-canvas{position:absolute;bottom:10px;right:10px;z-index:15;width:32px;height:32px;
+  border-radius:8px;border:1px solid var(--border);background:rgba(30,42,43,.85);
+  color:var(--text2);font-size:.82rem;cursor:pointer;display:none;
+  align-items:center;justify-content:center;transition:opacity .2s;}
+#btn-fit-canvas.visible{display:flex;}
+#btn-fit-canvas:active{opacity:.6;}
+#zoom-indicator{position:absolute;bottom:10px;left:10px;z-index:15;font-size:.64rem;font-weight:700;
+  color:var(--text2);background:rgba(30,42,43,.8);padding:3px 7px;border-radius:6px;
+  pointer-events:none;opacity:0;transition:opacity .3s;font-family:'JetBrains Mono',monospace;}
+#zoom-indicator.show{opacity:1;}
+@media(max-width:380px){:root{--toolbar-h:72px;}
+  .tbtn{width:40px;height:40px;font-size:1rem;border-radius:9px;}
+  #toolbar{gap:5px;padding:5px 8px calc(5px + var(--safe-b));}}
+@media(min-width:768px){:root{--topbar-h:50px;--toolbar-h:78px;}
+  .tbtn{width:50px;height:50px;font-size:1.2rem;}}
+</style>
+</head>
+<body>
+<div id="app">
+<div id="join-overlay">
+  <div id="join-box">
+    <h2>🎨 Draw & Guess</h2>
+    <input id="name-in" placeholder="Your name" maxlength="24" autocomplete="off"/>
+    <input id="room-in" placeholder="Room ID (chat ID)" maxlength="60" autocomplete="off"/>
+    <button id="join-btn">Join →</button>
+  </div>
+</div>
+<div id="drawer-finish-overlay">
+  <div id="dfo-box">
+    <div id="dfo-emoji" style="font-size:2.2rem;margin-bottom:7px">🎉</div>
+    <div id="dfo-title" style="font-size:1rem;font-weight:700;margin-bottom:5px"></div>
+    <div id="dfo-word"  style="font-size:1.2rem;font-weight:700;color:var(--accent);margin:7px 0"></div>
+    <div id="dfo-sub"   style="font-size:.78rem;color:var(--text2);margin-bottom:14px"></div>
+    <div style="display:flex;gap:8px">
+      <button id="dfo-keep"  style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:10px;border-radius:var(--r);font-size:.84rem;font-weight:700;cursor:pointer;font-family:'Space Grotesk',sans-serif;">✏️ Keep Drawing</button>
+      <button id="dfo-close" style="flex:1;background:var(--btn-bg);border:none;color:#fff;padding:10px;border-radius:var(--r);font-size:.84rem;font-weight:700;cursor:pointer;font-family:'Space Grotesk',sans-serif;">✅ Close</button>
+    </div>
+  </div>
+</div>
+<div class="popup" id="brush-popup">
+  <div class="pop-label">Brush Type</div>
+  <div class="brush-opt on"  data-brush="pen">      <span class="brush-icon">🖊</span>Pen</div>
+  <div class="brush-opt"     data-brush="pencil">   <span class="brush-icon">✏️</span>Pencil</div>
+  <div class="brush-opt"     data-brush="marker">   <span class="brush-icon">🖍</span>Marker</div>
+  <div class="brush-opt"     data-brush="ink">      <span class="brush-icon">🪶</span>Ink</div>
+  <div class="brush-opt"     data-brush="watercolor"><span class="brush-icon">💧</span>Watercolor</div>
+  <div class="brush-opt"     data-brush="bristle">  <span class="brush-icon">🎨</span>Bristle</div>
+  <div class="brush-opt"     data-brush="airbrush"> <span class="brush-icon">🌫</span>Airbrush</div>
+  <div class="brush-opt"     data-brush="line">     <span class="brush-icon">╱</span>Line</div>
+  <div class="brush-opt"     data-brush="eraser">   <span class="brush-icon">🧽</span>Eraser</div>
+  <div class="pop-divider"></div>
+  <div class="pop-label">Stabilization</div>
+  <div class="pop-slider-wrap">
+    <input type="range" class="pop-slider" id="stab-range" min="0" max="20" value="3"/>
+    <span class="pop-slider-lbl" id="stab-lbl">3px</span>
+  </div>
+  <div class="pop-label">Smoothing</div>
+  <div class="pop-slider-wrap">
+    <input type="range" class="pop-slider" id="smooth-range" min="0" max="100" value="50"/>
+    <span class="pop-slider-lbl" id="smooth-lbl">50%</span>
+  </div>
+  <div class="pop-label">Flow / Density</div>
+  <div class="pop-slider-wrap">
+    <input type="range" class="pop-slider" id="flow-range" min="1" max="100" value="80"/>
+    <span class="pop-slider-lbl" id="flow-lbl">80%</span>
+  </div>
+</div>
+<div class="popup" id="color-popup">
+  <div style="position:relative;width:100%;height:140px;border-radius:8px;overflow:hidden;flex-shrink:0">
+    <canvas id="cp-sb" width="220" height="140" style="width:100%;height:140px;display:block;cursor:crosshair;border-radius:8px;"></canvas>
+    <div id="cp-cursor" style="position:absolute;width:12px;height:12px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 0 1px #000;pointer-events:none;transform:translate(-50%,-50%);top:10%;left:90%"></div>
+  </div>
+  <div style="position:relative;height:14px;border-radius:7px;overflow:hidden;flex-shrink:0;margin-top:2px">
+    <canvas id="cp-hue" width="220" height="14" style="width:100%;height:14px;display:block;cursor:pointer;border-radius:7px;"></canvas>
+    <div id="cp-hue-cursor" style="position:absolute;top:50%;width:14px;height:14px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 0 1px #000;pointer-events:none;transform:translate(-50%,-50%);left:0%"></div>
+  </div>
+  <div class="pop-label" style="margin-top:3px">RGB</div>
+  <div class="pop-slider-wrap"><span style="font-size:.65rem;color:#e05555;min-width:10px;font-weight:700">R</span><input type="range" class="pop-slider" id="cp-r" min="0" max="255" value="26"/><span class="pop-slider-lbl" id="cp-r-lbl">26</span></div>
+  <div class="pop-slider-wrap"><span style="font-size:.65rem;color:#3dd68c;min-width:10px;font-weight:700">G</span><input type="range" class="pop-slider" id="cp-g" min="0" max="255" value="26"/><span class="pop-slider-lbl" id="cp-g-lbl">26</span></div>
+  <div class="pop-slider-wrap"><span style="font-size:.65rem;color:#118ab2;min-width:10px;font-weight:700">B</span><input type="range" class="pop-slider" id="cp-b" min="0" max="255" value="46"/><span class="pop-slider-lbl" id="cp-b-lbl">46</span></div>
+  <div style="display:flex;align-items:center;gap:8px;margin-top:2px">
+    <div id="cp-preview" style="width:28px;height:28px;border-radius:6px;border:2px solid var(--border);flex-shrink:0;background:#1a1a2e"></div>
+    <input id="cp-hex" style="flex:1;background:var(--surface2);border:1.5px solid var(--border);border-radius:7px;color:var(--text);padding:5px 8px;font-size:.8rem;outline:none;font-family:'JetBrains Mono',monospace;-webkit-user-select:text;user-select:text;" value="#1a1a2e" maxlength="7" spellcheck="false"/>
+    <button id="cp-apply-hex" style="background:var(--btn-bg);border:none;color:#fff;padding:5px 10px;border-radius:7px;font-size:.72rem;font-weight:700;cursor:pointer;font-family:'Space Grotesk',sans-serif;">OK</button>
+  </div>
+  <div class="pop-divider"></div>
+  <div class="pop-label">Swatches</div>
+  <div class="color-row" id="colors-basic"></div>
+  <div class="color-row" id="colors-pastel"></div>
+  <div class="color-row" id="colors-neon"></div>
+</div>
+<div class="popup" id="opacity-popup">
+  <div class="pop-label">Brush Size</div>
+  <div class="pop-slider-wrap">
+    <div id="sz-preview"></div>
+    <input type="range" class="pop-slider" id="sz-range" min="1" max="80" value="8"/>
+    <span class="pop-slider-lbl" id="sz-lbl">8px</span>
+  </div>
+  <div class="pop-divider"></div>
+  <div class="pop-label">Opacity</div>
+  <div class="pop-slider-wrap">
+    <input type="range" class="pop-slider" id="op-range" min="5" max="100" value="100"/>
+    <span class="pop-slider-lbl" id="op-lbl">100%</span>
+  </div>
+</div>
+<div class="popup" id="layer-popup">
+  <div class="pop-label">Layers</div>
+  <div id="layer-list"></div>
+  <div class="layer-actions">
+    <button class="lact" id="layer-add">+ Layer</button>
+    <button class="lact" id="layer-add-mask">± Mask</button>
+    <button class="lact" id="layer-duplicate">Dup</button>
+    <button class="lact" id="layer-merge-down">Merge↓</button>
+    <button class="lact" id="layer-flatten">Flatten</button>
+  </div>
+</div>
+<div class="popup" id="settings-popup">
+  <div class="s-section">Word</div>
+  <div style="display:flex;align-items:center;gap:7px;padding:3px 0">
+    <span id="s-current-word" style="flex:1;font-weight:700;color:var(--accent);font-size:.88rem;letter-spacing:.05em">—</span>
+    <button id="s-change-word" style="background:var(--surface2);border:1px solid var(--border);color:var(--text2);padding:5px 10px;border-radius:7px;font-size:.72rem;font-weight:700;cursor:pointer;white-space:nowrap;font-family:'Space Grotesk',sans-serif;">🔀 New</button>
+  </div>
+  <div class="pop-divider"></div>
+  <div class="s-section">Round</div>
+  <div class="setting-row" id="s-skip">   <span class="s-icon">⏭</span><span class="s-label">Skip word</span></div>
+  <div class="setting-row" id="s-done">   <span class="s-icon">✅</span><span class="s-label">Finish drawing</span></div>
+  <div class="pop-divider"></div>
+  <div class="s-section">View</div>
+  <div class="setting-row" id="s-players">    <span class="s-icon">👥</span><span class="s-label">Players</span></div>
+  <div class="setting-row" id="s-leaderboard"><span class="s-icon">🏆</span><span class="s-label">Leaderboard</span></div>
+  <div class="setting-row" id="s-gallery">    <span class="s-icon">🖼</span><span class="s-label">Gallery</span></div>
+  <div class="pop-divider"></div>
+  <div class="s-section">Canvas Size</div>
+  <div style="display:flex;flex-wrap:wrap;gap:5px;padding:4px 2px">
+    <button class="canvas-size-btn on" data-w="1920" data-h="1080">Full HD</button>
+    <button class="canvas-size-btn" data-w="1280" data-h="720">HD 720p</button>
+    <button class="canvas-size-btn" data-w="800"  data-h="500">Default</button>
+    <button class="canvas-size-btn" data-w="794"  data-h="1123">A4</button>
+    <button class="canvas-size-btn" data-w="559"  data-h="794">A5</button>
+    <button class="canvas-size-btn" data-w="1080" data-h="1080">Square</button>
+  </div>
+  <div id="s-canvas-info" style="font-size:.6rem;color:var(--text3);padding:1px 3px;font-family:'JetBrains Mono',monospace">1920 × 1080 px</div>
+  <div class="pop-divider"></div>
+  <div class="s-section">Export</div>
+  <div class="setting-row" id="s-save-drawing"><span class="s-icon">💾</span><span class="s-label">Save drawing</span></div>
+  <div class="setting-row" id="s-send-bot">   <span class="s-icon">📤</span><span class="s-label">Send to chat</span></div>
+  <div class="pop-divider"></div>
+  <div class="s-section">Display</div>
+  <div class="setting-row" id="s-theme"><span class="s-icon">☀️</span><span class="s-label">Light mode</span><span class="s-value" id="s-theme-val">Off</span></div>
+  <div class="setting-row" id="s-sound"><span class="s-icon">🔊</span><span class="s-label">Sound</span><span class="s-value" id="s-sound-val">On</span></div>
+  <div class="pop-divider"></div>
+  <div class="s-section">Developer</div>
+  <div class="setting-row" id="s-logs"><span class="s-icon">📋</span><span class="s-label">Event Logs</span></div>
+</div>
+<div class="popup" id="logs-popup">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:3px">
+    <div class="pop-label">Event Log</div>
+    <div style="display:flex;gap:5px">
+      <button class="log-ctrl-btn" id="log-refresh-btn">↻</button>
+      <button class="log-ctrl-btn" id="log-copy-btn">Copy</button>
+      <button class="log-ctrl-btn" id="log-clear-btn">Clear</button>
+    </div>
+  </div>
+  <div style="display:grid;grid-template-columns:68px 60px 1fr;gap:0 5px;padding:1px 3px;
+    font-family:'JetBrains Mono',monospace;font-size:.56rem;color:var(--text3);border-bottom:1px solid var(--border);">
+    <span style="text-align:right">TIME(s)</span><span style="text-align:right">DELTA</span><span>EVENT</span>
+  </div>
+  <div id="log-entries"><div style="color:var(--text3);font-size:.68rem;padding:6px">No events yet.</div></div>
+</div>
+<div class="popup" id="players-popup">
+  <div class="pop-label">Players</div>
+  <div id="player-list"><div style="font-size:.74rem;color:var(--text2);padding:3px 5px">No players</div></div>
+</div>
+<div class="popup" id="lb-popup">
+  <div style="font-size:.8rem;font-weight:700;color:var(--yellow);margin-bottom:3px">🏆 Leaderboard</div>
+  <div id="lb-list"></div>
+</div>
+<div id="round-overlay">
+  <div id="round-box">
+    <div class="re-emoji" id="re-emoji">🎉</div>
+    <div class="re-title" id="re-title"></div>
+    <div class="re-word"  id="re-word"></div>
+    <div class="re-sub"   id="re-sub"></div>
+    <button id="re-newround">Continue →</button>
+  </div>
+</div>
+<div id="topbar">
+  <div id="conn-dot"></div>
+  <div id="word-display">connecting…</div>
+  <span id="role-pill">—</span>
+  <div id="sync-indicator">
+    <svg id="sync-spin" width="14" height="14" viewBox="0 0 16 16" style="display:none;animation:spin 1s linear infinite;opacity:.5">
+      <circle cx="8" cy="8" r="6" fill="none" stroke="var(--text2)" stroke-width="2" stroke-dasharray="20 16"/>
+    </svg>
+    <span id="sync-check" style="font-size:.85rem;color:var(--green);display:none">✓</span>
+  </div>
+  <button class="top-icon" id="btn-menu">⋯</button>
+</div>
+<div id="canvas-area">
+  <div id="canvas-wrap">
+    <canvas id="cv-bg"      class="cvl"></canvas>
+    <canvas id="cv-layers"  class="cvl"></canvas>
+    <canvas id="cv-draw"    class="cvl"></canvas>
+    <canvas id="cv-preview" class="cvl"></canvas>
+  </div>
+  <div id="waiting-overlay"><button id="start-btn">▶ NEW ROUND</button></div>
+  <div id="mask-indicator">MASK EDITING</div>
+  <div id="zoom-indicator">100%</div>
+  <button id="btn-fit-canvas">⊡</button>
+</div>
+<div id="chat-panel">
+  <div id="chat-log"></div>
+  <div id="guess-row">
+    <input id="guess-in" placeholder="Type your guess…" autocomplete="off" autocorrect="off" autocapitalize="off"/>
+    <button id="guess-go">Send</button>
+  </div>
+</div>
+<div id="toolbar">
+  <div class="tb-row">
+    <button class="tbtn on" id="btn-brush">🖊<div class="color-dot" id="color-dot"></div></button>
+    <button class="tbtn"    id="btn-color">🎨</button>
+    <button class="tbtn"    id="btn-fill">🪣</button>
+    <button class="tbtn"    id="btn-eyedrop">💉</button>
+    <button class="tbtn"    id="btn-opacity">💧</button>
+  </div>
+  <div class="tb-row">
+    <button class="tbtn"      id="btn-undo">↩</button>
+    <button class="tbtn"      id="btn-redo">↪</button>
+    <button class="tbtn tred" id="btn-clear">✕</button>
+    <button class="tbtn"      id="btn-layers">📋</button>
+    <div id="sz-op-label"><div id="sz-op-size">8px</div><div id="sz-op-opacity">100%</div></div>
+  </div>
+</div>
+</div>
+<div id="toast"></div>
+<script>
+window.onerror=function(msg,src,line,col,err){
+  const d=document.createElement('div');
+  d.style.cssText='position:fixed;top:0;left:0;right:0;background:#c00;color:#fff;padding:10px;font-size:12px;z-index:9999;word-break:break-all;font-family:monospace;';
+  d.textContent='JS ERROR: '+msg+' @ line '+line+(err?' | '+err.stack:'');
+  document.body.appendChild(d);
+};
+window.addEventListener('unhandledrejection',function(e){
+  const d=document.createElement('div');
+  d.style.cssText='position:fixed;top:40px;left:0;right:0;background:#900;color:#fff;padding:10px;font-size:12px;z-index:9999;word-break:break-all;font-family:monospace;';
+  d.textContent='PROMISE ERROR: '+(e.reason?.message||e.reason||'unknown');
+  document.body.appendChild(d);
 });
-app.get(WEBHOOK_PATH, (_req,res)=>res.send('Webhook active ✅'));
-app.use(express.static(path.join(__dirname,'../../client')));
+</script>
+<script>
+(function(){'use strict';
 
-// ── Words ─────────────────────────────────────────────────────────────────────
-const WORDS=['cat','dog','sun','car','fish','bird','moon','tree','house','flower','apple','pizza',
-  'smile','heart','star','cake','boat','rain','snow','book','guitar','elephant','rainbow','castle',
-  'dragon','piano','volcano','butterfly','telescope','snowman','dinosaur','waterfall','helicopter',
-  'cactus','penguin','banana','scissors','telephone','umbrella','bicycle','submarine','tornado',
-  'lighthouse','compass','anchor','mermaid','unicorn','wizard','knight','ninja','pirate','robot',
-  'alien','crown','bridge'];
-function pickWord(){ return WORDS[Math.floor(Math.random()*WORDS.length)]; }
+const T0=performance.now();let _lt=T0;const logBuf=[];
+function addLog(msg,cat='system'){
+  const now=performance.now(),ts=(now-T0)/1e3,delta=(now-_lt)/1e3;_lt=now;
+  const e={ts,delta,msg,cat};logBuf.push(e);if(logBuf.length>400)logBuf.shift();
+  _appendLog(e);
+}
+function _appendLog(e){
+  const c=document.getElementById('log-entries');if(!c)return;
+  if(c.firstElementChild?.style?.padding)c.innerHTML='';
+  const r=document.createElement('div');r.className='log-entry ev-'+e.cat;
+  r.innerHTML=`<span class="log-ts">${e.ts.toFixed(4)}</span><span class="log-delta">${e.delta.toFixed(4)}</span><span class="log-msg">— ${e.msg}</span>`;
+  c.appendChild(r);c.scrollTop=c.scrollHeight;
+}
+function renderAllLogs(){
+  const c=document.getElementById('log-entries');if(!c)return;c.innerHTML='';
+  if(!logBuf.length){c.innerHTML='<div style="color:var(--text3);font-size:.68rem;padding:6px">No events yet.</div>';return;}
+  logBuf.forEach(_appendLog);
+}
+addLog('Page load started');
 
-// ── PRNG ──────────────────────────────────────────────────────────────────────
+const tg=window.Telegram?.WebApp;
+if(tg){
+  try{tg.ready();}catch(e){}
+  try{tg.expand();}catch(e){}
+  try{if(typeof tg.requestFullscreen==='function')tg.requestFullscreen();}catch(e){}
+  try{tg.onEvent('viewportChanged',()=>{try{if(!tg.isExpanded)tg.expand();}catch(e){}});}catch(e){}
+  try{if(tg.SettingsButton){tg.SettingsButton.show();tg.SettingsButton.onClick(()=>togglePanel('settings-popup'));}}catch(e){}
+  try{tg.onEvent('viewportChanged',()=>setTimeout(fitCanvas,100));}catch(e){}
+}
+
 function makePRNG(seed){
   let s=seed>>>0;
-  return function(){ s+=0x6D2B79F5;let t=s;t=Math.imul(t^(t>>>15),t|1);t^=t+Math.imul(t^(t>>>7),t|61);return((t^(t>>>14))>>>0)/4294967296; };
+  return()=>{s+=0x6D2B79F5;let t=s;t=Math.imul(t^(t>>>15),t|1);t^=t+Math.imul(t^(t>>>7),t|61);return((t^(t>>>14))>>>0)/4294967296;};
 }
 
-// ── Render engine — kept identical to client for pixel-perfect Telegram images ─
-const DEFAULT_CW=1920,DEFAULT_CH=1080;
+let CW=1920,CH=1080;
+const bgCv  =document.getElementById('cv-bg');
+const layersCv=document.getElementById('cv-layers');
+const drawCv=document.getElementById('cv-draw');
+const prevCv=document.getElementById('cv-preview');
+let bgCtx,layersCtx,drawCtx,prevCtx;
+const wrap=document.getElementById('canvas-wrap');
+const area=document.getElementById('canvas-area');
+
+const MAX_LAYERS=8;
+let layers=[],actIdx=0,editMask=false;
+const BLENDS=['source-over','multiply','screen','overlay','darken','lighten','color-dodge','color-burn','hard-light','soft-light','difference','exclusion','hue','saturation','color','luminosity'];
+const BLEND_LBL={'source-over':'Normal','multiply':'Multiply','screen':'Screen','overlay':'Overlay','darken':'Darken','lighten':'Lighten','color-dodge':'Dodge','color-burn':'Burn','hard-light':'H.Light','soft-light':'S.Light','difference':'Diff','exclusion':'Excl','hue':'Hue','saturation':'Sat','color':'Color','luminosity':'Lum'};
+
+function mkLayer(name){
+  const c=document.createElement('canvas');c.width=CW;c.height=CH;
+  const ctx=c.getContext('2d');ctx.lineCap=ctx.lineJoin='round';
+  return{id:Date.now()+Math.random(),name,canvas:c,ctx,visible:true,opacity:1,locked:false,blendMode:'source-over',maskCanvas:null,maskCtx:null,_committed:null};
+}
+
+function initCanvases(){
+  [bgCv,layersCv,drawCv,prevCv].forEach(c=>{c.width=CW;c.height=CH;c.style.width=CW+'px';c.style.height=CH+'px';});
+  wrap.style.width=CW+'px';wrap.style.height=CH+'px';
+  bgCtx=bgCv.getContext('2d');layersCtx=layersCv.getContext('2d');
+  drawCtx=drawCv.getContext('2d');prevCtx=prevCv.getContext('2d');
+  bgCtx.fillStyle='#fff';bgCtx.fillRect(0,0,CW,CH);
+  drawCtx.lineCap=drawCtx.lineJoin='round';
+  layers=[];actIdx=0;editMask=false;
+  layers.push(mkLayer('Layer 1'));
+  renderLayerPanel();composite();
+  setTimeout(fitCanvas,0);setTimeout(fitCanvas,100);setTimeout(fitCanvas,350);setTimeout(fitCanvas,700);
+}
+
+function resizeCanvas(newW,newH){
+  if(newW===CW&&newH===CH)return;
+  if(!confirm(`Resize canvas to ${newW}×${newH}? This will clear all layers.`))return;
+  CW=newW;CH=newH;
+  [bgCv,layersCv,drawCv,prevCv].forEach(c=>{c.width=CW;c.height=CH;c.style.width=CW+'px';c.style.height=CH+'px';});
+  wrap.style.width=CW+'px';wrap.style.height=CH+'px';
+  bgCtx=bgCv.getContext('2d');layersCtx=layersCv.getContext('2d');
+  drawCtx=drawCv.getContext('2d');prevCtx=prevCv.getContext('2d');
+  drawCtx.lineCap=drawCtx.lineJoin='round';
+  bgCtx.fillStyle='#fff';bgCtx.fillRect(0,0,CW,CH);
+  layers=[];actIdx=0;editMask=false;
+  layers.push(mkLayer('Layer 1'));
+  renderLayerPanel();composite();fitCanvas();
+  document.getElementById('s-canvas-info').textContent=`${CW} × ${CH} px`;
+  if(isDrawer)wsSend({type:'canvas_size',w:CW,h:CH});
+  showToast(`Canvas: ${CW}×${CH}`,'ok');
+}
+
+function actLayer(){return layers[actIdx];}
+function actCtx(){const l=actLayer();if(!l)return drawCtx;return(editMask&&l.maskCtx)?l.maskCtx:l.ctx;}
+
+function makeTmp(){const c=document.createElement('canvas');c.width=CW;c.height=CH;return c;}
+function composite(){
+  layersCtx.clearRect(0,0,CW,CH);
+  layers.forEach(l=>{
+    if(!l.visible)return;
+    let src=l.canvas;
+    if(l.maskCanvas){const tmp=makeTmp();const tc=tmp.getContext('2d');tc.drawImage(l.canvas,0,0);tc.globalCompositeOperation='destination-in';tc.drawImage(l.maskCanvas,0,0);src=tmp;}
+    layersCtx.save();layersCtx.globalAlpha=l.opacity;layersCtx.globalCompositeOperation=l.blendMode||'source-over';layersCtx.drawImage(src,0,0);layersCtx.restore();
+  });
+}
+
+function flattenTo(tc){
+  tc.fillStyle='#fff';tc.fillRect(0,0,CW,CH);
+  layers.forEach(l=>{
+    if(!l.visible)return;
+    let src=l.canvas;
+    if(l.maskCanvas){const tmp=makeTmp();const t2=tmp.getContext('2d');t2.drawImage(l.canvas,0,0);t2.globalCompositeOperation='destination-in';t2.drawImage(l.maskCanvas,0,0);src=tmp;}
+    tc.save();tc.globalAlpha=l.opacity;tc.globalCompositeOperation=l.blendMode||'source-over';tc.drawImage(src,0,0);tc.restore();
+  });
+  tc.globalAlpha=1;tc.globalCompositeOperation='source-over';
+}
+
+function clearAll(){
+  layers.forEach(l=>{l.ctx.clearRect(0,0,CW,CH);l._committed=null;if(l.maskCtx){l.maskCtx.fillStyle='#fff';l.maskCtx.fillRect(0,0,CW,CH);}});
+  if(drawCtx)drawCtx.clearRect(0,0,CW,CH);
+  bgCtx.fillStyle='#fff';bgCtx.fillRect(0,0,CW,CH);composite();
+}
+
+let zoom=1,panX=0,panY=0,_tz=1,_tx=0,_ty=0,_raf=null,_fz=1;
+const zoomEl=document.getElementById('zoom-indicator');
+const btnFit=document.getElementById('btn-fit-canvas');
+let _zt=null;
+function applyT(){wrap.style.transform=`translate(${panX}px,${panY}px) scale(${zoom})`;}
+function _animZ(){
+  const e=.18,dz=_tz-zoom,dx=_tx-panX,dy=_ty-panY;
+  if(Math.abs(dz)<.0004&&Math.abs(dx)<.2&&Math.abs(dy)<.2){zoom=_tz;panX=_tx;panY=_ty;applyT();_raf=null;return;}
+  zoom+=dz*e;panX+=dx*e;panY+=dy*e;applyT();_raf=requestAnimationFrame(_animZ);
+}
+function kick(){if(!_raf)_raf=requestAnimationFrame(_animZ);}
+function zoomTo(nz,ox,oy){nz=Math.max(.1,Math.min(12,nz));_tx=ox-(ox-_tx)*(nz/_tz);_ty=oy-(oy-_ty)*(nz/_tz);_tz=nz;kick();showZHUD(nz);}
+function showZHUD(z){if(zoomEl){zoomEl.textContent=Math.round(z*100)+'%';zoomEl.classList.add('show');clearTimeout(_zt);_zt=setTimeout(()=>zoomEl.classList.remove('show'),1200);}if(btnFit)btnFit.classList.toggle('visible',Math.abs(z-_fz)>.04);}
+function fitCanvas(){
+  const r=area.getBoundingClientRect();let aw=r.width,ah=r.height;
+  if(aw<10){const tb=document.getElementById('topbar');aw=window.innerWidth;ah=window.innerHeight-(tb?tb.getBoundingClientRect().height:44);}
+  if(aw<10){requestAnimationFrame(fitCanvas);return;}
+  const portrait=aw<ah;
+  const fz=portrait?Math.min(aw/CW,1):Math.min(aw/CW,ah/CH,1);
+  _fz=fz;_tz=fz;_tx=(aw-CW*fz)/2;_ty=portrait?4:Math.max(0,(ah-CH*fz)/2);
+  zoom=_tz;panX=_tx;panY=_ty;applyT();btnFit?.classList.remove('visible');
+}
+setTimeout(fitCanvas,0);setTimeout(fitCanvas,100);setTimeout(fitCanvas,400);
+window.addEventListener('resize',fitCanvas);
+function c2cv(cx,cy){const r=area.getBoundingClientRect();return[(cx-r.left-panX)/zoom,(cy-r.top-panY)/zoom];}
+
+let _pinch=false,_pd=0,_pmx=0,_pmy=0,_pz=1;
+area.addEventListener('touchstart',e=>{
+  if(e.touches.length===2){e.preventDefault();e.stopPropagation();isDrawing=false;_pinch=true;
+    const t=e.touches;_pd=Math.hypot(t[0].clientX-t[1].clientX,t[0].clientY-t[1].clientY);_pz=zoom;
+    const r=area.getBoundingClientRect();_pmx=(t[0].clientX+t[1].clientX)/2-r.left;_pmy=(t[0].clientY+t[1].clientY)/2-r.top;}
+  else if(e.touches.length===1&&isDrawer)e.preventDefault();
+},{passive:false});
+area.addEventListener('touchmove',e=>{e.preventDefault();e.stopPropagation();
+  if(e.touches.length===2&&_pinch){const t=e.touches;const d=Math.hypot(t[0].clientX-t[1].clientX,t[0].clientY-t[1].clientY);
+    const nz=Math.max(.1,Math.min(12,_pz*(d/_pd)));_tz=nz;_tx=_pmx-(_pmx-panX)*(nz/zoom);_ty=_pmy-(_pmy-panY)*(nz/zoom);zoom=nz;panX=_tx;panY=_ty;applyT();showZHUD(nz);}
+},{passive:false});
+area.addEventListener('touchend',e=>{if(e.touches.length<2)_pinch=false;},{passive:true});
+area.addEventListener('wheel',e=>{e.preventDefault();const r=area.getBoundingClientRect();zoomTo(_tz*(e.deltaY<0?1.1:.91),e.clientX-r.left,e.clientY-r.top);},{passive:false});
+btnFit?.addEventListener('click',()=>{const r=area.getBoundingClientRect();_tz=_fz;_tx=(r.width-CW*_fz)/2;_ty=Math.max(0,(r.height-CH*_fz)/2);kick();showZHUD(_fz);});
+
 const BD={
   pen:      {smoothing:.5,alpha:1.0,widthMult:1.0,cap:'round',pressure:true, flow:.8},
   pencil:   {smoothing:.3,alpha:.75,widthMult:.8, cap:'round',pressure:true, flow:.7},
@@ -142,647 +649,522 @@ const BD={
   airbrush: {smoothing:.0,alpha:.04,widthMult:1.0,cap:'round',pressure:false,flow:.7},
   line:     {smoothing:.0,alpha:1.0,widthMult:1.0,cap:'round',pressure:false,flow:1.0},
   eraser:   {smoothing:.5,alpha:1.0,widthMult:1.0,cap:'round',pressure:false,flow:1.0},
+  fill:     {smoothing:1, alpha:1.0,widthMult:1.0,cap:'round',pressure:false,flow:1.0},
+  eyedrop:  {smoothing:0, alpha:1.0,widthMult:1.0,cap:'round',pressure:false,flow:1.0},
 };
-// Centripetal Catmull-Rom — eliminates bunching on tight curves (matches client)
+const bSettings={};Object.keys(BD).forEach(b=>bSettings[b]={...BD[b]});
+let brushType='pen',brushSize=8,brushOpacity=1,brushFlow=.8,currentColor='#1a1a2e';
+let isDrawing=false,curStroke=null,lastX=0,lastY=0,ptrId=null,lsx=0,lsy=0;
+let lazyX=0,lazyY=0,LAZY_RADIUS=3;
+
+const US=new WeakMap(),RS=new WeakMap();
+function gs(l,m){if(!m.has(l))m.set(l,[]);return m.get(l);}
+function saveUndo(){const l=actLayer();if(!l)return;const ctx=actCtx(),st=gs(l,US);st.push(ctx.getImageData(0,0,CW,CH));if(st.length>20)st.shift();gs(l,RS).length=0;}
+function doUndo(){
+  const l=actLayer();if(!l)return;
+  const ctx=actCtx(),us=gs(l,US),rs=gs(l,RS);if(!us.length)return;
+  rs.push(ctx.getImageData(0,0,CW,CH));if(rs.length>20)rs.shift();
+  ctx.putImageData(us.pop(),0,0);l._committed=ctx.getImageData(0,0,CW,CH);
+  composite();wsSend({type:'undo'});showSyncDone();addLog('Undo','draw');
+}
+function doRedo(){
+  const l=actLayer();if(!l)return;
+  const ctx=actCtx(),us=gs(l,US),rs=gs(l,RS);if(!rs.length)return;
+  us.push(ctx.getImageData(0,0,CW,CH));if(us.length>20)us.shift();
+  ctx.putImageData(rs.pop(),0,0);l._committed=ctx.getImageData(0,0,CW,CH);
+  composite();wsSend({type:'redo'});showSyncDone();addLog('Redo','draw');
+}
+
 function smoothPts(pts,sm){
-  if(pts.length<3||sm<0.05)return null;
-  const s=sm*0.4,cp=[];
+  if(pts.length<3||sm<.05)return null;
+  const s=sm*.4,cp=[];
   for(let i=0;i<pts.length-1;i++){
     const p0=pts[Math.max(0,i-1)],p1=pts[i],p2=pts[i+1],p3=pts[Math.min(pts.length-1,i+2)];
-    const d1=Math.hypot(p1[0]-p0[0],p1[1]-p0[1])||1;
-    const d2=Math.hypot(p2[0]-p1[0],p2[1]-p1[1])||1;
-    const d3=Math.hypot(p3[0]-p2[0],p3[1]-p2[1])||1;
-    const t1x=(p2[0]-p0[0])*s*(d2/(d1+d2)),t1y=(p2[1]-p0[1])*s*(d2/(d1+d2));
-    const t2x=(p3[0]-p1[0])*s*(d2/(d2+d3)),t2y=(p3[1]-p1[1])*s*(d2/(d2+d3));
+    const d1=Math.hypot(p1[0]-p0[0],p1[1]-p0[1])||1,d2=Math.hypot(p2[0]-p1[0],p2[1]-p1[1])||1,d3=Math.hypot(p3[0]-p2[0],p3[1]-p2[1])||1;
+    const t1x=(p2[0]-p0[0])*s*(d2/(d1+d2)),t1y=(p2[1]-p0[1])*s*(d2/(d1+d2)),t2x=(p3[0]-p1[0])*s*(d2/(d2+d3)),t2y=(p3[1]-p1[1])*s*(d2/(d2+d3));
     cp.push([p1[0]+t1x,p1[1]+t1y,p2[0]-t2x,p2[1]-t2y]);
   }
   return cp;
 }
-// Pressure: real stylus data OR speed-based fallback (matches client calcP)
 function calcP(pts,pressures,i){
-  if(pressures&&pressures[i]!=null&&pressures[i]>0)
-    return Math.max(0.15,Math.min(1.2,pressures[i]*1.3));
+  if(pressures&&pressures[i]!=null&&pressures[i]>0)return Math.max(0.15,Math.min(1.2,pressures[i]*1.3));
   if(i===0||i>=pts.length-1)return 0.7;
-  const dx=pts[i+1][0]-pts[i-1][0],dy=pts[i+1][1]-pts[i-1][1];
-  const speed=Math.sqrt(dx*dx+dy*dy);
+  const dx=pts[i+1][0]-pts[i-1][0],dy=pts[i+1][1]-pts[i-1][1],speed=Math.sqrt(dx*dx+dy*dy);
   return Math.max(0.2,Math.min(1.0,0.35+speed*0.013));
 }
-// Taper: smooth fade at stroke start and end (matches client getTaper)
 function getTaper(i,total){
   if(total<4)return 1;
-  const head=Math.min(6,total*0.12),tail=Math.min(10,total*0.18);
-  let t=1.0;
+  const head=Math.min(6,total*0.12),tail=Math.min(10,total*0.18);let t=1.0;
   if(i<head)t=Math.min(t,Math.sin((i/head)*Math.PI*0.5));
   if(i>total-tail)t=Math.min(t,Math.sin(((total-i)/tail)*Math.PI*0.5));
   return Math.max(0.04,t);
 }
-function drawPath(ctx,pts,sm){
-  const cp=smoothPts(pts,sm);
-  ctx.beginPath();ctx.moveTo(pts[0][0],pts[0][1]);
-  if(!cp){for(let i=1;i<pts.length;i++)ctx.lineTo(pts[i][0],pts[i][1]);}
-  else{for(let i=0;i<cp.length;i++)ctx.bezierCurveTo(cp[i][0],cp[i][1],cp[i][2],cp[i][3],pts[i+1][0],pts[i+1][1]);}
+function dPath(ctx,pts,sm){
+  const cp=smoothPts(pts,sm);ctx.beginPath();ctx.moveTo(pts[0][0],pts[0][1]);
+  if(!cp)for(let i=1;i<pts.length;i++)ctx.lineTo(pts[i][0],pts[i][1]);
+  else for(let i=0;i<cp.length;i++)ctx.bezierCurveTo(cp[i][0],cp[i][1],cp[i][2],cp[i][3],pts[i+1][0],pts[i+1][1]);
 }
+
 function renderStroke(ctx,s){
-  const pts=s.points||[];
-  const bt0=s.brushType||'pen';
-  if(bt0==='_snapshot')return; // handled by renderPNG directly
-  if(pts.length<1)return;
-  if(pts.length<2&&bt0!=='fill'&&bt0!=='eyedrop')return;
-  const bt=s.brushType||'pen',sz=s.size||6,col=s.color||'#000',
-        op=s.opacity!=null?s.opacity:1.0,fl=s.flow!=null?s.flow:0.8,
-        sm=s.smoothing!=null?s.smoothing:(BD[bt]?.smoothing??0.5),
-        bd=BD[bt]||BD.pen,rng=makePRNG(s.seed||12345),
-        prs=s.pressures||null;
-  ctx.save();
-  ctx.setLineDash([]);ctx.globalAlpha=1;ctx.globalCompositeOperation='source-over';
-  if(bt==='eraser'){
-    ctx.globalCompositeOperation='destination-out';ctx.globalAlpha=1;
-    ctx.strokeStyle='rgba(0,0,0,1)';ctx.lineWidth=sz*bd.widthMult;
-    ctx.lineCap='round';ctx.lineJoin='round';ctx.setLineDash([]);
-    drawPath(ctx,pts,sm);ctx.stroke();ctx.restore();return;
-  }
-  if(bt==='line'){
-    ctx.globalCompositeOperation='source-over';ctx.globalAlpha=op*fl;
-    ctx.strokeStyle=col;ctx.lineWidth=sz;ctx.lineCap='round';ctx.setLineDash([]);
-    ctx.beginPath();ctx.moveTo(pts[0][0],pts[0][1]);ctx.lineTo(pts[pts.length-1][0],pts[pts.length-1][1]);ctx.stroke();
-    ctx.restore();return;
-  }
-  if(bt==='fill'){
-    const[fx,fy]=pts[0];const sx=Math.round(fx),sy=Math.round(fy);
-    const w=ctx.canvas.width,h=ctx.canvas.height;
-    if(sx>=0&&sx<w&&sy>=0&&sy<h){
-      const id=ctx.getImageData(0,0,w,h),d=id.data,ix=(sy*w+sx)*4;
-      const sr=d[ix],sg=d[ix+1],sb=d[ix+2],sa=d[ix+3];
-      const fr=parseInt(col.slice(1,3),16),fg=parseInt(col.slice(3,5),16),fb=parseInt(col.slice(5,7),16);
-      if(!(sr===fr&&sg===fg&&sb===fb&&sa===255)){
-        const match=i=>{const dr=d[i]-sr,dg=d[i+1]-sg,db=d[i+2]-sb,da=d[i+3]-sa;return dr*dr+dg*dg+db*db+da*da<=900;};
-        const stack=[sx+sy*w],vis=new Uint8Array(w*h);vis[sx+sy*w]=1;
-        while(stack.length){
-          const pos=stack.pop(),x=pos%w,y=(pos/w)|0,i=pos*4;
-          d[i]=fr;d[i+1]=fg;d[i+2]=fb;d[i+3]=255;
-          [[x-1,y],[x+1,y],[x,y-1],[x,y+1]].forEach(([nx,ny])=>{
-            if(nx>=0&&nx<w&&ny>=0&&ny<h&&!vis[nx+ny*w]&&match((nx+ny*w)*4)){vis[nx+ny*w]=1;stack.push(nx+ny*w);}
-          });
-        }
-        ctx.putImageData(id,0,0);
-      }
-    }
-    ctx.restore();return;
-  }
-  if(bt==='eyedrop'){ctx.restore();return;}
-  // ── Airbrush: Gaussian falloff particle cloud ────────────────────────────
+  const pts=s.points||[];const bt0=s.brushType||'pen';
+  if(pts.length<1)return;if(pts.length<2&&bt0!=='fill'&&bt0!=='eyedrop')return;
+  const bt=s.brushType||'pen',sz=s.size||6,col=s.color||'#000',op=s.opacity??1,fl=s.flow??.8,
+        sm=s.smoothing??(BD[bt]?.smoothing??.5),bd=BD[bt]||BD.pen,
+        rng=makePRNG(s.seed||12345),prs=s.pressures||null;
+  ctx.save();ctx.setLineDash([]);ctx.globalAlpha=1;ctx.globalCompositeOperation='source-over';
+  if(s.isMask){ctx.globalAlpha=op;ctx.strokeStyle=col;ctx.lineWidth=sz;ctx.lineCap='round';ctx.lineJoin='round';dPath(ctx,pts,sm);ctx.stroke();ctx.restore();return;}
+  if(bt==='eraser'){ctx.globalCompositeOperation='destination-out';ctx.globalAlpha=1;ctx.strokeStyle='rgba(0,0,0,1)';ctx.lineWidth=sz*bd.widthMult;ctx.lineCap='round';ctx.lineJoin='round';dPath(ctx,pts,sm);ctx.stroke();ctx.restore();return;}
+  if(bt==='line'){ctx.globalAlpha=op*fl;ctx.strokeStyle=col;ctx.lineWidth=sz;ctx.lineCap='round';ctx.beginPath();ctx.moveTo(pts[0][0],pts[0][1]);ctx.lineTo(pts[pts.length-1][0],pts[pts.length-1][1]);ctx.stroke();ctx.restore();return;}
+  if(bt==='fill'||bt==='eyedrop'){ctx.restore();return;}
   if(bt==='airbrush'){
-    ctx.globalCompositeOperation='source-over';ctx.fillStyle=col;
-    const rad=sz*3.5,count=Math.floor(rad*rad*0.35*fl);
-    for(let i=0;i<pts.length;i++){
-      for(let d=0;d<count;d++){
-        const u1=Math.max(rng(),1e-10),u2=rng();
-        const mag=Math.sqrt(-2*Math.log(u1))*Math.cos(2*Math.PI*u2);
-        const r=Math.abs(mag)*rad*0.45,angle=rng()*Math.PI*2;
-        const norm=Math.min(r/rad,1);
-        ctx.globalAlpha=op*bd.alpha*(1-norm*norm*norm)*0.55;
-        ctx.beginPath();ctx.arc(pts[i][0]+Math.cos(angle)*r,pts[i][1]+Math.sin(angle)*r,0.3+rng()*1.8+norm*0.8,0,Math.PI*2);ctx.fill();
-      }
-    }
+    ctx.fillStyle=col;const rad=sz*3.5,count=Math.floor(rad*rad*.35*fl);
+    for(let i=0;i<pts.length;i++){for(let d=0;d<count;d++){const u1=Math.max(rng(),1e-10),u2=rng();const mag=Math.sqrt(-2*Math.log(u1))*Math.cos(2*Math.PI*u2);const r=Math.abs(mag)*rad*.45,angle=rng()*Math.PI*2;const norm=Math.min(r/rad,1);ctx.globalAlpha=op*bd.alpha*(1-norm*norm*norm)*.55;ctx.beginPath();ctx.arc(pts[i][0]+Math.cos(angle)*r,pts[i][1]+Math.sin(angle)*r,.3+rng()*1.8+norm*.8,0,Math.PI*2);ctx.fill();}}
     ctx.restore();return;
   }
-  // ── Watercolor: soft body + dark pigment bloom ring at edges ─────────────
   if(bt==='watercolor'){
     ctx.strokeStyle=col;ctx.lineCap='round';ctx.lineJoin='round';
-    // Pass 1: soft wet body — must explicitly set source-over each pass
-    ctx.globalCompositeOperation='source-over';
-    for(let l=0;l<5;l++){
-      ctx.globalAlpha=op*0.025*fl;ctx.lineWidth=sz*bd.widthMult*(0.75+rng()*0.5);
-      ctx.beginPath();ctx.moveTo(pts[0][0]+(rng()-.5)*sz*.25,pts[0][1]+(rng()-.5)*sz*.25);
-      for(let i=1;i<pts.length;i++)ctx.lineTo(pts[i][0]+(rng()-.5)*sz*.3,pts[i][1]+(rng()-.5)*sz*.3);
-      ctx.stroke();
-    }
-    // Pass 2: dark bloom ring — off-screen canvas, wide stroke with interior punched out
-    const edge=createCanvas(ctx.canvas.width,ctx.canvas.height);const ec=edge.getContext('2d');
-    ec.strokeStyle=col;ec.lineCap='round';ec.lineJoin='round';
-    ec.lineWidth=sz*bd.widthMult+4;ec.globalAlpha=op*0.28*fl;
-    ec.beginPath();ec.moveTo(pts[0][0],pts[0][1]);
-    for(let i=1;i<pts.length;i++)ec.lineTo(pts[i][0],pts[i][1]);ec.stroke();
-    ec.globalCompositeOperation='destination-out';ec.lineWidth=sz*bd.widthMult-1;ec.globalAlpha=1;
-    ec.beginPath();ec.moveTo(pts[0][0],pts[0][1]);
-    for(let i=1;i<pts.length;i++)ec.lineTo(pts[i][0],pts[i][1]);ec.stroke();
-    ctx.globalCompositeOperation='source-over';ctx.globalAlpha=1;ctx.drawImage(edge,0,0);
-    ctx.restore();return;
+    for(let l=0;l<5;l++){ctx.globalAlpha=op*0.025*fl;ctx.lineWidth=sz*bd.widthMult*(0.75+rng()*0.5);ctx.beginPath();ctx.moveTo(pts[0][0]+(rng()-.5)*sz*.25,pts[0][1]+(rng()-.5)*sz*.25);for(let i=1;i<pts.length;i++)ctx.lineTo(pts[i][0]+(rng()-.5)*sz*.3,pts[i][1]+(rng()-.5)*sz*.3);ctx.stroke();}
+    const edge=makeTmp();const ec=edge.getContext('2d');ec.strokeStyle=col;ec.lineCap='round';ec.lineJoin='round';ec.lineWidth=sz*bd.widthMult+4;ec.globalAlpha=op*0.28*fl;ec.beginPath();ec.moveTo(pts[0][0],pts[0][1]);for(let i=1;i<pts.length;i++)ec.lineTo(pts[i][0],pts[i][1]);ec.stroke();ec.globalCompositeOperation='destination-out';ec.lineWidth=sz*bd.widthMult-1;ec.globalAlpha=1;ec.beginPath();ec.moveTo(pts[0][0],pts[0][1]);for(let i=1;i<pts.length;i++)ec.lineTo(pts[i][0],pts[i][1]);ec.stroke();ctx.globalAlpha=1;ctx.drawImage(edge,0,0);ctx.restore();return;
   }
-  // ── Bristle: individual fibers that flex and converge at taper ends ───────
   if(bt==='bristle'){
-    const fiberCount=Math.max(6,Math.floor(sz*0.85));
-    const spread=sz*0.5;
-    const fibers=Array.from({length:fiberCount},()=>({
-      ox:(rng()-.5)*spread*2,oy:(rng()-.5)*spread*2,
-      stiffness:0.3+rng()*0.7,thick:0.5+rng()*0.9,
-    }));
+    const fiberCount=Math.max(6,Math.floor(sz*0.85)),spread=sz*0.5;
+    const fibers=Array.from({length:fiberCount},()=>({ox:(rng()-.5)*spread*2,oy:(rng()-.5)*spread*2,stiffness:0.3+rng()*0.7,thick:0.5+rng()*0.9}));
     ctx.lineCap='round';
     for(let b=0;b<fiberCount;b++){
-      const f=fibers[b];
-      ctx.lineWidth=Math.max(0.4,f.thick*sz/fiberCount*1.4);
-      ctx.strokeStyle=col;ctx.beginPath();
-      for(let i=0;i<pts.length;i++){
-        const nx=pts[Math.min(i+1,pts.length-1)][0],ny=pts[Math.min(i+1,pts.length-1)][1];
-        const px=pts[Math.max(i-1,0)][0],py=pts[Math.max(i-1,0)][1];
-        const vx=(nx-px)*0.18*(1-f.stiffness),vy=(ny-py)*0.18*(1-f.stiffness);
-        const taper=getTaper(i,pts.length);
-        const fx=pts[i][0]+(f.ox+vx)*taper,fy=pts[i][1]+(f.oy+vy)*taper;
-        ctx.globalAlpha=op*bd.alpha*fl*f.stiffness*taper;
-        i===0?ctx.moveTo(fx,fy):ctx.lineTo(fx,fy);
-      }
-      ctx.stroke();
-    }
+      const f=fibers[b];ctx.lineWidth=Math.max(0.4,f.thick*sz/fiberCount*1.4);ctx.strokeStyle=col;ctx.beginPath();
+      for(let i=0;i<pts.length;i++){const nx=pts[Math.min(i+1,pts.length-1)][0],ny=pts[Math.min(i+1,pts.length-1)][1],px=pts[Math.max(i-1,0)][0],py=pts[Math.max(i-1,0)][1];const vx=(nx-px)*0.18*(1-f.stiffness),vy=(ny-py)*0.18*(1-f.stiffness);const taper=getTaper(i,pts.length);const fx=pts[i][0]+(f.ox+vx)*taper,fy=pts[i][1]+(f.oy+vy)*taper;ctx.globalAlpha=op*bd.alpha*fl*f.stiffness*taper;i===0?ctx.moveTo(fx,fy):ctx.lineTo(fx,fy);}ctx.stroke();}
     ctx.restore();return;
   }
-  // ── Ink: pressure-modulated width + alpha with taper ─────────────────────
   if(bt==='ink'){
-    ctx.strokeStyle=col;ctx.lineCap='round';ctx.lineJoin='round';ctx.setLineDash([]);
-    for(let i=1;i<pts.length;i++){
-      const p=calcP(pts,prs,i),taper=getTaper(i,pts.length);
-      ctx.globalAlpha=op*fl*Math.min(1,p*0.85+0.15)*taper;
-      ctx.lineWidth=sz*p*bd.widthMult*taper;
-      ctx.beginPath();ctx.moveTo(pts[i-1][0],pts[i-1][1]);ctx.lineTo(pts[i][0],pts[i][1]);ctx.stroke();
-    }
+    ctx.strokeStyle=col;ctx.lineCap='round';ctx.lineJoin='round';
+    for(let i=1;i<pts.length;i++){const p=calcP(pts,prs,i),taper=getTaper(i,pts.length);ctx.globalAlpha=op*fl*Math.min(1,p*.85+.15)*taper;ctx.lineWidth=sz*p*bd.widthMult*taper;ctx.beginPath();ctx.moveTo(pts[i-1][0],pts[i-1][1]);ctx.lineTo(pts[i][0],pts[i][1]);ctx.stroke();}
     ctx.restore();return;
   }
-  // ── Pencil: grain particle scatter — graphite on paper ───────────────────
   if(bt==='pencil'){
-    ctx.fillStyle=col;
-    const grainSz=Math.max(0.8,sz*0.13),coverage=0.6*fl;
+    ctx.fillStyle=col;const grainSz=Math.max(0.8,sz*0.13),coverage=0.6*fl;
     for(let i=1;i<pts.length;i++){
-      const taper=getTaper(i,pts.length),p=calcP(pts,prs,i);
-      const hw=sz*0.5*bd.widthMult*taper*p;
-      const dist=Math.hypot(pts[i][0]-pts[i-1][0],pts[i][1]-pts[i-1][1]);
-      const steps=Math.max(1,Math.ceil(dist/(grainSz*1.2)));
-      for(let st=0;st<steps;st++){
-        const t=st/steps;
-        const sx=pts[i-1][0]+(pts[i][0]-pts[i-1][0])*t;
-        const sy=pts[i-1][1]+(pts[i][1]-pts[i-1][1])*t;
-        const particleN=Math.floor(hw*2*coverage);
-        for(let g=0;g<particleN;g++){
-          const ox=(rng()-.5)*hw*2,oy=(rng()-.5)*hw*2;
-          if((ox*ox)/(hw*hw)+(oy*oy)/(hw*0.45*hw*0.45)>1)continue;
-          const edgeDist=Math.sqrt((ox*ox)/(hw*hw)+(oy*oy)/(hw*hw));
-          ctx.globalAlpha=op*(0.25+rng()*0.55)*(1-edgeDist*0.4)*taper;
-          ctx.fillRect(sx+ox,sy+oy,grainSz,grainSz);
-        }
-      }
+      const taper=getTaper(i,pts.length),p=calcP(pts,prs,i),bx=pts[i][0],by=pts[i][1],hw=sz*0.5*bd.widthMult*taper*p;
+      const dist=Math.hypot(pts[i][0]-pts[i-1][0],pts[i][1]-pts[i-1][1]),steps=Math.max(1,Math.ceil(dist/(grainSz*1.2)));
+      for(let st=0;st<steps;st++){const t=st/steps,sx=pts[i-1][0]+(pts[i][0]-pts[i-1][0])*t,sy=pts[i-1][1]+(pts[i][1]-pts[i-1][1])*t,particleN=Math.floor(hw*2*coverage);
+        for(let g=0;g<particleN;g++){const ox=(rng()-.5)*hw*2,oy=(rng()-.5)*hw*2;if((ox*ox)/(hw*hw)+(oy*oy)/(hw*0.45*hw*0.45)>1)continue;const edgeDist=Math.sqrt((ox*ox)/(hw*hw)+(oy*oy)/(hw*hw));ctx.globalAlpha=op*(0.25+rng()*0.55)*(1-edgeDist*0.4)*taper;ctx.fillRect(sx+ox,sy+oy,grainSz,grainSz);}}
     }
     ctx.restore();return;
   }
-  // ── Pen / Marker — full single-path render (matches client needsFullRedraw) ──
-  // Single ctx.stroke() avoids alpha accumulation on overlapping curve segments
-  ctx.strokeStyle=col;ctx.lineCap=bd.cap||'round';ctx.lineJoin='round';ctx.setLineDash([]);
+  // Pen/Marker: single full-path render — avoids segment alpha accumulation, matches server
+  ctx.strokeStyle=col;ctx.lineCap=bd.cap||'round';ctx.lineJoin='round';
   ctx.globalAlpha=op*bd.alpha*fl;
   if(bd.pressure&&bt!=='marker'){
-    // For pen: draw the smoothed path at average pressure (taper handled by width)
-    // Using per-segment is more accurate but mismatches client's single-path composite.
-    // Single path at mid-pressure gives consistent server↔client appearance.
     const avgP=prs&&prs.length?prs.reduce((a,b)=>a+(b||0.5),0)/prs.length:0.7;
     const clampedP=Math.max(0.3,Math.min(1.0,avgP||0.7));
     ctx.lineWidth=sz*bd.widthMult*clampedP;
-    drawPath(ctx,pts,sm);ctx.stroke();
-  }else{
-    ctx.lineWidth=sz*bd.widthMult;drawPath(ctx,pts,sm);ctx.stroke();
-  }
+    dPath(ctx,pts,sm);ctx.stroke();
+  }else{ctx.lineWidth=sz*bd.widthMult;dPath(ctx,pts,sm);ctx.stroke();}
   ctx.restore();
 }
 
-async function renderPNG(strokes,cw,ch){
-  cw=cw||DEFAULT_CW;ch=ch||DEFAULT_CH;
-  const canvas=createCanvas(cw,ch);const ctx=canvas.getContext('2d');
-  ctx.fillStyle='#ffffff';ctx.fillRect(0,0,cw,ch);
-  for(const s of(strokes||[])){
-    if(s.brushType==='_snapshot'){
-      if(s.pngB64){try{const img=await loadImage(Buffer.from(s.pngB64,'base64'));ctx.drawImage(img,0,0);}catch(e){console.error('[renderPNG] snapshot err',e);}}
-    }else{renderStroke(ctx,s);}
+function floodFill(ctx,sx,sy,hex,tol){
+  sx=Math.round(sx);sy=Math.round(sy);const w=ctx.canvas.width,h=ctx.canvas.height;
+  if(sx<0||sx>=w||sy<0||sy>=h)return;
+  const id=ctx.getImageData(0,0,w,h),d=id.data,ix=(sy*w+sx)*4;
+  const sr=d[ix],sg=d[ix+1],sb=d[ix+2],sa=d[ix+3];
+  const fr=parseInt(hex.slice(1,3),16),fg=parseInt(hex.slice(3,5),16),fb=parseInt(hex.slice(5,7),16);
+  if(sr===fr&&sg===fg&&sb===fb&&sa===255)return;
+  const t=(tol||30)*(tol||30);
+  const match=i=>{const dr=d[i]-sr,dg=d[i+1]-sg,db=d[i+2]-sb,da=d[i+3]-sa;return dr*dr+dg*dg+db*db+da*da<=t;};
+  const stack=[sx+sy*w],vis=new Uint8Array(w*h);vis[sx+sy*w]=1;
+  while(stack.length){const pos=stack.pop(),x=pos%w,y=(pos/w)|0,i=pos*4;d[i]=fr;d[i+1]=fg;d[i+2]=fb;d[i+3]=255;[[x-1,y],[x+1,y],[x,y-1],[x,y+1]].forEach(([nx,ny])=>{if(nx>=0&&nx<w&&ny>=0&&ny<h&&!vis[nx+ny*w]&&match((nx+ny*w)*4)){vis[nx+ny*w]=1;stack.push(nx+ny*w);}});}
+  ctx.putImageData(id,0,0);
+}
+
+function pickColor(x,y){
+  x=Math.round(x);y=Math.round(y);
+  const tmp=document.createElement('canvas');tmp.width=CW;tmp.height=CH;const tc=tmp.getContext('2d');
+  tc.drawImage(bgCv,0,0);layers.forEach(l=>{if(l.visible)tc.drawImage(l.canvas,0,0);});
+  const d=tc.getImageData(x,y,1,1).data;
+  return'#'+[d[0],d[1],d[2]].map(v=>v.toString(16).padStart(2,'0')).join('');
+}
+
+function onDown(e){
+  if(!isDrawer)return;if(e.pointerType==='touch'&&e.touches?.length>1)return;e.preventDefault();
+  const[x,y]=c2cv(e.clientX,e.clientY);
+  if(brushType==='eyedrop'){const h=pickColor(x,y);if(h){setColor(h);syncPickerFromColor(h);showToast('Color picked 💉','ok');}return;}
+  if(brushType==='fill'){
+    saveUndo();const ctx=actCtx();floodFill(ctx,x,y,currentColor,30);
+    if(actLayer())actLayer()._committed=ctx.getImageData(0,0,CW,CH);composite();
+    wsSend({type:'draw',stroke:{color:currentColor,size:brushSize,opacity:brushOpacity,flow:brushFlow,brushType:'fill',smoothing:0,points:[[x,y]],seed:0,isMask:editMask}});
+    showSyncSpin();addLog(`Fill (${~~x},${~~y})=${currentColor}`,'draw');return;
   }
-  return canvas.toBuffer('image/png');
+  ptrId=e.pointerId;area.setPointerCapture?.(ptrId);saveUndo();isDrawing=true;
+  lastX=x;lastY=y;lsx=x;lsy=y;lazyX=x;lazyY=y;
+  const sm=bSettings[brushType]?.smoothing??BD[brushType]?.smoothing??.5;
+  const seed=Math.floor(Math.random()*0xFFFFFF);
+  const initP=e.pressure||0;
+  // FIX H1: add strokeId so server can replace partials instead of appending duplicates
+  const strokeId=Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+  curStroke={color:currentColor,size:brushSize,opacity:brushOpacity,flow:brushFlow,
+    brushType,smoothing:sm,seed,isMask:editMask,strokeId,points:[[x,y]],pressures:[initP]};
+  renderStroke(actCtx(),{...curStroke,points:[[x,y],[x+.01,y+.01]]});composite();
 }
-
-// ── Game state ────────────────────────────────────────────────────────────────
-const games=new Map();
-function makeGame(chatId){
-  return{chatId,phase:'idle',drawerTgId:null,drawerName:'',drawerWsId:null,
-    word:null,hintRevealed:[],strokes:[],strokesUndo:[],roundStartTime:0,
-    firstStrokeDrawn:false,lastHintAt:0,roundTimer:null,hintTimer:null,updateTimer:null,
-    inviteMessageId:null,liveMessageId:null,scores:new Map(),clients:new Map(),
-    canvasW:DEFAULT_CW,canvasH:DEFAULT_CH,
-    retryAfterUntil:0};  // FIX S4: track 429 retry-after
-}
-function getOrMakeGame(chatId){
-  const k=String(chatId);
-  if(!games.has(k)){
-    const row=stmtGet.get(k);
-    if(row){const g=rowToGame(row);games.set(k,g);console.log(`[db] Loaded chatId=${k} phase=${g.phase} strokes=${g.strokes.length}`);return g;}
-    games.set(k,makeGame(k));
+function onMove(e){
+  if(!isDrawing||!isDrawer||e.pointerId!==ptrId)return;e.preventDefault();
+  const[rawX,rawY]=c2cv(e.clientX,e.clientY);
+  const ldx=rawX-lazyX,ldy=rawY-lazyY,ldist=Math.sqrt(ldx*ldx+ldy*ldy);
+  const noLazy=(brushType==='eraser'||brushType==='airbrush'||LAZY_RADIUS<1);
+  let x,y;
+  if(noLazy||ldist<=LAZY_RADIUS){x=rawX;y=rawY;}
+  else{lazyX+=ldx/ldist*(ldist-LAZY_RADIUS);lazyY+=ldy/ldist*(ldist-LAZY_RADIUS);x=lazyX;y=lazyY;}
+  const dx=x-lastX,dy=y-lastY;if(dx*dx+dy*dy<.3)return;
+  if(brushType==='line'){
+    actCtx().clearRect(0,0,CW,CH);if(actLayer()?._committed)actCtx().putImageData(actLayer()._committed,0,0);
+    renderStroke(actCtx(),{...curStroke,points:[[lsx,lsy],[x,y]]});curStroke.points=[[lsx,lsy],[x,y]];lastX=x;lastY=y;composite();return;
   }
-  return games.get(k);
+  const prev=curStroke.points[curStroke.points.length-1];
+  curStroke.points.push([x,y]);curStroke.pressures.push(e.pressure||0);lastX=x;lastY=y;
+  // pen+marker added: incremental segment rendering causes alpha accumulation on curves,
+  // making them appear darker than the server's single-path render. Full redraw fixes parity.
+  const needsFullRedraw=(brushType==='pen'||brushType==='marker'||brushType==='ink'||brushType==='pencil'||brushType==='watercolor'||brushType==='bristle');
+  if(needsFullRedraw){actCtx().clearRect(0,0,CW,CH);if(actLayer()?._committed)actCtx().putImageData(actLayer()._committed,0,0);renderStroke(actCtx(),curStroke);}
+  else{renderStroke(actCtx(),{...curStroke,points:[prev,[x,y]],pressures:curStroke.pressures.slice(-2)});}
+  composite();
+  if(curStroke.points.length%8===0){wsSend({type:'draw',stroke:{...curStroke}});showSyncSpin();}
 }
-function restoreAll(){
-  const rows=stmtAll.all();
-  for(const row of rows){const g=rowToGame(row);games.set(row.chat_id,g);}
-  console.log(`[db] Restored ${rows.length} active game(s)`);
-}
-function broadcast(game,msg,skip=null){
-  const d=JSON.stringify(msg);
-  game.clients.forEach((c,id)=>{if(id!==skip&&c.ws.readyState===WebSocket.OPEN)c.ws.send(d);});
-}
-function sendWs(game,wsId,msg){
-  const c=game.clients.get(wsId);
-  if(c&&c.ws.readyState===WebSocket.OPEN)c.ws.send(JSON.stringify(msg));
-}
-function leaderboard(game){
-  return Array.from(game.scores.entries()).sort((a,b)=>b[1]-a[1]).map(([name,score],i)=>({rank:i+1,name,score}));
-}
-function fmtLb(game){
-  const lb=leaderboard(game);if(!lb.length)return'No scores yet.';
-  const m=['🥇','🥈','🥉'];
-  return lb.slice(0,10).map(({rank,name,score})=>`${m[rank-1]||`${rank}.`} *${name}* — ${score} pts`).join('\n');
-}
-function buildHint(word,rev){return word.split('').map((c,i)=>c===' '?'  ':(rev[i]?c:'_')).join(' ');}
-
-function revealNextHint(game){
-  if(game.phase!=='drawing'||!game.word)return null;
-  const un=game.word.split('').map((_,i)=>i).filter(i=>game.word[i]!==' '&&!game.hintRevealed[i]);
-  if(!un.length)return null;
-  game.hintRevealed[un[Math.floor(Math.random()*un.length)]]=true;
-  game.lastHintAt=Date.now();persistDebounced(game);
-  const hint=buildHint(game.word,game.hintRevealed);
-  broadcast(game,{type:'hint',hint});
-  if(game.word.split('').every((c,i)=>c===' '||game.hintRevealed[i]))setTimeout(()=>endGame(game,null,'all_hints'),2000);
-  return hint;
-}
-
-async function pushCanvas(game){
-  if(game.phase!=='drawing'||!game.word)return;
-  // FIX S4: respect Telegram 429 retry-after
-  if(game.retryAfterUntil&&Date.now()<game.retryAfterUntil){
-    const wait=game.retryAfterUntil-Date.now();
-    console.log(`[pushCanvas] Rate limited, retry in ${Math.ceil(wait/1000)}s`);
-    setTimeout(()=>pushCanvas(game),wait+200);
-    return;
+function onUp(){
+  if(!isDrawing||!isDrawer)return;isDrawing=false;ptrId=null;
+  if(curStroke?.points.length>0){
+    renderStroke(actCtx(),curStroke);
+    if(actLayer())actLayer()._committed=actCtx().getImageData(0,0,CW,CH);
+    composite();wsSend({type:'draw',stroke:curStroke});showSyncSpin();
+    addLog(`Stroke: ${curStroke.brushType} pts=${curStroke.points.length} seed=${curStroke.seed}${editMask?' [MASK]':''}`,'draw');
   }
-  let png;try{png=await renderPNG(game.strokes,game.canvasW,game.canvasH);}catch(e){console.error('[render]',e.message);return;}
-  const hint=buildHint(game.word,game.hintRevealed);
-  const caption=`🎨 *${game.drawerName}* is drawing!\n🔤 \`${hint}\`  —  ${game.word.length} letters\n\n💬 Type your guess in the chat!`;
-  const cd=Math.ceil((HINT_COOLDOWN_MS-(Date.now()-game.lastHintAt))/1000);
-  const kb=Markup.inlineKeyboard([[Markup.button.callback(cd<=0?'💡 Hint':`⏳ Hint (${cd}s)`,`hint:${game.chatId}`)]]);
-  try{
-    if(game.liveMessageId){
-      await bot.telegram.editMessageMedia(game.chatId,game.liveMessageId,null,{type:'photo',media:{source:png,filename:'drawing.png'},caption,parse_mode:'Markdown'},kb);
-    }else{
-      const m=await bot.telegram.sendPhoto(game.chatId,{source:png,filename:'drawing.png'},{caption,parse_mode:'Markdown',...kb});
-      game.liveMessageId=m.message_id;persistDebounced(game);
-    }
-  }catch(e){
-    if(/not modified/i.test(e.message))return;
-    // FIX S4: handle 429 Too Many Requests
-    if(e.response?.error_code===429||/too many requests/i.test(e.message)){
-      const retryAfter=(e.response?.parameters?.retry_after||10)*1000+500;
-      game.retryAfterUntil=Date.now()+retryAfter;
-      console.warn(`[pushCanvas] 429 — backing off ${Math.ceil(retryAfter/1000)}s`);
-      setTimeout(()=>pushCanvas(game),retryAfter);
-      return;
-    }
-    console.error('[pushCanvas]',e.message);
-    if(/not found|deleted|message to edit|socket hang up|ECONNRESET|ETIMEDOUT/i.test(e.message)){
-      game.liveMessageId=null;
-      try{const m=await bot.telegram.sendPhoto(game.chatId,{source:png,filename:'drawing.png'},{caption,parse_mode:'Markdown',...kb});game.liveMessageId=m.message_id;persistDebounced(game);}catch{}
-    }
-  }
+  curStroke=null;
 }
-function scheduleUpdate(game,delay=1500,force=false){
-  if(!game.firstStrokeDrawn)return;
-  if(force){clearTimeout(game.updateTimer);game.updateTimer=null;}
-  if(game.updateTimer)return;
-  game.updateTimer=setTimeout(async()=>{game.updateTimer=null;await pushCanvas(game);},delay);
-}
+area.addEventListener('pointerdown',onDown,{passive:false});
+area.addEventListener('pointermove',onMove,{passive:false});
+area.addEventListener('pointerup',onUp);area.addEventListener('pointercancel',onUp);
+let _toc=false;
+document.addEventListener('touchstart',e=>{_toc=!!e.target.closest('#canvas-area');},{passive:true});
+document.addEventListener('touchmove',e=>{if(_toc)e.preventDefault();},{passive:false});
 
-async function endGame(game,guesser,reason){
-  if(game.phase==='ended'||game.phase==='idle')return;
-  game.phase='ended';
-  clearTimeout(game.roundTimer);clearTimeout(game.hintTimer);clearTimeout(game.updateTimer);
-  game.roundTimer=game.hintTimer=game.updateTimer=null;
-  console.log(`[game] END chatId=${game.chatId} word=${game.word} guesser=${guesser||'none'} reason=${reason}`);
-  if(game.drawerWsId)sendWs(game,game.drawerWsId,{type:'round_end',word:game.word,drawerName:game.drawerName,guesser:guesser||null,reason,board:leaderboard(game),drawerFinish:true});
-  broadcast(game,{type:'round_end',word:game.word,drawerName:game.drawerName,guesser:guesser||null,reason,board:leaderboard(game)},game.drawerWsId);
-  await postResult(game,guesser,reason);
-  const savedScores=new Map(game.scores);
-  game.word=null;game.hintRevealed=[];game.strokes=[];game.strokesUndo=[];
-  game.firstStrokeDrawn=false;game.lastHintAt=0;game.drawerTgId=null;
-  game.drawerName='';game.drawerWsId=null;game.inviteMessageId=null;game.scores=savedScores;
-  setTimeout(()=>{game.phase='idle';persistGame(game);},3000);
-}
-async function postResult(game,guesser,reason){
-  let png;try{png=await renderPNG(game.strokes,game.canvasW,game.canvasH);}catch(e){console.error('[postResult render]',e.message);}
-  const lines=[`✅ *Round Over!*`,``,`🖌 Drawer: *${game.drawerName}*`,`🎯 Word: *${game.word}*`,
-    guesser?`🏆 Guessed by: *${guesser}*`:reason==='all_hints'?`🔤 All hints revealed!`:reason==='stopped'?`🛑 Stopped.`:`😮 Round ended.`,
-    ``,`📊 *Leaderboard:*`,fmtLb(game),``,`_Use /startgame to play again!_`].join('\n');
-  try{
-    if(game.liveMessageId&&png){await bot.telegram.editMessageMedia(game.chatId,game.liveMessageId,null,{type:'photo',media:{source:png,filename:`${game.word}.png`},caption:lines,parse_mode:'Markdown'},Markup.inlineKeyboard([]));}
-    else if(png){await bot.telegram.sendPhoto(game.chatId,{source:png,filename:`${game.word}.png`},{caption:lines,parse_mode:'Markdown'});}
-    else{await bot.telegram.sendMessage(game.chatId,lines,{parse_mode:'Markdown'});}
-  }catch(e){console.error('[postResult]',e.message);try{await bot.telegram.sendMessage(game.chatId,lines,{parse_mode:'Markdown'});}catch{}}
-}
+// Render incoming strokes (from server init/broadcast)
+function incomingStroke(s){renderStroke(actCtx(),s);composite();}
 
-// ── Bot commands ──────────────────────────────────────────────────────────────
-bot.command('startgame',async(ctx)=>{
-  if(ctx.chat.type==='private')return ctx.reply('➕ Add me to a group!');
-  const chatId=String(ctx.chat.id),game=getOrMakeGame(chatId);
-  if(game.phase==='waiting_drawer')return ctx.reply('⏳ Already waiting for a drawer!');
-  if(game.phase==='drawing')return ctx.reply('🎨 Game in progress!');
-  game.phase='waiting_drawer';game.scores=new Map();game.strokes=[];game.strokesUndo=[];
-  game.word=null;game.drawerTgId=null;game.drawerName='';game.drawerWsId=null;game.liveMessageId=null;
-  if(!botUsername){try{const me=await bot.telegram.getMe();botUsername=me.username;}catch(e){return ctx.reply('Bot still starting.');}}
-  const msg=await ctx.reply(`🎨 *Draw & Guess!*\n\nWho wants to draw? ✏️`,{parse_mode:'Markdown',...Markup.inlineKeyboard([[Markup.button.callback('✏️ I Want to Draw!',`claim_draw:${chatId}`)]])});
-  game.inviteMessageId=msg.message_id;persistGame(game);
-  console.log(`[bot] /startgame chatId=${chatId}`);
-});
-bot.command('stopgame',async(ctx)=>{
-  const game=games.get(String(ctx.chat.id));
-  if(!game||game.phase==='idle')return ctx.reply('No active game.');
-  await endGame(game,null,'stopped');ctx.reply('🛑 Stopped.');
-});
-bot.command('skipword',async(ctx)=>{
-  const game=games.get(String(ctx.chat.id));
-  if(!game||game.phase!=='drawing')return ctx.reply('No active round.');
-  const nw=pickWord();game.word=nw;game.hintRevealed=new Array(nw.length).fill(false);
-  game.strokes=[];game.strokesUndo=[];game.firstStrokeDrawn=false;game.lastHintAt=0;
-  clearTimeout(game.hintTimer);game.hintTimer=null;persistGame(game);
-  if(game.drawerWsId)sendWs(game,game.drawerWsId,{type:'role',role:'drawer',word:nw,round:1,reconnect:false});
-  broadcast(game,{type:'clear'},game.drawerWsId);broadcast(game,{type:'word_skipped',hint:buildHint(nw,game.hintRevealed)},game.drawerWsId);
-  ctx.reply('✅ Word skipped!');
-});
-bot.command('leaderboard',async(ctx)=>{
-  const game=games.get(String(ctx.chat.id));
-  if(!game)return ctx.reply('No game.');
-  ctx.reply(`📊 *Leaderboard*\n\n${fmtLb(game)}`,{parse_mode:'Markdown'});
-});
-
-bot.action(/^claim_draw:(.+)$/,async(ctx)=>{
-  const chatId=ctx.match[1],game=games.get(chatId);
-  if(!game)return ctx.answerCbQuery('❌ No active game.',{show_alert:true});
-  if(game.phase!=='waiting_drawer')return ctx.answerCbQuery('❌ Already claimed!',{show_alert:true});
-  const tgId=String(ctx.from.id),uname=`${ctx.from.first_name||''} ${ctx.from.last_name||''}`.trim()||ctx.from.username||'Artist';
-  game.drawerTgId=tgId;game.drawerName=uname;game.phase='drawing';
-  game.word=pickWord();game.hintRevealed=new Array(game.word.length).fill(false);
-  game.strokes=[];game.strokesUndo=[];game.roundStartTime=Date.now();persistGame(game);
-  console.log(`[game] Drawer: ${uname}(${tgId}) word=${game.word} chatId=${chatId}`);
-  await ctx.answerCbQuery('✅ Open your canvas!');
-  const url=`https://t.me/${botUsername}/${WEBAPP_SHORT_NAME}?startapp=${encodeURIComponent(`${chatId}__${tgId}`)}`;
-  try{await bot.telegram.editMessageText(chatId,game.inviteMessageId,null,
-    `🎨 *${uname}* is drawing!\n🔤 \`${buildHint(game.word,game.hintRevealed)}\`  —  ${game.word.length} letters\n\n💬 Type your guess!`,
-    {parse_mode:'Markdown',...Markup.inlineKeyboard([[Markup.button.url('🖌 Open Canvas',url)]])});}catch(e){console.error('[editInvite]',e.message);}
-});
-bot.action(/^hint:(.+)$/,async(ctx)=>{
-  const chatId=ctx.match[1],game=games.get(chatId);
-  if(!game||game.phase!=='drawing')return ctx.answerCbQuery('❌ No active game!');
-  if(!game.firstStrokeDrawn)return ctx.answerCbQuery('⏳ Wait for drawer to start!');
-  const cd=Math.ceil((HINT_COOLDOWN_MS-(Date.now()-game.lastHintAt))/1000);
-  if(cd>0)return ctx.answerCbQuery(`⏳ Wait ${cd}s!`);
-  if(!game.word.split('').some((c,i)=>c!==' '&&!game.hintRevealed[i]))return ctx.answerCbQuery('🤷 No more hints!');
-  const hint=revealNextHint(game);if(!hint)return ctx.answerCbQuery('No hints!');
-  await ctx.answerCbQuery('💡 Hint revealed!');await pushCanvas(game);
-});
-bot.on('text',async(ctx)=>{
-  if(ctx.chat.type==='private')return;
-  const chatId=String(ctx.chat.id),game=games.get(chatId);
-  if(!game||game.phase!=='drawing'||!game.word)return;
-  const text=(ctx.message.text||'').trim();if(text.startsWith('/'))return;
-  const name=`${ctx.from.first_name||''} ${ctx.from.last_name||''}`.trim()||ctx.from.username||'Player';
-  const correct=text.toLowerCase()===game.word.toLowerCase();
-  broadcast(game,{type:'guess',name,text,correct});
-  if(correct){
-    const hintsGiven=game.hintRevealed.filter(Boolean).length,elapsed=(Date.now()-game.roundStartTime)/1000;
-    const timeBonus=Math.max(0,Math.floor((120-elapsed)/10)),pts=Math.max(10,100-hintsGiven*10+timeBonus);
-    game.scores.set(name,(game.scores.get(name)||0)+pts);game.scores.set(game.drawerName,(game.scores.get(game.drawerName)||0)+50);
-    broadcast(game,{type:'score_update',name,pts,timeBonus,board:leaderboard(game)});
-    try{await bot.telegram.sendMessage(chatId,`🎉 *${name}* guessed it!\nWord was *${game.word}* ✅  +${pts} pts`,{parse_mode:'Markdown'});}catch{}
-    await endGame(game,name,'guess');
-  }
-});
-
-// ── WebSocket ─────────────────────────────────────────────────────────────────
-wss.on('connection',(ws,req)=>{
-  const wsId=uuidv4(),url=new URL(req.url,'http://localhost');
-  const chatId=url.searchParams.get('room')||'',name=url.searchParams.get('name')||'Artist',tgId=url.searchParams.get('userId')||'';
-  if(!chatId){ws.close();return;}
-  const game=getOrMakeGame(chatId);
-  const isDrawer=tgId&&tgId===game.drawerTgId&&game.phase==='drawing';
-
-  if(isDrawer&&game.drawerWsId){
-    const old=game.clients.get(game.drawerWsId);
-    if(old&&old.ws.readyState===WebSocket.OPEN){console.log(`[ws] Closing stale drawer for ${name}`);old.ws.close();}
-    game.clients.delete(game.drawerWsId);game.drawerWsId=null;
-  }
-  game.clients.set(wsId,{ws,name,tgId});
-  console.log(`[ws] +${name} tgId=${tgId} chatId=${chatId} clients=${game.clients.size} drawer=${isDrawer}`);
-
-  if(isDrawer){
-    game.drawerWsId=wsId;
-    const isReconnect=game.strokes.length>0;
-    ws.send(JSON.stringify({type:'init',strokes:game.strokes,players:game.clients.size,board:leaderboard(game)}));
-    ws.send(JSON.stringify({type:'role',role:'drawer',word:game.word,round:1,reconnect:isReconnect}));
-    console.log(`[ws] ${name} = DRAWER restored, word=${game.word} strokes=${game.strokes.length}`);
-  }else{
-    ws.send(JSON.stringify({type:'init',strokes:game.strokes,players:game.clients.size,board:leaderboard(game)}));
-    if(game.phase==='drawing'){
-      ws.send(JSON.stringify({type:'role',role:'guesser',hint:buildHint(game.word,game.hintRevealed),round:1}));
-      ws.send(JSON.stringify({type:'status',message:`${game.drawerName} is drawing! Guess in chat!`}));
-    }else{
-      ws.send(JSON.stringify({type:'status',message:'No game running. Use /startgame in the group!'}));
+function renderLayerPanel(){
+  const list=document.getElementById('layer-list');list.innerHTML='';
+  const al=actLayer();const maskBtn=document.getElementById('layer-add-mask');if(maskBtn)maskBtn.textContent=al?.maskCanvas?'✕ Mask':'+ Mask';
+  for(let i=layers.length-1;i>=0;i--){
+    const l=layers[i],isAct=i===actIdx,isMaskEd=isAct&&editMask&&l.maskCtx;
+    const row=document.createElement('div');row.className='layer-row'+(isAct&&!isMaskEd?' active':'');
+    const vis=document.createElement('span');vis.className='layer-vis'+(l.visible?' on':'');vis.textContent='👁';vis.addEventListener('click',ev=>{ev.stopPropagation();layers[i].visible=!layers[i].visible;composite();renderLayerPanel();});
+    const nm=document.createElement('span');nm.className='layer-name';nm.textContent=l.name;
+    nm.addEventListener('dblclick',ev=>{ev.stopPropagation();const inp=document.createElement('input');inp.className='layer-name-input';inp.value=l.name;nm.replaceWith(inp);inp.focus();inp.select();const done=()=>{l.name=inp.value||l.name;renderLayerPanel();};inp.addEventListener('blur',done);inp.addEventListener('keydown',ev2=>{if(ev2.key==='Enter')done();ev2.stopPropagation();});inp.addEventListener('pointerdown',ev2=>ev2.stopPropagation());});
+    const bb=document.createElement('select');bb.className='blend-btn';bb.title='Blend mode';BLENDS.forEach(b=>{const o=document.createElement('option');o.value=b;o.textContent=BLEND_LBL[b]||b;if(b===l.blendMode)o.selected=true;bb.appendChild(o);});bb.addEventListener('change',ev=>{ev.stopPropagation();l.blendMode=bb.value;composite();});bb.addEventListener('pointerdown',ev=>ev.stopPropagation());
+    const ops=document.createElement('input');ops.type='range';ops.className='layer-op-slider';ops.min=5;ops.max=100;ops.value=Math.round(l.opacity*100);ops.addEventListener('input',ev=>{layers[i].opacity=+ev.target.value/100;composite();});ops.addEventListener('pointerdown',ev=>ev.stopPropagation());
+    const lk=document.createElement('span');lk.className='layer-lock'+(l.locked?' on':'');lk.textContent='🔒';lk.addEventListener('click',ev=>{ev.stopPropagation();layers[i].locked=!layers[i].locked;renderLayerPanel();});
+    row.appendChild(vis);row.appendChild(nm);row.appendChild(bb);row.appendChild(ops);row.appendChild(lk);
+    if(layers.length>1){const del=document.createElement('span');del.style.cssText='cursor:pointer;font-size:.72rem;color:var(--red);flex-shrink:0;';del.textContent='✕';del.addEventListener('click',ev=>{ev.stopPropagation();layers.splice(i,1);if(actIdx>=layers.length)actIdx=layers.length-1;editMask=false;composite();renderLayerPanel();});row.appendChild(del);}
+    row.addEventListener('click',()=>{actIdx=i;editMask=false;renderLayerPanel();updateMaskInd();});
+    list.appendChild(row);
+    if(l.maskCanvas){
+      const mr=document.createElement('div');mr.className='layer-row mask-sub'+(isMaskEd?' mask-editing':'');
+      const mLabel=document.createElement('span');mLabel.style.cssText='font-size:.75rem;width:20px;text-align:center';mLabel.textContent='🎭';
+      const mName=document.createElement('span');mName.className='layer-name';mName.style.cssText='color:var(--orange);font-size:.73rem';mName.textContent='Mask'+(isMaskEd?' ✎':'');
+      const mExit=document.createElement('span');mExit.style.cssText='font-size:.65rem;color:var(--text3);cursor:pointer;flex-shrink:0;padding:2px 4px;border-radius:4px;border:1px solid var(--border)';mExit.textContent=isMaskEd?'✓ Done':'Edit';mExit.addEventListener('click',ev=>{ev.stopPropagation();actIdx=i;editMask=!isMaskEd;renderLayerPanel();updateMaskInd();if(!isMaskEd)showToast('Painting mask — black hides, white reveals');});
+      const mDel=document.createElement('span');mDel.style.cssText='font-size:.65rem;color:var(--red);cursor:pointer;flex-shrink:0;padding:2px 4px;';mDel.textContent='✕';mDel.addEventListener('click',ev=>{ev.stopPropagation();layers[i].maskCanvas=null;layers[i].maskCtx=null;if(actIdx===i)editMask=false;composite();renderLayerPanel();updateMaskInd();showToast('Mask removed');});
+      mr.appendChild(mLabel);mr.appendChild(mName);mr.appendChild(mExit);mr.appendChild(mDel);mr.addEventListener('click',ev=>{ev.stopPropagation();actIdx=i;editMask=true;renderLayerPanel();updateMaskInd();showToast('Painting on mask — black hides, white reveals');});
+      list.appendChild(mr);
     }
   }
-  broadcast(game,{type:'player_joined',name,count:game.clients.size},wsId);
+}
+function updateMaskInd(){document.getElementById('mask-indicator')?.classList.toggle('show',editMask&&!!actLayer()?.maskCtx);}
+document.getElementById('layer-add').addEventListener('click',()=>{if(layers.length>=MAX_LAYERS){showToast('Max layers reached','warn');return;}layers.push(mkLayer('Layer '+(layers.length+1)));actIdx=layers.length-1;editMask=false;renderLayerPanel();});
+document.getElementById('layer-add-mask').addEventListener('click',()=>{const l=actLayer();if(!l){showToast('Select a layer first','warn');return;}if(l.maskCanvas){if(!confirm('Remove mask?'))return;l.maskCanvas=null;l.maskCtx=null;editMask=false;renderLayerPanel();updateMaskInd();composite();showToast('Mask removed');return;}const mc=document.createElement('canvas');mc.width=CW;mc.height=CH;const mctx=mc.getContext('2d');mctx.fillStyle='#fff';mctx.fillRect(0,0,CW,CH);l.maskCanvas=mc;l.maskCtx=mctx;editMask=true;renderLayerPanel();updateMaskInd();composite();showToast('Mask added — paint black to hide 🎭');});
+document.getElementById('layer-duplicate').addEventListener('click',()=>{if(layers.length>=MAX_LAYERS){showToast('Max layers','warn');return;}const l=actLayer();if(!l)return;const nl=mkLayer(l.name+' copy');nl.ctx.drawImage(l.canvas,0,0);nl.opacity=l.opacity;nl.blendMode=l.blendMode;nl._committed=nl.ctx.getImageData(0,0,CW,CH);if(l.maskCanvas){const mc=document.createElement('canvas');mc.width=CW;mc.height=CH;const mctx=mc.getContext('2d');mctx.drawImage(l.maskCanvas,0,0);nl.maskCanvas=mc;nl.maskCtx=mctx;}layers.push(nl);actIdx=layers.length-1;renderLayerPanel();composite();showToast('Layer duplicated');});
+document.getElementById('layer-merge-down').addEventListener('click',()=>{if(actIdx===0){showToast('Nothing below','warn');return;}const top=layers[actIdx],bot=layers[actIdx-1];bot.ctx.save();bot.ctx.globalAlpha=top.opacity;bot.ctx.globalCompositeOperation=top.blendMode||'source-over';bot.ctx.drawImage(top.canvas,0,0);bot.ctx.restore();bot._committed=bot.ctx.getImageData(0,0,CW,CH);layers.splice(actIdx,1);actIdx--;renderLayerPanel();composite();showToast('Merged down');});
+document.getElementById('layer-flatten').addEventListener('click',()=>{if(!confirm('Flatten all layers?'))return;const tmp=document.createElement('canvas');tmp.width=CW;tmp.height=CH;flattenTo(tmp.getContext('2d'));layers=[];layers.push(mkLayer('Background'));layers[0].ctx.drawImage(tmp,0,0);layers[0]._committed=layers[0].ctx.getImageData(0,0,CW,CH);actIdx=0;editMask=false;renderLayerPanel();composite();showToast('Flattened','ok');});
 
-  ws.on('message',data=>{
-    let msg;try{msg=JSON.parse(data);}catch{return;}
-    switch(msg.type){
-      case'canvas_size':
-        if(wsId!==game.drawerWsId)return;
-        if(msg.w>0&&msg.h>0&&msg.w<=4096&&msg.h<=4096){
-          game.canvasW=msg.w;game.canvasH=msg.h;
-          console.log(`[game] Canvas size set to ${msg.w}×${msg.h}`);
-          persistDebounced(game,200);
+let _cpH=210,_cpS=0.65,_cpV=0.18;
+function hsvToRgb(h,s,v){const c=v*s,x=c*(1-Math.abs((h/60)%2-1)),m=v-c;let r=0,g=0,b=0;if(h<60){r=c;g=x;}else if(h<120){r=x;g=c;}else if(h<180){g=c;b=x;}else if(h<240){g=x;b=c;}else if(h<300){r=x;b=c;}else{r=c;b=x;}return[~~((r+m)*255),~~((g+m)*255),~~((b+m)*255)];}
+function rgbToHsv(r,g,b){r/=255;g/=255;b/=255;const max=Math.max(r,g,b),min=Math.min(r,g,b),d=max-min;let h=0,s=max===0?0:d/max,v=max;if(d!==0){if(max===r)h=((g-b)/d+6)%6;else if(max===g)h=(b-r)/d+2;else h=(r-g)/d+4;h*=60;}return[h,s,v];}
+function toHex(r,g,b){return'#'+[r,g,b].map(v=>Math.max(0,Math.min(255,~~v)).toString(16).padStart(2,'0')).join('');}
+function hexToRgb(h){const c=parseInt(h.replace('#',''),16);return[(c>>16)&255,(c>>8)&255,c&255];}
+function drawSBCanvas(){const cv=document.getElementById('cp-sb');if(!cv)return;const ctx=cv.getContext('2d'),w=cv.width,h=cv.height;const gS=ctx.createLinearGradient(0,0,w,0);gS.addColorStop(0,'#fff');gS.addColorStop(1,`hsl(${_cpH},100%,50%)`);ctx.fillStyle=gS;ctx.fillRect(0,0,w,h);const gV=ctx.createLinearGradient(0,0,0,h);gV.addColorStop(0,'rgba(0,0,0,0)');gV.addColorStop(1,'#000');ctx.fillStyle=gV;ctx.fillRect(0,0,w,h);const cur=document.getElementById('cp-cursor');if(cur){cur.style.left=(_cpS*100)+'%';cur.style.top=((1-_cpV)*100)+'%';}}
+function drawHueBar(){const cv=document.getElementById('cp-hue');if(!cv)return;const ctx=cv.getContext('2d'),w=cv.width,h=cv.height;const g=ctx.createLinearGradient(0,0,w,0);for(let i=0;i<=12;i++)g.addColorStop(i/12,`hsl(${i*30},100%,50%)`);ctx.fillStyle=g;ctx.fillRect(0,0,w,h);const cur=document.getElementById('cp-hue-cursor');if(cur)cur.style.left=(_cpH/360*100)+'%';}
+function syncPickerFromColor(hex){try{const[r,g,b]=hexToRgb(hex);[_cpH,_cpS,_cpV]=rgbToHsv(r,g,b);const er=document.getElementById('cp-r');if(er)er.value=r;const erg=document.getElementById('cp-r-lbl');if(erg)erg.textContent=r;const eg=document.getElementById('cp-g');if(eg)eg.value=g;const egl=document.getElementById('cp-g-lbl');if(egl)egl.textContent=g;const eb=document.getElementById('cp-b');if(eb)eb.value=b;const ebl=document.getElementById('cp-b-lbl');if(ebl)ebl.textContent=b;const eh=document.getElementById('cp-hex');if(eh)eh.value=hex;const ep=document.getElementById('cp-preview');if(ep)ep.style.background=hex;drawSBCanvas();drawHueBar();}catch(e){}}
+function applyPickerColor(){const[r,g,b]=hsvToRgb(_cpH,_cpS,_cpV);const hex=toHex(r,g,b);document.getElementById('cp-r').value=r;document.getElementById('cp-r-lbl').textContent=r;document.getElementById('cp-g').value=g;document.getElementById('cp-g-lbl').textContent=g;document.getElementById('cp-b').value=b;document.getElementById('cp-b-lbl').textContent=b;document.getElementById('cp-hex').value=hex;document.getElementById('cp-preview').style.background=hex;setColorRaw(hex);}
+function applyRgbSliders(){const r=+document.getElementById('cp-r').value,g=+document.getElementById('cp-g').value,b=+document.getElementById('cp-b').value;document.getElementById('cp-r-lbl').textContent=r;document.getElementById('cp-g-lbl').textContent=g;document.getElementById('cp-b-lbl').textContent=b;[_cpH,_cpS,_cpV]=rgbToHsv(r,g,b);const hex=toHex(r,g,b);document.getElementById('cp-hex').value=hex;document.getElementById('cp-preview').style.background=hex;drawSBCanvas();drawHueBar();setColorRaw(hex);}
+function sbInteract(e){const cv=document.getElementById('cp-sb');const r=cv.getBoundingClientRect();_cpS=Math.max(0,Math.min(1,(e.clientX-r.left)/r.width));_cpV=Math.max(0,Math.min(1,1-(e.clientY-r.top)/r.height));applyPickerColor();}
+function hueInteract(e){const cv=document.getElementById('cp-hue');const r=cv.getBoundingClientRect();_cpH=Math.max(0,Math.min(360,((e.clientX-r.left)/r.width)*360));drawSBCanvas();drawHueBar();applyPickerColor();}
+let _sbDrag=false,_hueDrag=false;
+document.addEventListener('DOMContentLoaded',()=>{
+  const sb=document.getElementById('cp-sb'),hue=document.getElementById('cp-hue');if(!sb)return;
+  sb.addEventListener('pointerdown',e=>{_sbDrag=true;sb.setPointerCapture(e.pointerId);sbInteract(e);e.stopPropagation();},{passive:false});sb.addEventListener('pointermove',e=>{if(_sbDrag){sbInteract(e);e.stopPropagation();}},{passive:false});sb.addEventListener('pointerup',()=>_sbDrag=false);
+  hue.addEventListener('pointerdown',e=>{_hueDrag=true;hue.setPointerCapture(e.pointerId);hueInteract(e);e.stopPropagation();},{passive:false});hue.addEventListener('pointermove',e=>{if(_hueDrag){hueInteract(e);e.stopPropagation();}},{passive:false});hue.addEventListener('pointerup',()=>_hueDrag=false);
+  ['cp-r','cp-g','cp-b'].forEach(id=>document.getElementById(id)?.addEventListener('input',applyRgbSliders));
+  document.getElementById('cp-apply-hex')?.addEventListener('click',()=>{let h=document.getElementById('cp-hex').value.trim();if(!h.startsWith('#'))h='#'+h;if(/^#[0-9a-fA-F]{6}$/.test(h)){syncPickerFromColor(h);setColorRaw(h);}});
+  document.getElementById('cp-hex')?.addEventListener('keydown',e=>{if(e.key==='Enter'){let h=e.target.value.trim();if(!h.startsWith('#'))h='#'+h;if(/^#[0-9a-fA-F]{6}$/.test(h)){syncPickerFromColor(h);setColorRaw(h);}}e.stopPropagation();});
+  drawSBCanvas();drawHueBar();
+});
+
+const PAL={basic:['#000000','#ffffff','#e63946','#f4842d','#ffd166','#3dd68c','#118ab2','#7c6ff7'],pastel:['#ffb3ba','#ffdfba','#ffffba','#baffc9','#bae1ff','#e8baff','#ffd4ba','#c9ffba'],neon:['#ff0090','#ff6600','#ffee00','#00ff41','#00cfff','#7b00ff','#ff00ff','#00ffcc']};
+function renderPalette(){['basic','pastel','neon'].forEach(g=>{const row=document.getElementById('colors-'+g);if(!row)return;row.innerHTML='';PAL[g].forEach(hex=>{const d=document.createElement('div');d.className='cswatch';d.style.background=hex;if(hex===currentColor)d.classList.add('on');d.addEventListener('click',()=>{setColor(hex);});row.appendChild(d);});});}
+function setColorRaw(hex){if(!/^#[0-9a-fA-F]{6}$/.test(hex))return;currentColor=hex;updateColorDot(hex);document.querySelectorAll('.cswatch').forEach(s=>{const bg=s.style.background;const sw=bg.startsWith('#')?bg:cssToHex(bg);s.classList.toggle('on',sw===hex);});if(brushType==='eraser'){brushType='pen';updateBrushBtn();}}
+function cssToHex(css){const m=css.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);if(!m)return css;return toHex(+m[1],+m[2],+m[3]);}
+function setColor(hex){if(!/^#[0-9a-fA-F]{6}$/.test(hex))return;setColorRaw(hex);syncPickerFromColor(hex);closeAllPanels();}
+function updateColorDot(hex){const d=document.getElementById('color-dot');if(d)d.style.background=hex;const s=document.querySelector('#sz-preview div');if(s)s.style.background=hex;}
+function updateBrushBtn(){const IC={pen:'🖊',pencil:'✏️',marker:'🖍',bristle:'🎨',ink:'🪶',watercolor:'💧',airbrush:'🌫',line:'╱',eraser:'🧽',fill:'🪣',eyedrop:'💉'};const btn=document.getElementById('btn-brush');if(btn)btn.innerHTML=(IC[brushType]||'🖊')+`<div class="color-dot" id="color-dot" style="background:${currentColor}"></div>`;document.getElementById('btn-fill')?.classList.toggle('on',brushType==='fill');document.getElementById('btn-eyedrop')?.classList.toggle('on',brushType==='eyedrop');document.getElementById('btn-brush')?.classList.toggle('on',brushType!=='fill'&&brushType!=='eyedrop');}
+function setBrush(t){brushType=t;document.querySelectorAll('.brush-opt').forEach(b=>b.classList.toggle('on',b.dataset.brush===t));updateBrushBtn();updateSmoothSlider();}
+function updateSmoothSlider(){const sm=bSettings[brushType]?.smoothing??.5,fl=bSettings[brushType]?.flow??.8;document.getElementById('smooth-range').value=~~(sm*100);document.getElementById('smooth-lbl').textContent=~~(sm*100)+'%';document.getElementById('flow-range').value=~~(fl*100);document.getElementById('flow-lbl').textContent=~~(fl*100)+'%';}
+document.querySelectorAll('.brush-opt').forEach(el=>el.addEventListener('click',()=>setBrush(el.dataset.brush)));
+document.getElementById('stab-range').addEventListener('input',e=>{LAZY_RADIUS=+e.target.value;document.getElementById('stab-lbl').textContent=e.target.value+'px';});
+document.getElementById('smooth-range').addEventListener('input',e=>{const v=+e.target.value/100;document.getElementById('smooth-lbl').textContent=e.target.value+'%';bSettings[brushType].smoothing=v;});
+document.getElementById('flow-range').addEventListener('input',e=>{brushFlow=+e.target.value/100;document.getElementById('flow-lbl').textContent=e.target.value+'%';bSettings[brushType].flow=brushFlow;});
+function updateSzLbl(){document.getElementById('sz-op-size').textContent=brushSize+'px';document.getElementById('sz-op-opacity').textContent=~~(brushOpacity*100)+'%';document.getElementById('sz-lbl').textContent=brushSize+'px';}
+document.getElementById('sz-range').addEventListener('input',e=>{brushSize=+e.target.value;const s=Math.max(4,Math.min(24,brushSize));document.getElementById('sz-preview').innerHTML=`<div style="width:${s}px;height:${s}px;border-radius:50%;background:${currentColor}"></div>`;updateSzLbl();});
+document.getElementById('op-range').addEventListener('input',e=>{brushOpacity=+e.target.value/100;document.getElementById('op-lbl').textContent=e.target.value+'%';updateSzLbl();});
+
+function closeAllPanels(){document.querySelectorAll('.popup').forEach(p=>p.classList.remove('open'));}
+function togglePanel(id){const el=document.getElementById(id);const was=el.classList.contains('open');closeAllPanels();if(!was)el.classList.add('open');}
+document.getElementById('btn-brush').addEventListener('click',()=>togglePanel('brush-popup'));
+document.getElementById('btn-color').addEventListener('click',()=>{togglePanel('color-popup');renderPalette();setTimeout(()=>{drawSBCanvas();drawHueBar();},10);});
+document.getElementById('btn-opacity').addEventListener('click',()=>togglePanel('opacity-popup'));
+document.getElementById('btn-layers').addEventListener('click',()=>{renderLayerPanel();togglePanel('layer-popup');});
+document.getElementById('btn-menu').addEventListener('click',()=>togglePanel('settings-popup'));
+document.getElementById('btn-undo').addEventListener('click',doUndo);
+document.getElementById('btn-redo').addEventListener('click',doRedo);
+document.getElementById('btn-clear').addEventListener('click',()=>{if(!isDrawer)return;if(!confirm('Clear canvas?'))return;saveUndo();clearAll();wsSend({type:'clear'});showSyncSpin();});
+document.getElementById('btn-fill').addEventListener('click',()=>{setBrush('fill');closeAllPanels();showToast('Flood fill — tap to fill 🪣');});
+document.getElementById('btn-eyedrop').addEventListener('click',()=>{setBrush('eyedrop');closeAllPanels();showToast('Pick color 💉');});
+document.addEventListener('pointerdown',e=>{if(!e.target.closest('.tbtn')&&!e.target.closest('.top-icon')&&!e.target.closest('.popup'))closeAllPanels();});
+const BORDER=['pen','pencil','marker','bristle','ink','watercolor','airbrush','eraser'];
+document.getElementById('btn-brush').addEventListener('wheel',e=>{e.preventDefault();const c=BORDER.indexOf(brushType);setBrush(BORDER[(c+(e.deltaY>0?1:-1)+BORDER.length)%BORDER.length]);showToast(brushType);},{passive:false});
+document.getElementById('btn-opacity').addEventListener('wheel',e=>{e.preventDefault();if(e.shiftKey){brushOpacity=Math.min(1,Math.max(.05,brushOpacity+(e.deltaY<0?.05:-.05)));document.getElementById('op-range').value=~~(brushOpacity*100);document.getElementById('op-lbl').textContent=~~(brushOpacity*100)+'%';}else{brushSize=Math.min(80,Math.max(1,brushSize+(e.deltaY<0?1:-1)));document.getElementById('sz-range').value=brushSize;}updateSzLbl();},{passive:false});
+let _tsY=null,_tsS=null;
+document.getElementById('btn-opacity').addEventListener('touchstart',e=>{_tsY=e.touches[0].clientY;_tsS=brushSize;e.preventDefault();},{passive:false});
+document.getElementById('btn-opacity').addEventListener('touchmove',e=>{if(_tsY===null)return;e.preventDefault();brushSize=Math.min(80,Math.max(1,~~(_tsS+(_tsY-e.touches[0].clientY)*.3)));document.getElementById('sz-range').value=brushSize;updateSzLbl();showToast(brushSize+'px');},{passive:false});
+document.getElementById('btn-opacity').addEventListener('touchend',()=>_tsY=null);
+
+let _st=null;
+function showSyncSpin(){document.getElementById('sync-spin').style.display='block';document.getElementById('sync-check').style.display='none';clearTimeout(_st);}
+function showSyncDone(){document.getElementById('sync-spin').style.display='none';document.getElementById('sync-check').style.display='inline';clearTimeout(_st);_st=setTimeout(()=>document.getElementById('sync-check').style.display='none',2000);}
+let _tt=null;const toastEl=document.getElementById('toast');
+function showToast(msg,cls=''){toastEl.textContent=msg;toastEl.className='show '+cls;clearTimeout(_tt);_tt=setTimeout(()=>toastEl.className='',2800);}
+
+const chatLog=document.getElementById('chat-log');
+function addChat(cls,html){const d=document.createElement('div');d.className='cmsg '+cls;d.innerHTML=html;chatLog.appendChild(d);chatLog.scrollTop=chatLog.scrollHeight;}
+function sendGuess(){const t=document.getElementById('guess-in').value.trim();if(!t||!ws||ws.readyState!==1)return;ws.send(JSON.stringify({type:'guess',text:t}));document.getElementById('guess-in').value='';}
+document.getElementById('guess-go').addEventListener('click',sendGuess);
+document.getElementById('guess-in').addEventListener('keydown',e=>{if(e.key==='Enter')sendGuess();});
+
+const roundOv=document.getElementById('round-overlay');let currentWord='';
+function showResult(emoji,title,word,sub){document.getElementById('re-emoji').textContent=emoji;document.getElementById('re-title').textContent=title;document.getElementById('re-word').textContent=word;document.getElementById('re-sub').textContent=sub;roundOv.classList.add('show');setTimeout(()=>roundOv.classList.remove('show'),8000);}
+document.getElementById('re-newround').addEventListener('click',()=>roundOv.classList.remove('show'));
+document.getElementById('dfo-keep').addEventListener('click',()=>{document.getElementById('drawer-finish-overlay').style.display='none';showToast('Keep drawing! 🎨');});
+document.getElementById('dfo-close').addEventListener('click',()=>{document.getElementById('drawer-finish-overlay').style.display='none';document.getElementById('toolbar').classList.remove('visible');isDrawer=false;try{tg?.close();}catch(e){}});
+
+function updatePlayers(board){const list=document.getElementById('player-list');if(!board?.length){list.innerHTML='<div style="font-size:.74rem;color:var(--text2);padding:3px 5px">No players</div>';return;}list.innerHTML=board.map(({name,score,rank})=>`<div style="display:flex;align-items:center;gap:6px;padding:4px 5px;font-size:.78rem"><div style="width:6px;height:6px;border-radius:50%;background:var(--green);flex-shrink:0"></div><div style="flex:1;font-weight:500">${name}</div><div style="color:var(--yellow);font-weight:700;font-size:.72rem;font-family:'JetBrains Mono',monospace">${score}pts${rank===1?' 👑':''}</div></div>`).join('');}
+function updateLb(board){const m=['🥇','🥈','🥉'];document.getElementById('lb-list').innerHTML=(board||[]).slice(0,8).map(({rank,name,score})=>`<div class="lb-row"><span class="lb-rank">${m[rank-1]||rank}</span><span class="lb-name">${name}</span><span class="lb-pts">${score}pts</span></div>`).join('');}
+
+let isDrawer=false;
+function setRole(role,wordOrHint,round){
+  isDrawer=role==='drawer';
+  document.getElementById('toolbar').classList.toggle('visible',isDrawer);
+  document.getElementById('chat-panel').classList.add('visible');
+  document.getElementById('guess-row').style.display='flex';
+  const pill=document.getElementById('role-pill');pill.className='role-pill '+role;pill.textContent=isDrawer?'DRAWING':'GUESSING';
+  const wd=document.getElementById('word-display');
+  if(isDrawer){currentWord=wordOrHint;wd.textContent=wordOrHint.toUpperCase();document.getElementById('s-current-word').textContent=wordOrHint.toUpperCase();showToast(`Word: ${wordOrHint}`,'ok');sfxRoundStart();addLog(`Round started — you are DRAWER`,'round');}
+  else{currentWord='';const hint=typeof wordOrHint==='number'?'_ '.repeat(wordOrHint).trim():wordOrHint;wd.textContent=hint;setTimeout(fitCanvas,50);addLog(`Role: GUESSER — hint: ${hint}`,'round');}
+  if(round)addChat('sys',`Round ${round}`);
+  setTimeout(fitCanvas,50);setTimeout(fitCanvas,300);
+}
+
+const AC=window.AudioContext||window.webkitAudioContext;let ac=null,soundEnabled=true;
+function getAC(){if(!ac)ac=new AC();if(ac.state==='suspended')ac.resume();return ac;}
+function tone(f,t,d,v=.12){if(!soundEnabled)return;try{const ctx=getAC(),o=ctx.createOscillator(),g=ctx.createGain();o.connect(g);g.connect(ctx.destination);o.type=t;o.frequency.value=f;g.gain.setValueAtTime(v,ctx.currentTime);g.gain.exponentialRampToValueAtTime(.001,ctx.currentTime+d);o.start(ctx.currentTime);o.stop(ctx.currentTime+d);}catch(e){}}
+function sfxCorrect(){[523,659,784].forEach((f,i)=>setTimeout(()=>tone(f,'sine',.4),i*80));}
+function sfxRoundStart(){tone(440,'triangle',.15);setTimeout(()=>tone(660,'triangle',.2),120);}
+function sfxRoundEnd(){[392,349,294].forEach((f,i)=>setTimeout(()=>tone(f,'sine',.35),i*100));}
+function sfxHint(){tone(880,'sine',.12);}
+function sfxJoin(){tone(600,'sine',.1);}
+
+let isDark=true;
+function applyTheme(dark){isDark=dark;const r=document.documentElement.style;if(dark){r.setProperty('--bg','#1e2a2b');r.setProperty('--surface','#253334');r.setProperty('--surface2','#2d3f40');r.setProperty('--surface3','#354849');r.setProperty('--border','#3d5355');r.setProperty('--text','#eef2f2');r.setProperty('--text2','#8aabac');r.setProperty('--text3','#4a6a6b');}else{r.setProperty('--bg','#f0f3f3');r.setProperty('--surface','#ffffff');r.setProperty('--surface2','#f3f7f7');r.setProperty('--surface3','#e8eded');r.setProperty('--border','#c8d8d8');r.setProperty('--text','#1e2a2b');r.setProperty('--text2','#4a6a6b');r.setProperty('--text3','#8aabac');}localStorage.setItem('theme',dark?'dark':'light');}
+applyTheme(localStorage.getItem('theme')!=='light');
+
+function galKey(){return'dg_gallery__'+(myRoom||'default');}
+function saveToGallery(word,drawer){try{const tmp=document.createElement('canvas');tmp.width=CW;tmp.height=CH;flattenTo(tmp.getContext('2d'));const g=JSON.parse(localStorage.getItem(galKey())||'[]');g.unshift({word,drawer,date:new Date().toISOString(),img:tmp.toDataURL('image/jpeg',.75)});localStorage.setItem(galKey(),JSON.stringify(g.slice(0,20)));}catch(e){}}
+function openGallery(){const g=JSON.parse(localStorage.getItem(galKey())||'[]');if(!g.length){showToast('Gallery empty','warn');return;}closeAllPanels();const ov=document.createElement('div');ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:900;overflow-y:auto;padding:14px;backdrop-filter:blur(8px)';ov.innerHTML=`<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px"><div style="font-size:1rem;font-weight:700;color:var(--accent)">🖼 Gallery</div><button id="gc" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:5px 12px;border-radius:18px;cursor:pointer;font-size:.8rem">✕</button></div><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px">${g.map(it=>`<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;overflow:hidden"><img src="${it.img}" style="width:100%;display:block"/><div style="padding:5px 7px"><div style="font-weight:700;font-size:.76rem;color:var(--accent)">${it.word}</div><div style="font-size:.66rem;color:var(--text2)">${it.drawer}</div></div></div>`).join('')}</div>`;document.body.appendChild(ov);document.getElementById('gc').addEventListener('click',()=>ov.remove());}
+
+document.getElementById('s-players').addEventListener('click',()=>togglePanel('players-popup'));
+document.getElementById('s-leaderboard').addEventListener('click',()=>togglePanel('lb-popup'));
+document.getElementById('s-skip').addEventListener('click',()=>{if(!isDrawer){showToast('Only drawer can skip','warn');return;}if(confirm('Skip word?'))wsSend({type:'skip_word'});closeAllPanels();});
+document.getElementById('s-done').addEventListener('click',()=>{if(!isDrawer){showToast('Only drawer can finish','warn');return;}if(confirm('Finish?'))wsSend({type:'done_drawing'});closeAllPanels();});
+document.getElementById('s-theme').addEventListener('click',()=>{isDark=!isDark;applyTheme(isDark);document.getElementById('s-theme-val').textContent=isDark?'Off':'On';document.querySelector('#s-theme .s-icon').textContent=isDark?'☀️':'🌙';});
+document.getElementById('s-sound').addEventListener('click',()=>{soundEnabled=!soundEnabled;document.getElementById('s-sound-val').textContent=soundEnabled?'On':'Off';showToast(soundEnabled?'Sound on 🔊':'Sound off 🔇');});
+document.getElementById('s-save-drawing').addEventListener('click',()=>{saveToGallery(currentWord||'drawing',myName);showToast('Saved ✅','ok');closeAllPanels();});
+document.getElementById('s-send-bot').addEventListener('click',()=>{sendToTg();closeAllPanels();});
+document.getElementById('s-logs').addEventListener('click',()=>{closeAllPanels();setTimeout(()=>{togglePanel('logs-popup');renderAllLogs();},10);});
+document.getElementById('s-gallery').addEventListener('click',()=>{openGallery();closeAllPanels();});
+document.querySelectorAll('.canvas-size-btn').forEach(btn=>{btn.addEventListener('click',()=>{const w=+btn.dataset.w,h=+btn.dataset.h;resizeCanvas(w,h);document.querySelectorAll('.canvas-size-btn').forEach(b=>b.classList.remove('on'));btn.classList.add('on');});});
+document.getElementById('s-change-word').addEventListener('click',()=>{if(!isDrawer){showToast('Only drawer can change word','warn');return;}wsSend({type:'change_word'});showToast('New word…');closeAllPanels();});
+
+function sendToTg(){try{const tmp=document.createElement('canvas');tmp.width=CW;tmp.height=CH;flattenTo(tmp.getContext('2d'));if(ws&&ws.readyState===1){ws.send(JSON.stringify({type:'snapshot',data:tmp.toDataURL('image/png'),sendToUser:true,userName:myName}));showToast('Sent ✅','ok');}else showToast('Not connected','warn');}catch(e){showToast('Failed','warn');}}
+document.getElementById('log-refresh-btn').addEventListener('click',renderAllLogs);
+document.getElementById('log-clear-btn').addEventListener('click',()=>{logBuf.length=0;const el=document.getElementById('log-entries');if(el)el.innerHTML='<div style="color:var(--text3);font-size:.68rem;padding:6px">Cleared.</div>';});
+document.getElementById('log-copy-btn').addEventListener('click',()=>{const text=logBuf.map(e=>`${e.ts.toFixed(4).padStart(9)}  ${e.delta.toFixed(4).padStart(9)} — ${e.msg}`).join('\n');const copy=s=>{const ta=document.createElement('textarea');ta.value=s;ta.style.cssText='position:fixed;opacity:0;';document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();};if(navigator.clipboard){navigator.clipboard.writeText(text).then(()=>showToast('Logs copied ✅','ok')).catch(()=>{copy(text);showToast('Logs copied ✅','ok');});}else{copy(text);showToast('Logs copied ✅','ok');}});
+
+document.getElementById('start-btn').addEventListener('click',()=>{wsSend({type:'new_round'});document.getElementById('start-btn').style.display='none';addLog('New round requested','round');});
+
+let ws=null,myName='',myRoom='',myTgId='';
+function wsSend(obj){if(ws&&ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify(obj));}
+function connect(){
+  if(!myName||!myRoom)return;
+  addLog(`Connecting… room=${myRoom} name=${myName}`,'system');
+  const proto=location.protocol==='https:'?'wss':'ws';
+  ws=new WebSocket(`${proto}://${location.host}/ws?room=${encodeURIComponent(myRoom)}&name=${encodeURIComponent(myName)}&userId=${encodeURIComponent(myTgId)}`);
+  ws.onopen=()=>{document.getElementById('conn-dot').style.background='var(--green)';addLog(`WebSocket connected`,'connect');wsSend({type:'canvas_size',w:CW,h:CH});};
+  ws.onmessage=({data})=>{
+    let m;try{m=JSON.parse(data);}catch{return;}
+    switch(m.type){
+      case'init':
+        clearAll();
+        if(m.strokes?.length){
+          const first=m.strokes[0];
+          if(first?.brushType==='_snapshot'&&first.pngB64){
+            const img=new Image();
+            img.onload=()=>{
+              // FIX H5: render snapshot to actCtx() (layer canvas), then call composite()
+              actCtx().clearRect(0,0,CW,CH);
+              actCtx().drawImage(img,0,0,CW,CH);
+              if(actLayer())actLayer()._committed=actCtx().getImageData(0,0,CW,CH);
+              // render any strokes after the snapshot into the layer too
+              m.strokes.slice(1).forEach(s=>renderStroke(actCtx(),s));
+              if(m.strokes.length>1&&actLayer())actLayer()._committed=actCtx().getImageData(0,0,CW,CH);
+              composite();
+            };
+            img.src='data:image/png;base64,'+first.pngB64;
+          }else{
+            // FIX H3: render to actCtx() (the layer canvas), not drawCtx, so composite() can see it
+            m.strokes.forEach(s=>renderStroke(actCtx(),s));
+            if(actLayer()){actLayer()._committed=actCtx().getImageData(0,0,CW,CH);}
+            composite();
+          }
         }
+        document.getElementById('word-display').textContent=`${m.players} player${m.players!==1?'s':''}`;
+        if(m.board){updatePlayers(m.board);updateLb(m.board);}
+        addLog(`Init: ${m.players} players, ${(m.strokes||[]).length} strokes restored`,'system');
         break;
       case'draw':
-        if(wsId!==game.drawerWsId)return;
-        {
-          // FIX S2: Use strokeId to replace partials — prevents N copies of same stroke being rendered
-          const incoming=msg.stroke;
-          if(incoming.strokeId){
-            const existingIdx=game.strokes.findIndex(s=>s.strokeId===incoming.strokeId);
-            if(existingIdx!==-1){
-              // Replace the existing partial with the latest (longer) version
-              game.strokes[existingIdx]=incoming;
-            }else{
-              // New stroke we haven't seen before
-              game.strokesUndo.push(incoming);
-              game.strokes.push(incoming);
-            }
-          }else{
-            // No strokeId (legacy / fill): always append
-            game.strokesUndo.push(incoming);
-            game.strokes.push(incoming);
-          }
-          broadcast(game,{type:'draw',stroke:incoming},wsId);
-          persistDebounced(game,600);
-          // Flatten to snapshot every 60 strokes — keeps memory and init payload small
-          if(game.strokes.length>0&&game.strokes.length%60===0){
-            renderPNG(game.strokes,game.canvasW,game.canvasH).then(png=>{
-              const pngB64=png.toString('base64');
-              // FIX S6: mirror strokes and strokesUndo so undo/redo work after flatten
-              const snap={brushType:'_snapshot',pngB64};
-              game.strokes=[snap];
-              game.strokesUndo=[snap];
-              persistDebounced(game,200);
-              console.log(`[game] Flattened strokes to snapshot`);
-            }).catch(e=>console.error('[flatten]',e.message));
-          }
-          if(!game.firstStrokeDrawn){
-            game.firstStrokeDrawn=true;game.roundStartTime=Date.now();
-            persistDebounced(game,200);
-            console.log(`[game] First stroke — pushing canvas to chat`);
-            setTimeout(()=>pushCanvas(game),500);
-          }else{scheduleUpdate(game);}
+        if(isDrawer){
+          showSyncDone();
+        }else{
+          // FIX H4: render additively to actCtx() — don't clearRect, don't copy from drawCv
+          renderStroke(actCtx(),m.stroke);
+          if(actLayer())actLayer()._committed=actCtx().getImageData(0,0,CW,CH);
+          composite();
         }
-        break;
-      case'undo':
-        if(wsId!==game.drawerWsId)return;
-        if(game.strokes.length>0){
-          game.strokes.pop();
-          renderPNG(game.strokes,game.canvasW,game.canvasH).then(png=>{
-            const b64='data:image/png;base64,'+png.toString('base64');
-            // FIX S3: skip drawerWsId so drawer doesn't destroy their own layered canvas
-            broadcast(game,{type:'snapshot',data:b64},game.drawerWsId);
-          }).catch(()=>{});
-          persistDebounced(game);
-          scheduleUpdate(game,800,true);
-        }
-        break;
-      case'redo':
-        if(wsId!==game.drawerWsId)return;
-        {const next=game.strokesUndo[game.strokes.length];
-        if(next){
-          game.strokes.push(next);
-          renderPNG(game.strokes,game.canvasW,game.canvasH).then(png=>{
-            const b64='data:image/png;base64,'+png.toString('base64');
-            // FIX S3: skip drawerWsId here too
-            broadcast(game,{type:'snapshot',data:b64},game.drawerWsId);
-          }).catch(()=>{});
-          persistDebounced(game);scheduleUpdate(game,800,true);
-        }}
         break;
       case'clear':
-        if(wsId!==game.drawerWsId)return;
-        game.strokes=[];game.strokesUndo=[];game.firstStrokeDrawn=false;
-        broadcast(game,{type:'clear'});persistDebounced(game);
-        break;
-      case'snapshot':
-        if(wsId!==game.drawerWsId)return;
-        broadcast(game,{type:'snapshot',data:msg.data},wsId);
-        break;
-      case'guess':{
-        const t=(msg.text||'').trim();if(!t)return;
-        const ok=game.word&&t.toLowerCase()===game.word.toLowerCase();
-        broadcast(game,{type:'guess',name,text:t,correct:ok});
-        if(ok){
-          const hintsGiven=game.hintRevealed.filter(Boolean).length,elapsed=(Date.now()-game.roundStartTime)/1000;
-          const timeBonus=Math.max(0,Math.floor((120-elapsed)/10)),pts=Math.max(10,100-hintsGiven*10+timeBonus);
-          game.scores.set(name,(game.scores.get(name)||0)+pts);game.scores.set(game.drawerName,(game.scores.get(game.drawerName)||0)+50);
-          broadcast(game,{type:'score_update',name,pts,timeBonus,board:leaderboard(game)});
-          bot.telegram.sendMessage(game.chatId,`🎉 *${name}* guessed it! Word was *${game.word}* ✅  +${pts} pts`,{parse_mode:'Markdown'}).catch(()=>{});
-          endGame(game,name,'guess');
-        }
-        break;
+        clearAll();if(isDrawer)showSyncDone();addLog('Canvas cleared by server','draw');break;
+      case'snapshot':{
+        // FIX H2: drawer must ignore incoming snapshots — their local canvas is authoritative
+        if(isDrawer)break;
+        const img=new Image();
+        img.onload=()=>{
+          clearAll();
+          actCtx().clearRect(0,0,CW,CH);
+          actCtx().drawImage(img,0,0,CW,CH);
+          if(actLayer()){actLayer()._committed=actCtx().getImageData(0,0,CW,CH);}
+          composite();
+        };
+        img.src=m.data;addLog('Snapshot received','system');break;
       }
-      case'change_word':
-        if(wsId!==game.drawerWsId)return;
-        {const nw=pickWord();game.word=nw;game.hintRevealed=new Array(nw.length).fill(false);
-        game.strokes=[];game.strokesUndo=[];game.firstStrokeDrawn=false;game.lastHintAt=0;persistGame(game);
-        sendWs(game,wsId,{type:'role',role:'drawer',word:nw,round:1,reconnect:false});
-        broadcast(game,{type:'clear'},wsId);broadcast(game,{type:'word_skipped',hint:buildHint(nw,game.hintRevealed)},wsId);}
+      case'role':
+        if(m.role==='drawer'&&!m.reconnect)clearAll();
+        setRole(m.role,m.role==='drawer'?m.word:m.hint,m.round);
         break;
-      case'skip_word':
-        if(wsId!==game.drawerWsId)return;
-        {const nw=pickWord();game.word=nw;game.hintRevealed=new Array(nw.length).fill(false);
-        game.strokes=[];game.strokesUndo=[];game.firstStrokeDrawn=false;game.lastHintAt=0;
-        clearTimeout(game.roundTimer);clearTimeout(game.hintTimer);game.roundTimer=game.hintTimer=null;
-        persistGame(game);sendWs(game,wsId,{type:'role',role:'drawer',word:nw,round:1,reconnect:false});
-        broadcast(game,{type:'clear'},wsId);broadcast(game,{type:'word_skipped',hint:buildHint(nw,game.hintRevealed)},wsId);}
-        break;
-      case'done_drawing':
-        if(wsId!==game.drawerWsId)return;endGame(game,null,'done');break;
-      // FIX S5: handle 'new_round' from the client start button
-      case'new_round':
-        {
-          if(game.phase==='drawing')return; // already running
-          if(game.phase==='waiting_drawer')return; // already waiting
-          if(!botUsername)return;
-          game.phase='waiting_drawer';
-          game.scores=new Map();game.strokes=[];game.strokesUndo=[];
-          game.word=null;game.drawerTgId=null;game.drawerName='';game.drawerWsId=null;game.liveMessageId=null;
-          persistGame(game);
-          const url=`https://t.me/${botUsername}/${WEBAPP_SHORT_NAME}`;
-          bot.telegram.sendMessage(game.chatId,
-            `🎨 *Draw & Guess!*\n\nWho wants to draw? ✏️`,
-            {parse_mode:'Markdown',...Markup.inlineKeyboard([[Markup.button.callback('✏️ I Want to Draw!',`claim_draw:${game.chatId}`)]])}
-          ).then(m=>{game.inviteMessageId=m.message_id;persistDebounced(game);}).catch(e=>console.error('[new_round]',e.message));
-          broadcast(game,{type:'status',message:'Waiting for a drawer… check the group!'});
+      case'hint':
+        document.getElementById('word-display').textContent=m.hint;addChat('sys',`💡 Hint: ${m.hint}`);showToast('💡 New hint!');sfxHint();break;
+      case'word_skipped':
+        document.getElementById('word-display').textContent=m.hint;addChat('sys','Word skipped');clearAll();break;
+      case'guess':
+        addChat(m.correct?'ok':'',`<span class="cn">${m.name}:</span> ${m.text}${m.correct?' ✅':''}`);
+        if(m.correct){showToast(`🎉 ${m.name} got it!`,'ok');sfxCorrect();}break;
+      case'score_update':
+        addChat('ok',`🏆 ${m.name} +${m.pts}pts${m.timeBonus?' ⚡+'+m.timeBonus:''}`);
+        if(m.board){updatePlayers(m.board);updateLb(m.board);}break;
+      case'round_end':
+        sfxRoundEnd();
+        if(m.drawerFinish&&isDrawer){
+          const dfo=document.getElementById('drawer-finish-overlay');
+          document.getElementById('dfo-emoji').textContent=m.guesser?'🎉':'😮';
+          document.getElementById('dfo-title').textContent=m.guesser?`${m.guesser} guessed it!`:m.reason==='all_hints'?'All hints shown!':'Round over';
+          document.getElementById('dfo-word').textContent=`"${m.word}"`;
+          document.getElementById('dfo-sub').textContent='Keep drawing or close.';
+          dfo.style.display='flex';
+        }else{
+          showResult(m.guesser?'🎉':(m.reason==='all_hints'?'🔤':'😮'),m.guesser?`${m.guesser} got it!`:(m.reason==='all_hints'?'All hints shown!':'Round over'),m.word,m.guesser?`Artist: ${m.drawerName}`:`Word was: ${m.word}`);
         }
-        break;
-      case'get_logs':
-        ws.send(JSON.stringify({type:'logs',logs:[]}));break;
+        if(m.board){updatePlayers(m.board);updateLb(m.board);}
+        if(m.word&&m.drawerName)saveToGallery(m.word,m.drawerName);
+        document.getElementById('word-display').textContent='waiting…';
+        document.getElementById('role-pill').className='role-pill';document.getElementById('role-pill').textContent='—';
+        if(!m.drawerFinish||!isDrawer){document.getElementById('toolbar').classList.remove('visible');isDrawer=false;}
+        document.getElementById('start-btn').style.display='block';
+        addLog(`Round end: word=${m.word} guesser=${m.guesser||'none'} reason=${m.reason}`,'round');break;
+      case'leaderboard':if(m.board){updatePlayers(m.board);updateLb(m.board);}break;
+      case'status':document.getElementById('word-display').textContent=m.message;addChat('sys',m.message);break;
+      case'player_joined':addChat('sys',`${m.name} joined (${m.count})`);sfxJoin();break;
+      case'player_left':addChat('sys',`${m.name} left (${m.count})`);break;
     }
-  });
-  ws.on('close',()=>{
-    game.clients.delete(wsId);
-    console.log(`[ws] -${name} chatId=${chatId} remaining=${game.clients.size}`);
-    broadcast(game,{type:'player_left',name,count:game.clients.size});
-    if(wsId===game.drawerWsId){game.drawerWsId=null;console.log('[ws] Drawer disconnected — persisted, will restore on reconnect');}
-  });
-  ws.on('error',err=>{console.error(`[ws] ${name}:`,err.message);ws.close();});
-});
+  };
+  ws.onclose=()=>{document.getElementById('conn-dot').style.background='var(--red)';addLog('WebSocket disconnected — reconnecting…','disconnect');scheduleReconnect();};
+  ws.onerror=e=>{addLog(`WebSocket error: ${e.message||'unknown'}`,'error');ws.close();};
+}
+let _rcT=null;
+function scheduleReconnect(){clearTimeout(_rcT);_rcT=setTimeout(()=>{if(myName&&myRoom&&(!ws||ws.readyState===WebSocket.CLOSED))connect();},1500);}
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&myRoom&&(!ws||ws.readyState===WebSocket.CLOSED))connect();});
 
-// ── Launch ────────────────────────────────────────────────────────────────────
-function tgPost(method,body){
-  return new Promise((res,rej)=>{
-    const https=require('https'),p=JSON.stringify(body);
-    const r=https.request({hostname:'api.telegram.org',path:`/bot${BOT_TOKEN}/${method}`,method:'POST',
-      headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(p)}},
-      rr=>{let d='';rr.on('data',c=>d+=c);rr.on('end',()=>{try{res(JSON.parse(d));}catch(e){rej(e);}});});
-    r.on('error',rej);r.write(p);r.end();
-  });
+function getTgName(){if(!tg)return null;const u=tg.initDataUnsafe?.user;if(!u)return null;return`${u.first_name||''} ${u.last_name||''}`.trim()||u.username||null;}
+function getTgId(){if(tg){const u=tg.initDataUnsafe?.user;if(u?.id)return String(u.id);}return'';}
+function parseStart(){
+  let raw='';
+  try{if(tg?.initDataUnsafe?.start_param)raw=decodeURIComponent(tg.initDataUnsafe.start_param);}catch{}
+  if(!raw){try{raw=decodeURIComponent(new URLSearchParams(location.search).get('startapp')||'');}catch{}}
+  if(!raw){try{raw=decodeURIComponent(new URLSearchParams(location.hash.slice(1)).get('startapp')||'');}catch{}}
+  if(!raw&&tg?.initData){try{raw=decodeURIComponent(new URLSearchParams(tg.initData).get('start_param')||'');}catch{}}
+  const roomId=(raw.split('__')[0]||'').trim();
+  return{roomId};
 }
-async function launchBot(){
-  try{
-    const me=await bot.telegram.getMe();botUsername=me.username;console.log(`🤖 @${botUsername} ready`);
-    await bot.telegram.setMyCommands([
-      {command:'startgame',description:'Start a new Draw & Guess game'},
-      {command:'stopgame',description:'Stop the current game'},
-      {command:'skipword',description:'Skip current word'},
-      {command:'leaderboard',description:'Show scores'},
-    ]);
-    const info=(await tgPost('getWebhookInfo',{})).result||{};
-    if(info.url===WEBHOOK_URL){console.log('[bot] ✅ Webhook already active');}
-    else{const r=await tgPost('setWebhook',{url:WEBHOOK_URL,drop_pending_updates:true,allowed_updates:['message','callback_query']});console.log('[bot] setWebhook:',r.description||JSON.stringify(r));}
-  }catch(e){console.error('[bot] launchBot error:',e.message);setTimeout(launchBot,5000);}
+let _joined=false,_canvasInited=false;
+function initOnce(){if(_canvasInited)return;_canvasInited=true;try{initCanvases();renderPalette();syncPickerFromColor(currentColor);updateSzLbl();setTimeout(fitCanvas,100);setTimeout(fitCanvas,400);setTimeout(fitCanvas,800);}catch(e){console.error('initOnce error:',e);}}
+function doJoin(roomId,playerName,tgId){
+  if(_joined)return;_joined=true;
+  myName=playerName;myRoom=roomId;myTgId=tgId||'';
+  try{sessionStorage.setItem('dgN',myName);sessionStorage.setItem('dgR',myRoom);sessionStorage.setItem('dgT',myTgId);}catch{}
+  addLog(`Joining room=${myRoom} name=${myName} tgId=${myTgId||'anon'}`,'system');
+  document.getElementById('join-overlay').style.display='none';
+  initOnce();connect();
 }
-server.listen(PORT,()=>{
-  console.log(`✅ http://localhost:${PORT}  |  📡 ${PUBLIC_URL}`);
-  restoreAll();
-  setTimeout(launchBot,1000);
-  if(PUBLIC_URL){
-    setInterval(()=>{
-      const mod=PUBLIC_URL.startsWith('https')?require('https'):require('http');
-      mod.get(`${PUBLIC_URL}/ping`,r=>console.log(`[keepalive] ${r.statusCode}`)).on('error',e=>console.warn('[keepalive]',e.message));
-    },4*60*1000);
+(function tryAuto(attempt){
+  const parsed=parseStart();const tgName=getTgName();const tgId=getTgId();
+  if(parsed.roomId){
+    document.getElementById('join-overlay').style.display='none';initOnce();
+    if(tgName){doJoin(parsed.roomId,tgName,tgId);return;}
+    if(attempt<30){setTimeout(()=>tryAuto(attempt+1),100);return;}
+    doJoin(parsed.roomId,'Player'+~~(Math.random()*900+100),tgId);
+  }else{
+    if(attempt<15){setTimeout(()=>tryAuto(attempt+1),100);return;}
+    document.getElementById('join-overlay').style.display='flex';
+    const n=tgName||'';if(n)document.getElementById('name-in').value=n;
   }
-});
-process.on('unhandledRejection',r=>console.error('[unhandledRejection]',r?.message||r));
-process.on('uncaughtException',e=>console.error('[uncaughtException]',e.message));
-process.once('SIGINT',()=>{db.close();server.close();process.exit(0);});
-process.once('SIGTERM',()=>{db.close();server.close();process.exit(0);});
+})(0);
+
+document.getElementById('join-btn').addEventListener('click',()=>{const name=document.getElementById('name-in').value.trim()||'Player'+~~(Math.random()*1000);const room=document.getElementById('room-in').value.trim()||'default';doJoin(room,name,'');});
+document.getElementById('name-in').addEventListener('keydown',e=>{if(e.key==='Enter')document.getElementById('room-in').focus();});
+document.getElementById('room-in').addEventListener('keydown',e=>{if(e.key==='Enter')document.getElementById('join-btn').click();});
+addLog('Client ready');
+})();
+</script>
+</body>
+</html>

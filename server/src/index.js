@@ -249,16 +249,16 @@ function renderStroke(ctx,s){
   // ── Watercolor: soft body + dark pigment bloom ring at edges ─────────────
   if(bt==='watercolor'){
     ctx.strokeStyle=col;ctx.lineCap='round';ctx.lineJoin='round';
-    // Pass 1: soft wet body
+    // Pass 1: soft wet body — must explicitly set source-over each pass
+    ctx.globalCompositeOperation='source-over';
     for(let l=0;l<5;l++){
       ctx.globalAlpha=op*0.025*fl;ctx.lineWidth=sz*bd.widthMult*(0.75+rng()*0.5);
       ctx.beginPath();ctx.moveTo(pts[0][0]+(rng()-.5)*sz*.25,pts[0][1]+(rng()-.5)*sz*.25);
       for(let i=1;i<pts.length;i++)ctx.lineTo(pts[i][0]+(rng()-.5)*sz*.3,pts[i][1]+(rng()-.5)*sz*.3);
       ctx.stroke();
     }
-    // Pass 2: dark bloom ring (wide stroke minus interior = edge-only)
-    const {createCanvas:cc2}=require('@napi-rs/canvas');
-    const edge=cc2(ctx.canvas.width,ctx.canvas.height);const ec=edge.getContext('2d');
+    // Pass 2: dark bloom ring — off-screen canvas, wide stroke with interior punched out
+    const edge=createCanvas(ctx.canvas.width,ctx.canvas.height);const ec=edge.getContext('2d');
     ec.strokeStyle=col;ec.lineCap='round';ec.lineJoin='round';
     ec.lineWidth=sz*bd.widthMult+4;ec.globalAlpha=op*0.28*fl;
     ec.beginPath();ec.moveTo(pts[0][0],pts[0][1]);
@@ -266,7 +266,7 @@ function renderStroke(ctx,s){
     ec.globalCompositeOperation='destination-out';ec.lineWidth=sz*bd.widthMult-1;ec.globalAlpha=1;
     ec.beginPath();ec.moveTo(pts[0][0],pts[0][1]);
     for(let i=1;i<pts.length;i++)ec.lineTo(pts[i][0],pts[i][1]);ec.stroke();
-    ctx.globalAlpha=1;ctx.drawImage(edge,0,0);
+    ctx.globalCompositeOperation='source-over';ctx.globalAlpha=1;ctx.drawImage(edge,0,0);
     ctx.restore();return;
   }
   // ── Bristle: individual fibers that flex and converge at taper ends ───────
@@ -331,17 +331,19 @@ function renderStroke(ctx,s){
     }
     ctx.restore();return;
   }
-  // ── Pen / Marker — pressure-sensitive width with taper ───────────────────
+  // ── Pen / Marker — full single-path render (matches client needsFullRedraw) ──
+  // Single ctx.stroke() avoids alpha accumulation on overlapping curve segments
   ctx.strokeStyle=col;ctx.lineCap=bd.cap||'round';ctx.lineJoin='round';ctx.setLineDash([]);
+  ctx.globalAlpha=op*bd.alpha*fl;
   if(bd.pressure&&bt!=='marker'){
-    for(let i=1;i<pts.length;i++){
-      const p=calcP(pts,prs,i),taper=getTaper(i,pts.length);
-      ctx.globalAlpha=op*bd.alpha*fl;
-      ctx.lineWidth=sz*bd.widthMult*p*taper;
-      ctx.beginPath();ctx.moveTo(pts[i-1][0],pts[i-1][1]);ctx.lineTo(pts[i][0],pts[i][1]);ctx.stroke();
-    }
+    // For pen: draw the smoothed path at average pressure (taper handled by width)
+    // Using per-segment is more accurate but mismatches client's single-path composite.
+    // Single path at mid-pressure gives consistent server↔client appearance.
+    const avgP=prs&&prs.length?prs.reduce((a,b)=>a+(b||0.5),0)/prs.length:0.7;
+    const clampedP=Math.max(0.3,Math.min(1.0,avgP||0.7));
+    ctx.lineWidth=sz*bd.widthMult*clampedP;
+    drawPath(ctx,pts,sm);ctx.stroke();
   }else{
-    ctx.globalAlpha=op*bd.alpha*fl;
     ctx.lineWidth=sz*bd.widthMult;drawPath(ctx,pts,sm);ctx.stroke();
   }
   ctx.restore();

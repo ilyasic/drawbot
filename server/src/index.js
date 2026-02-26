@@ -131,17 +131,18 @@ function makePRNG(seed){
 }
 
 // ── Render engine — kept identical to client for pixel-perfect Telegram images ─
-const DEFAULT_CW=1920,DEFAULT_CH=1080;
+const DEFAULT_CW=1080,DEFAULT_CH=1080;
 const BD={
-  pen:      {smoothing:.5,alpha:1.0,widthMult:1.0,cap:'round',pressure:true, flow:.8},
-  pencil:   {smoothing:.3,alpha:.75,widthMult:.8, cap:'round',pressure:true, flow:.7},
-  marker:   {smoothing:.6,alpha:.55,widthMult:1.6,cap:'round',pressure:false,flow:.9},
-  bristle:  {smoothing:.2,alpha:.5, widthMult:1.0,cap:'round',pressure:true, flow:.6},
-  ink:      {smoothing:.7,alpha:1.0,widthMult:1.0,cap:'round',pressure:true, flow:1.0},
-  watercolor:{smoothing:.6,alpha:.25,widthMult:2.0,cap:'round',pressure:true,flow:.5},
-  airbrush: {smoothing:.0,alpha:.04,widthMult:1.0,cap:'round',pressure:false,flow:.7},
-  line:     {smoothing:.0,alpha:1.0,widthMult:1.0,cap:'round',pressure:false,flow:1.0},
-  eraser:   {smoothing:.5,alpha:1.0,widthMult:1.0,cap:'round',pressure:false,flow:1.0},
+  pen:       {smoothing:.5,alpha:1.0,widthMult:1.0,cap:'round',pressure:true, flow:.8},
+  pencil:    {smoothing:.3,alpha:.75,widthMult:.8, cap:'round',pressure:true, flow:.7},
+  pastel:    {smoothing:.4,alpha:.8, widthMult:1.0,cap:'round',pressure:true, flow:.65},
+  marker:    {smoothing:.6,alpha:.55,widthMult:1.6,cap:'round',pressure:false,flow:.9},
+  bristle:   {smoothing:.2,alpha:.5, widthMult:1.0,cap:'round',pressure:true, flow:.6},
+  ink:       {smoothing:.7,alpha:1.0,widthMult:1.0,cap:'round',pressure:true, flow:1.0},
+  watercolor:{smoothing:.6,alpha:.25,widthMult:2.0,cap:'round',pressure:true, flow:.5},
+  airbrush:  {smoothing:.0,alpha:.04,widthMult:1.0,cap:'round',pressure:false,flow:.7},
+  line:      {smoothing:.0,alpha:1.0,widthMult:1.0,cap:'round',pressure:false,flow:1.0},
+  eraser:    {smoothing:.5,alpha:1.0,widthMult:1.0,cap:'round',pressure:false,flow:1.0},
 };
 // Centripetal Catmull-Rom — eliminates bunching on tight curves (matches client)
 function smoothPts(pts,sm){
@@ -192,7 +193,8 @@ function renderStroke(ctx,s){
         op=s.opacity!=null?s.opacity:1.0,fl=s.flow!=null?s.flow:0.8,
         sm=s.smoothing!=null?s.smoothing:(BD[bt]?.smoothing??0.5),
         bd=BD[bt]||BD.pen,rng=makePRNG(s.seed||12345),
-        prs=s.pressures||null;
+        prs=s.pressures||null,
+        fd=s.fogDensity!=null?s.fogDensity:0.4;
   ctx.save();
   ctx.setLineDash([]);ctx.globalAlpha=1;ctx.globalCompositeOperation='source-over';
   if(bt==='eraser'){
@@ -230,18 +232,82 @@ function renderStroke(ctx,s){
     ctx.restore();return;
   }
   if(bt==='eyedrop'){ctx.restore();return;}
-  // ── Airbrush: Gaussian falloff particle cloud ────────────────────────────
+  // ── Airbrush: volumetric fog/cloud with feathered Gaussian layers ─────────
   if(bt==='airbrush'){
-    ctx.globalCompositeOperation='source-over';ctx.fillStyle=col;
-    const rad=sz*3.5,count=Math.floor(rad*rad*0.35*fl);
+    ctx.globalCompositeOperation='source-over';
+    const rad=sz*3.8;
+    const density=0.25+fd*2.2;
+    const count=Math.floor(rad*rad*density*0.08);
+    const layerCount=3+Math.floor(fd*4);
+    ctx.fillStyle=col;
+    for(let li=0;li<layerCount;li++){
+      const layerRad=rad*(0.3+rng()*0.7);
+      const layerAlpha=op*(0.006+fd*0.018)/(layerCount*0.4);
+      const lc2=Math.floor(count*(0.5+rng()*1.0));
+      for(let i=0;i<pts.length;i++){
+        const px=pts[i][0],py=pts[i][1];
+        for(let d=0;d<lc2;d++){
+          const u1=Math.max(rng(),1e-10),u2=rng();
+          const mag=Math.sqrt(-2*Math.log(u1))*Math.cos(2*Math.PI*u2);
+          const r=Math.abs(mag)*layerRad*0.52;
+          const angle=rng()*Math.PI*2;
+          const norm=Math.min(r/layerRad,1);
+          const falloff=Math.exp(-norm*norm*3.5);
+          const alphaFinal=layerAlpha*falloff*Math.max(0,1-norm*0.8);
+          if(alphaFinal<0.001)continue;
+          ctx.globalAlpha=Math.min(1,alphaFinal);
+          const dotR=0.4+rng()*1.2*(1-norm*0.6)+norm*0.3;
+          ctx.beginPath();
+          ctx.arc(px+Math.cos(angle)*r,py+Math.sin(angle)*r,dotR,0,Math.PI*2);
+          ctx.fill();
+        }
+      }
+    }
+    // Radial gradient overlay for soft cloud feathering
+    const cr=parseInt(col.slice(1,3),16),cg=parseInt(col.slice(3,5),16),cb=parseInt(col.slice(5,7),16);
     for(let i=0;i<pts.length;i++){
-      for(let d=0;d<count;d++){
-        const u1=Math.max(rng(),1e-10),u2=rng();
-        const mag=Math.sqrt(-2*Math.log(u1))*Math.cos(2*Math.PI*u2);
-        const r=Math.abs(mag)*rad*0.45,angle=rng()*Math.PI*2;
-        const norm=Math.min(r/rad,1);
-        ctx.globalAlpha=op*bd.alpha*(1-norm*norm*norm)*0.55;
-        ctx.beginPath();ctx.arc(pts[i][0]+Math.cos(angle)*r,pts[i][1]+Math.sin(angle)*r,0.3+rng()*1.8+norm*0.8,0,Math.PI*2);ctx.fill();
+      const gRad=rad*(0.8+fd*0.4);
+      try{
+        const g=ctx.createRadialGradient(pts[i][0],pts[i][1],0,pts[i][0],pts[i][1],gRad);
+        const peakA=op*(0.01+fd*0.055);
+        g.addColorStop(0,`rgba(${cr},${cg},${cb},${peakA})`);
+        g.addColorStop(0.3,`rgba(${cr},${cg},${cb},${peakA*0.4})`);
+        g.addColorStop(1,'rgba(0,0,0,0)');
+        ctx.globalAlpha=1;ctx.fillStyle=g;
+        ctx.beginPath();ctx.arc(pts[i][0],pts[i][1],gRad,0,Math.PI*2);ctx.fill();
+        ctx.fillStyle=col;
+      }catch(e){}
+    }
+    ctx.restore();return;
+  }
+  // ── Pastel: chalk texture with soft grain and natural blending ───────────
+  if(bt==='pastel'){
+    const grainSz=Math.max(1.2,sz*0.18);
+    const coverage=0.55*fl;
+    const cr=parseInt(col.slice(1,3),16),cg=parseInt(col.slice(3,5),16),cb=parseInt(col.slice(5,7),16);
+    for(let i=1;i<pts.length;i++){
+      const taper=getTaper(i,pts.length),p=calcP(pts,prs,i),hw=sz*0.5*bd.widthMult*taper*p*1.2;
+      const dist=Math.hypot(pts[i][0]-pts[i-1][0],pts[i][1]-pts[i-1][1]);
+      const steps=Math.max(1,Math.ceil(dist/(grainSz*1.5)));
+      for(let st=0;st<steps;st++){
+        const t=st/steps;
+        const sx=pts[i-1][0]+(pts[i][0]-pts[i-1][0])*t;
+        const sy=pts[i-1][1]+(pts[i][1]-pts[i-1][1])*t;
+        const pN=Math.floor(hw*2.2*coverage);
+        for(let g=0;g<pN;g++){
+          const ang=rng()*Math.PI*2;
+          const rx=hw*(0.9+rng()*0.4),ry=hw*(0.4+rng()*0.3);
+          const ox=Math.cos(ang)*rx,oy=Math.sin(ang)*ry;
+          if((ox*ox)/(hw*hw)+(oy*oy)/(hw*hw)>1.2)continue;
+          const edgeDist=Math.min(1,Math.sqrt((ox*ox+oy*oy)/(hw*hw)));
+          const grain=0.15+rng()*0.45;
+          const alphaBase=op*grain*(1-edgeDist*0.5)*taper;
+          const varR=cr+(rng()-.5)*18,varG=cg+(rng()-.5)*18,varB=cb+(rng()-.5)*18;
+          ctx.fillStyle=`rgba(${~~Math.max(0,Math.min(255,varR))},${~~Math.max(0,Math.min(255,varG))},${~~Math.max(0,Math.min(255,varB))},1)`;
+          ctx.globalAlpha=alphaBase;
+          const gW=grainSz*(0.6+rng()*1.4),gH=grainSz*(0.3+rng()*0.6);
+          ctx.fillRect(sx+ox-gW/2,sy+oy-gH/2,gW,gH);
+        }
       }
     }
     ctx.restore();return;
@@ -705,6 +771,21 @@ wss.on('connection',(ws,req)=>{
         game.strokes=[];game.strokesUndo=[];game.firstStrokeDrawn=false;game.lastHintAt=0;persistGame(game);
         sendWs(game,wsId,{type:'role',role:'drawer',word:nw,round:1,reconnect:false});
         broadcast(game,{type:'clear'},wsId);broadcast(game,{type:'word_skipped',hint:buildHint(nw,game.hintRevealed)},wsId);}
+        break;
+      case'set_custom_word':
+        // Drawer can set any custom word — keep it hidden from guessers
+        if(wsId!==game.drawerWsId)return;
+        if(!msg.word||typeof msg.word!=='string')return;
+        {const cw=msg.word.trim().toLowerCase().slice(0,40);
+        if(!cw)return;
+        game.word=cw;game.hintRevealed=new Array(cw.length).fill(false);
+        game.strokes=[];game.strokesUndo=[];game.firstStrokeDrawn=false;game.lastHintAt=0;persistGame(game);
+        // Tell drawer the word — tell guessers only the blank hint (hidden)
+        sendWs(game,wsId,{type:'word_set',word:cw});
+        sendWs(game,wsId,{type:'role',role:'drawer',word:cw,round:1,reconnect:false});
+        broadcast(game,{type:'clear'},wsId);
+        broadcast(game,{type:'word_skipped',hint:buildHint(cw,game.hintRevealed)},wsId);
+        console.log(`[game] Custom word set: "${cw}" by ${name}`);}
         break;
       case'skip_word':
         if(wsId!==game.drawerWsId)return;

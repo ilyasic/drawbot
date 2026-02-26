@@ -750,9 +750,15 @@ function renderStroke(ctx,s){
     }
     ctx.restore();return;
   }
+  // Pen/Marker: single full-path render — avoids segment alpha accumulation, matches server
   ctx.strokeStyle=col;ctx.lineCap=bd.cap||'round';ctx.lineJoin='round';
-  if(bd.pressure&&bt!=='marker'){for(let i=1;i<pts.length;i++){const p=calcP(pts,prs,i),taper=getTaper(i,pts.length);ctx.globalAlpha=op*bd.alpha*fl;ctx.lineWidth=sz*bd.widthMult*p*taper;ctx.beginPath();ctx.moveTo(pts[i-1][0],pts[i-1][1]);ctx.lineTo(pts[i][0],pts[i][1]);ctx.stroke();}}
-  else{ctx.globalAlpha=op*bd.alpha*fl;ctx.lineWidth=sz*bd.widthMult;dPath(ctx,pts,sm);ctx.stroke();}
+  ctx.globalAlpha=op*bd.alpha*fl;
+  if(bd.pressure&&bt!=='marker'){
+    const avgP=prs&&prs.length?prs.reduce((a,b)=>a+(b||0.5),0)/prs.length:0.7;
+    const clampedP=Math.max(0.3,Math.min(1.0,avgP||0.7));
+    ctx.lineWidth=sz*bd.widthMult*clampedP;
+    dPath(ctx,pts,sm);ctx.stroke();
+  }else{ctx.lineWidth=sz*bd.widthMult;dPath(ctx,pts,sm);ctx.stroke();}
   ctx.restore();
 }
 
@@ -814,7 +820,9 @@ function onMove(e){
   }
   const prev=curStroke.points[curStroke.points.length-1];
   curStroke.points.push([x,y]);curStroke.pressures.push(e.pressure||0);lastX=x;lastY=y;
-  const needsFullRedraw=(brushType==='ink'||brushType==='pencil'||brushType==='watercolor'||brushType==='bristle');
+  // pen+marker added: incremental segment rendering causes alpha accumulation on curves,
+  // making them appear darker than the server's single-path render. Full redraw fixes parity.
+  const needsFullRedraw=(brushType==='pen'||brushType==='marker'||brushType==='ink'||brushType==='pencil'||brushType==='watercolor'||brushType==='bristle');
   if(needsFullRedraw){actCtx().clearRect(0,0,CW,CH);if(actLayer()?._committed)actCtx().putImageData(actLayer()._committed,0,0);renderStroke(actCtx(),curStroke);}
   else{renderStroke(actCtx(),{...curStroke,points:[prev,[x,y]],pressures:curStroke.pressures.slice(-2)});}
   composite();

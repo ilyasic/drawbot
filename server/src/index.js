@@ -232,56 +232,52 @@ function renderStroke(ctx,s){
     ctx.restore();return;
   }
   if(bt==='eyedrop'){ctx.restore();return;}
-  // ── Airbrush: volumetric fog/cloud with feathered Gaussian layers ─────────
+  // ── Airbrush — matches client exactly ────────────────────────────────────
   if(bt==='airbrush'){
     const cr=parseInt(col.slice(1,3),16),cg=parseInt(col.slice(3,5),16),cb=parseInt(col.slice(5,7),16);
-    const baseRad=sz*(4.5-fd*2.0);
-    const stepDist=baseRad*0.4;
-    const peakA=op*(0.02+fd*0.08);
-    ctx.globalCompositeOperation='source-over';
-    let accDist=0,px=pts[0][0],py=pts[0][1];
+    const rad=Math.max(4,sz*(4.5-fd*2.0));
+    const stepDist=Math.max(1,rad*0.20);
+    const peakA=op*(0.015+fd*0.07);
     const _paintBlob=(bx,by)=>{
-      const r=baseRad*(0.8+rng()*0.4);
       try{
-        const g=ctx.createRadialGradient(bx,by,0,bx,by,r);
+        const g=ctx.createRadialGradient(bx,by,0,bx,by,rad);
         g.addColorStop(0,  `rgba(${cr},${cg},${cb},${peakA.toFixed(4)})`);
-        g.addColorStop(0.5,`rgba(${cr},${cg},${cb},${(peakA*0.3).toFixed(4)})`);
+        g.addColorStop(0.4,`rgba(${cr},${cg},${cb},${(peakA*0.4).toFixed(4)})`);
         g.addColorStop(1,  `rgba(${cr},${cg},${cb},0)`);
         ctx.globalAlpha=1;ctx.fillStyle=g;
-        ctx.fillRect(bx-r,by-r,r*2,r*2);
+        ctx.beginPath();ctx.arc(bx,by,rad,0,Math.PI*2);ctx.fill();
       }catch(e){}
     };
-    _paintBlob(px,py);
+    ctx.globalCompositeOperation='source-over';
+    _paintBlob(pts[0][0],pts[0][1]);
+    let lpx=pts[0][0],lpy=pts[0][1];
     for(let i=1;i<pts.length;i++){
-      const dx=pts[i][0]-px,dy=pts[i][1]-py;
-      const d=Math.hypot(dx,dy);
-      accDist+=d;
-      if(accDist>=stepDist){
-        px=pts[i][0];py=pts[i][1];
-        accDist=0;
-        _paintBlob(px,py);
-      }
+      const dx=pts[i][0]-lpx,dy=pts[i][1]-lpy,d=Math.hypot(dx,dy);
+      if(d<0.5)continue;
+      const steps=Math.ceil(d/stepDist);
+      for(let s=1;s<=steps;s++)_paintBlob(lpx+dx*(s/steps),lpy+dy*(s/steps));
+      lpx=pts[i][0];lpy=pts[i][1];
     }
     ctx.restore();return;
   }
 
   if(bt==='watercolor'){
+    const avgP=prs&&prs.length?prs.reduce((a,b)=>a+(b||0.5),0)/prs.length:0.7;
+    const pMult=Math.max(0.4,Math.min(1.4,avgP));
     ctx.strokeStyle=col;ctx.lineCap='round';ctx.lineJoin='round';
-    // Pass 1: soft wet body — must explicitly set source-over each pass
     ctx.globalCompositeOperation='source-over';
     for(let l=0;l<5;l++){
-      ctx.globalAlpha=op*0.025*fl;ctx.lineWidth=sz*bd.widthMult*(0.75+rng()*0.5);
+      ctx.globalAlpha=op*0.025*fl;ctx.lineWidth=sz*bd.widthMult*pMult*(0.75+rng()*0.5);
       ctx.beginPath();ctx.moveTo(pts[0][0]+(rng()-.5)*sz*.25,pts[0][1]+(rng()-.5)*sz*.25);
       for(let i=1;i<pts.length;i++)ctx.lineTo(pts[i][0]+(rng()-.5)*sz*.3,pts[i][1]+(rng()-.5)*sz*.3);
       ctx.stroke();
     }
-    // Pass 2: dark bloom ring — off-screen canvas, wide stroke with interior punched out
     const edge=createCanvas(ctx.canvas.width,ctx.canvas.height);const ec=edge.getContext('2d');
     ec.strokeStyle=col;ec.lineCap='round';ec.lineJoin='round';
-    ec.lineWidth=sz*bd.widthMult+4;ec.globalAlpha=op*0.28*fl;
+    ec.lineWidth=sz*bd.widthMult*pMult+4;ec.globalAlpha=op*0.28*fl;
     ec.beginPath();ec.moveTo(pts[0][0],pts[0][1]);
     for(let i=1;i<pts.length;i++)ec.lineTo(pts[i][0],pts[i][1]);ec.stroke();
-    ec.globalCompositeOperation='destination-out';ec.lineWidth=sz*bd.widthMult-1;ec.globalAlpha=1;
+    ec.globalCompositeOperation='destination-out';ec.lineWidth=sz*bd.widthMult*pMult-1;ec.globalAlpha=1;
     ec.beginPath();ec.moveTo(pts[0][0],pts[0][1]);
     for(let i=1;i<pts.length;i++)ec.lineTo(pts[i][0],pts[i][1]);ec.stroke();
     ctx.globalCompositeOperation='source-over';ctx.globalAlpha=1;ctx.drawImage(edge,0,0);
@@ -289,27 +285,29 @@ function renderStroke(ctx,s){
   }
   // ── Bristle: individual fibers that flex and converge at taper ends ───────
   if(bt==='bristle'){
-    const fiberCount=Math.max(6,Math.floor(sz*0.85));
-    const spread=sz*0.5;
+    const fiberCount=Math.max(4,Math.floor(sz*0.6));
+    const spread=sz*0.45;
     const fibers=Array.from({length:fiberCount},()=>({
       ox:(rng()-.5)*spread*2,oy:(rng()-.5)*spread*2,
-      stiffness:0.3+rng()*0.7,thick:0.5+rng()*0.9,
+      stiffness:0.4+rng()*0.6,thick:0.6+rng()*0.8,
     }));
-    ctx.lineCap='round';
+    ctx.lineCap='round';ctx.lineJoin='round';
+    ctx.globalCompositeOperation='source-over';
     for(let b=0;b<fiberCount;b++){
       const f=fibers[b];
-      ctx.lineWidth=Math.max(0.4,f.thick*sz/fiberCount*1.4);
-      ctx.strokeStyle=col;ctx.beginPath();
-      for(let i=0;i<pts.length;i++){
+      for(let i=1;i<pts.length;i++){
+        const p=calcP(pts,prs,i);
+        const lw=Math.max(0.4,f.thick*sz/fiberCount*1.6*p);
         const nx=pts[Math.min(i+1,pts.length-1)][0],ny=pts[Math.min(i+1,pts.length-1)][1];
-        const px=pts[Math.max(i-1,0)][0],py=pts[Math.max(i-1,0)][1];
-        const vx=(nx-px)*0.18*(1-f.stiffness),vy=(ny-py)*0.18*(1-f.stiffness);
+        const px2=pts[Math.max(i-1,0)][0],py2=pts[Math.max(i-1,0)][1];
+        const vx=(nx-px2)*0.15*(1-f.stiffness),vy=(ny-py2)*0.15*(1-f.stiffness);
         const taper=getTaper(i,pts.length);
-        const fx=pts[i][0]+(f.ox+vx)*taper,fy=pts[i][1]+(f.oy+vy)*taper;
-        ctx.globalAlpha=op*bd.alpha*fl*f.stiffness*taper;
-        i===0?ctx.moveTo(fx,fy):ctx.lineTo(fx,fy);
+        const fx0=pts[i-1][0]+(f.ox+vx)*taper,fy0=pts[i-1][1]+(f.oy+vy)*taper;
+        const fx1=pts[i][0]+(f.ox+vx)*taper,fy1=pts[i][1]+(f.oy+vy)*taper;
+        ctx.globalAlpha=Math.min(0.9,op*bd.alpha*fl*f.stiffness*taper);
+        ctx.strokeStyle=col;ctx.lineWidth=lw;
+        ctx.beginPath();ctx.moveTo(fx0,fy0);ctx.lineTo(fx1,fy1);ctx.stroke();
       }
-      ctx.stroke();
     }
     ctx.restore();return;
   }
@@ -349,20 +347,59 @@ function renderStroke(ctx,s){
     }
     ctx.restore();return;
   }
-  // ── Pen / Marker — full single-path render (matches client needsFullRedraw) ──
-  // Single ctx.stroke() avoids alpha accumulation on overlapping curve segments
+  // ── Pastel: chalk texture — matches client exactly ──────────────────────
+  if(bt==='pastel'){
+    const grainSz=Math.max(1.2,sz*0.18);
+    const coverage=0.55*fl;
+    const cr=parseInt(col.slice(1,3),16),cg=parseInt(col.slice(3,5),16),cb=parseInt(col.slice(5,7),16);
+    for(let i=1;i<pts.length;i++){
+      const taper=getTaper(i,pts.length),p=calcP(pts,prs,i),hw=sz*0.5*bd.widthMult*taper*p*1.2;
+      const dist=Math.hypot(pts[i][0]-pts[i-1][0],pts[i][1]-pts[i-1][1]);
+      const steps=Math.max(1,Math.ceil(dist/(grainSz*1.5)));
+      for(let st=0;st<steps;st++){
+        const t=st/steps;
+        const sx=pts[i-1][0]+(pts[i][0]-pts[i-1][0])*t;
+        const sy=pts[i-1][1]+(pts[i][1]-pts[i-1][1])*t;
+        const pN=Math.floor(hw*2.2*coverage);
+        for(let g=0;g<pN;g++){
+          const ang=rng()*Math.PI*2;
+          const rx=hw*(0.9+rng()*0.4),ry=hw*(0.4+rng()*0.3);
+          const ox=Math.cos(ang)*rx,oy=Math.sin(ang)*ry;
+          if((ox*ox)/(hw*hw)+(oy*oy)/(hw*hw)>1.2)continue;
+          const edgeDist=Math.min(1,Math.sqrt((ox*ox+oy*oy)/(hw*hw)));
+          const grain=0.15+rng()*0.45;
+          const alphaBase=op*grain*(1-edgeDist*0.5)*taper;
+          const varR=cr+(rng()-.5)*18,varG=cg+(rng()-.5)*18,varB=cb+(rng()-.5)*18;
+          ctx.fillStyle=`rgba(${~~Math.max(0,Math.min(255,varR))},${~~Math.max(0,Math.min(255,varG))},${~~Math.max(0,Math.min(255,varB))},1)`;
+          ctx.globalAlpha=alphaBase;
+          const gW=grainSz*(0.6+rng()*1.4),gH=grainSz*(0.3+rng()*0.6);
+          ctx.fillRect(sx+ox-gW/2,sy+oy-gH/2,gW,gH);
+        }
+      }
+    }
+    ctx.restore();return;
+  }
+  // ── Pen/Marker: smooth bezier path, per-segment pressure for pen ─────────
   ctx.strokeStyle=col;ctx.lineCap=bd.cap||'round';ctx.lineJoin='round';ctx.setLineDash([]);
-  ctx.globalAlpha=op*bd.alpha*fl;
-  if(bd.pressure&&bt!=='marker'){
-    // For pen: draw the smoothed path at average pressure (taper handled by width)
-    // Using per-segment is more accurate but mismatches client's single-path composite.
-    // Single path at mid-pressure gives consistent server↔client appearance.
-    const avgP=prs&&prs.length?prs.reduce((a,b)=>a+(b||0.5),0)/prs.length:0.7;
-    const clampedP=Math.max(0.3,Math.min(1.0,avgP||0.7));
-    ctx.lineWidth=sz*bd.widthMult*clampedP;
-    drawPath(ctx,pts,sm);ctx.stroke();
+  if(bd.pressure&&bt!=='marker'&&prs&&prs.length>1){
+    const cp=smoothPts(pts,sm);
+    for(let i=1;i<pts.length;i++){
+      const p=calcP(pts,prs,i),taper=getTaper(i,pts.length);
+      ctx.globalAlpha=op*bd.alpha*fl;
+      ctx.lineWidth=Math.max(0.5,sz*bd.widthMult*p*taper);
+      ctx.beginPath();
+      if(cp&&cp[i-1]){
+        ctx.moveTo(pts[i-1][0],pts[i-1][1]);
+        ctx.bezierCurveTo(cp[i-1][0],cp[i-1][1],cp[i-1][2],cp[i-1][3],pts[i][0],pts[i][1]);
+      }else{
+        ctx.moveTo(pts[i-1][0],pts[i-1][1]);ctx.lineTo(pts[i][0],pts[i][1]);
+      }
+      ctx.stroke();
+    }
   }else{
-    ctx.lineWidth=sz*bd.widthMult;drawPath(ctx,pts,sm);ctx.stroke();
+    ctx.globalAlpha=op*bd.alpha*fl;
+    ctx.lineWidth=sz*bd.widthMult;
+    drawPath(ctx,pts,sm);ctx.stroke();
   }
   ctx.restore();
 }

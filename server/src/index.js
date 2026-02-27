@@ -716,24 +716,28 @@ wss.on('connection',(ws,req)=>{
         break;
       case'send_to_chat':{
         if(!msg.data){sendWs(game,wsId,{type:'toast',message:'No image data'});break;}
-        if(!game.chatId){sendWs(game,wsId,{type:'toast',message:'No chat linked'});break;}
-        console.log('[send_to_chat] user='+name+' chatId='+game.chatId+' payloadKB='+(msg.data.length/1024).toFixed(0));
+        // Send to user's private chat with the bot (not the group)
+        if(!tgId){sendWs(game,wsId,{type:'toast',message:'Cannot identify user'});break;}
+        console.log('[send_to_chat] user='+name+' tgId='+tgId+' payloadKB='+(msg.data.length/1024).toFixed(0));
         (async()=>{
           try{
             const b64=msg.data.replace(/^data:image\/\w+;base64,/,'');
             const buf=Buffer.from(b64,'base64');
-            console.log('[send_to_chat] buf size='+buf.length+' bytes');
-            const caption='🎨 Drawing by *'+name+'*'+(game.word?' — word: ||'+game.word+'||':'');
+            const caption='🎨 *'+name+'*'+(game.word?' — word: *'+game.word+'*':'');
             await bot.telegram.sendPhoto(
-              game.chatId,
+              tgId,
               {source:buf,filename:'drawing.jpg'},
               {caption,parse_mode:'Markdown'}
             );
-            console.log('[send_to_chat] SUCCESS');
-            sendWs(game,wsId,{type:'toast',message:'Sent to chat ✅'});
+            console.log('[send_to_chat] SUCCESS to private chat tgId='+tgId);
+            sendWs(game,wsId,{type:'toast',message:'Sent to your chat ✅'});
           }catch(e2){
             console.error('[send_to_chat] FAILED:',e2.message,e2.response?.error_code);
-            sendWs(game,wsId,{type:'toast',message:'Send failed: '+e2.message});
+            // Common cause: user never started the bot privately
+            const hint=e2.message.includes('bot was blocked')||e2.message.includes('chat not found')
+              ?'Start the bot privately first!'
+              :'Send failed: '+e2.message;
+            sendWs(game,wsId,{type:'toast',message:hint});
           }
         })();
         break;

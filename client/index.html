@@ -1306,6 +1306,14 @@ function endTransform(){
   l._committed=l.ctx.getImageData(0,0,CW,CH);
   _exitTransformMode();
   showToast('Transform applied ✓','ok');
+  // Flatten all visible layers and broadcast so guessers see the result
+  try{
+    const tmp=document.createElement('canvas');tmp.width=CW;tmp.height=CH;
+    flattenTo(tmp.getContext('2d'));
+    const dataURL=tmp.toDataURL('image/jpeg',0.82);
+    wsSend({type:'snapshot',data:dataURL});
+    showSyncSpin();
+  }catch(e){console.error('[transform broadcast]',e);}
 }
 
 document.getElementById('transform-done').addEventListener('click',e=>{e.stopPropagation();endTransform();});
@@ -1595,27 +1603,35 @@ function saveDrawingFile(){
 // ─── Send to Telegram chatbot — non-blocking JPEG export ───
 function sendToTg(){
   if(!ws||ws.readyState!==1){showToast('Not connected','warn');return;}
-  showToast('Preparing…');  // immediate feedback before deferred work
-  const doExport=()=>{
+  showToast('Preparing…');
+  // setTimeout(0): yields to render the toast first, then runs export sync
+  setTimeout(()=>{
     try{
       const tmp=document.createElement('canvas');tmp.width=CW;tmp.height=CH;
       flattenTo(tmp.getContext('2d'));
-      // JPEG 0.82 = ~10-20× smaller than PNG for painted content
       let dataURL=tmp.toDataURL('image/jpeg',0.82);
-      // Size guard: if still >1.8MB, downsample to half resolution
-      if(dataURL.length*0.75>1.8*1024*1024){
-        const half=document.createElement('canvas');half.width=CW/2;half.height=CH/2;
-        half.getContext('2d').drawImage(tmp,0,0,CW/2,CH/2);
+      // Size guard: downsample if base64 >1.5MB
+      if(dataURL.length>1.5*1024*1024){
+        const half=document.createElement('canvas');
+        half.width=~~(CW/2);half.height=~~(CH/2);
+        half.getContext('2d').drawImage(tmp,0,0,half.width,half.height);
         dataURL=half.toDataURL('image/jpeg',0.82);
       }
-      if(ws&&ws.readyState===1){
+      addLog('sendToTg payload '+(dataURL.length/1024).toFixed(0)+'KB ws='+ws?.readyState,'system');
+      if(!ws||ws.readyState!==1){showToast('Connection lost','warn');return;}
+      try{
         ws.send(JSON.stringify({type:'send_to_chat',data:dataURL}));
-      }else{showToast('Not connected','warn');}
-    }catch(e){showToast('Failed to send','warn');console.error(e);}
-  };
-  // Defer off critical rendering path to avoid UI freeze on large canvas
-  if(window.requestIdleCallback){requestIdleCallback(doExport,{timeout:2000});}
-  else{setTimeout(doExport,80);}
+        showToast('Sending…');
+      }catch(sendErr){
+        showToast('Send error: '+sendErr.message,'warn');
+        addLog('sendToTg ws.send err: '+sendErr.message,'error');
+      }
+    }catch(e){
+      showToast('Export failed','warn');
+      addLog('sendToTg err: '+e.message,'error');
+      console.error('[sendToTg]',e);
+    }
+  },0);
 }
 
 // ─── Settings actions ───

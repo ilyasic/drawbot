@@ -76,6 +76,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(
 #transform-done,#transform-cancel{background:var(--btn-bg);color:#fff;border:none;padding:8px 20px;border-radius:20px;
   font-size:.78rem;font-weight:700;cursor:pointer;font-family:'Syne',sans-serif;pointer-events:all;box-shadow:0 3px 12px rgba(0,0,0,.5);}
 #transform-cancel{background:var(--surface3);color:var(--text2);}
+#btn-transform-tb.tx-active{background:var(--btn-bg);color:#fff;box-shadow:0 0 0 2px var(--btn-bg);}
 
 #waiting-overlay{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;
   justify-content:center;gap:12px;z-index:10;pointer-events:none;}
@@ -643,6 +644,7 @@ body.panning.dragging #cv-draw{cursor:grabbing!important;}
     <button class="tbtn"      id="btn-redo">↪</button>
     <button class="tbtn tred" id="btn-clear">✕</button>
     <button class="tbtn"      id="btn-layers">📋</button>
+    <button class="tbtn"      id="btn-transform-tb">⤡</button>
     <div id="sz-op-label"><div id="sz-op-size">8px</div><div id="sz-op-opacity">100%</div></div>
   </div>
 </div>
@@ -753,7 +755,7 @@ function resizeCanvas(newW,newH){
   showToast(`Canvas: ${CW}×${CH}`,'ok');
 }
 function actLayer(){return layers[actIdx];}
-function actCtx(){const l=actLayer();if(!l)return drawCtx;return(editMask&&l.maskCtx)?l.maskCtx:l.ctx;}
+function actCtx(){const l=actLayer();if(!l){layers.push(mkLayer('Layer 1'));actIdx=0;}const la=actLayer();return(editMask&&la.maskCtx)?la.maskCtx:la.ctx;}
 
 function makeTmp(){const c=document.createElement('canvas');c.width=CW;c.height=CH;return c;}
 function composite(){
@@ -983,16 +985,17 @@ function renderStroke(ctx,s){
 
   // ── Watercolor ─────────────────────────────────────────────────────────────
   if(bt==='watercolor'){
+    // Pressure varies width: heavier press = wider wet pool
+    const avgP=prs&&prs.length?prs.reduce((a,b)=>a+(b||0.5),0)/prs.length:0.7;
+    const pMult=Math.max(0.4,Math.min(1.4,avgP));
     ctx.strokeStyle=col;ctx.lineCap='round';ctx.lineJoin='round';
     ctx.globalCompositeOperation='source-over';
-    for(let l=0;l<5;l++){ctx.globalAlpha=op*0.025*fl;ctx.lineWidth=sz*bd.widthMult*(0.75+rng()*0.5);ctx.beginPath();ctx.moveTo(pts[0][0]+(rng()-.5)*sz*.25,pts[0][1]+(rng()-.5)*sz*.25);for(let i=1;i<pts.length;i++)ctx.lineTo(pts[i][0]+(rng()-.5)*sz*.3,pts[i][1]+(rng()-.5)*sz*.3);ctx.stroke();}
-    const edge=makeTmp();const ec=edge.getContext('2d');ec.strokeStyle=col;ec.lineCap='round';ec.lineJoin='round';ec.lineWidth=sz*bd.widthMult+4;ec.globalAlpha=op*0.28*fl;ec.beginPath();ec.moveTo(pts[0][0],pts[0][1]);for(let i=1;i<pts.length;i++)ec.lineTo(pts[i][0],pts[i][1]);ec.stroke();ec.globalCompositeOperation='destination-out';ec.lineWidth=sz*bd.widthMult-1;ec.globalAlpha=1;ec.beginPath();ec.moveTo(pts[0][0],pts[0][1]);for(let i=1;i<pts.length;i++)ec.lineTo(pts[i][0],pts[i][1]);ec.stroke();ctx.globalCompositeOperation='source-over';ctx.globalAlpha=1;ctx.drawImage(edge,0,0);ctx.restore();return;
+    for(let l=0;l<5;l++){ctx.globalAlpha=op*0.025*fl;ctx.lineWidth=sz*bd.widthMult*pMult*(0.75+rng()*0.5);ctx.beginPath();ctx.moveTo(pts[0][0]+(rng()-.5)*sz*.25,pts[0][1]+(rng()-.5)*sz*.25);for(let i=1;i<pts.length;i++)ctx.lineTo(pts[i][0]+(rng()-.5)*sz*.3,pts[i][1]+(rng()-.5)*sz*.3);ctx.stroke();}
+    const edge=makeTmp();const ec=edge.getContext('2d');ec.strokeStyle=col;ec.lineCap='round';ec.lineJoin='round';ec.lineWidth=sz*bd.widthMult*pMult+4;ec.globalAlpha=op*0.28*fl;ec.beginPath();ec.moveTo(pts[0][0],pts[0][1]);for(let i=1;i<pts.length;i++)ec.lineTo(pts[i][0],pts[i][1]);ec.stroke();ec.globalCompositeOperation='destination-out';ec.lineWidth=sz*bd.widthMult*pMult-1;ec.globalAlpha=1;ec.beginPath();ec.moveTo(pts[0][0],pts[0][1]);for(let i=1;i<pts.length;i++)ec.lineTo(pts[i][0],pts[i][1]);ec.stroke();ctx.globalCompositeOperation='source-over';ctx.globalAlpha=1;ctx.drawImage(edge,0,0);ctx.restore();return;
   }
 
   // ── Bristle ────────────────────────────────────────────────────────────────
   if(bt==='bristle'){
-    // Each fiber is a continuous line — draw segment-by-segment so alpha
-    // is correct per segment (not just the last point's value for whole path)
     const fiberCount=Math.max(4,Math.floor(sz*0.6)),spread=sz*0.45;
     const fibers=Array.from({length:fiberCount},()=>({
       ox:(rng()-.5)*spread*2,oy:(rng()-.5)*spread*2,
@@ -1002,16 +1005,15 @@ function renderStroke(ctx,s){
     ctx.globalCompositeOperation='source-over';
     for(let b=0;b<fiberCount;b++){
       const f=fibers[b];
-      const lw=Math.max(0.5,f.thick*sz/fiberCount*1.6);
-      // Draw each segment separately so globalAlpha is set before each stroke
       for(let i=1;i<pts.length;i++){
-        const p0=pts[i-1],p1=pts[i];
+        const p=calcP(pts,prs,i); // pressure varies fiber width
+        const lw=Math.max(0.4,f.thick*sz/fiberCount*1.6*p);
         const nx=pts[Math.min(i+1,pts.length-1)][0],ny=pts[Math.min(i+1,pts.length-1)][1];
         const px2=pts[Math.max(i-1,0)][0],py2=pts[Math.max(i-1,0)][1];
         const vx=(nx-px2)*0.15*(1-f.stiffness),vy=(ny-py2)*0.15*(1-f.stiffness);
         const taper=getTaper(i,pts.length);
-        const fx0=p0[0]+(f.ox+vx)*taper,fy0=p0[1]+(f.oy+vy)*taper;
-        const fx1=p1[0]+(f.ox+vx)*taper,fy1=p1[1]+(f.oy+vy)*taper;
+        const fx0=pts[i-1][0]+(f.ox+vx)*taper,fy0=pts[i-1][1]+(f.oy+vy)*taper;
+        const fx1=pts[i][0]+(f.ox+vx)*taper,fy1=pts[i][1]+(f.oy+vy)*taper;
         ctx.globalAlpha=Math.min(0.9,op*bd.alpha*fl*f.stiffness*taper);
         ctx.strokeStyle=col;ctx.lineWidth=lw;
         ctx.beginPath();ctx.moveTo(fx0,fy0);ctx.lineTo(fx1,fy1);ctx.stroke();
@@ -1076,15 +1078,29 @@ function renderStroke(ctx,s){
     ctx.restore();return;
   }
 
-  // ── Pen/Marker: single full-path draw ─────────────────────────────────────
+  // ── Pen/Marker: smooth path, per-segment pressure for pen ───────────────
   ctx.strokeStyle=col;ctx.lineCap=bd.cap||'round';ctx.lineJoin='round';
-  ctx.globalAlpha=op*bd.alpha*fl;
-  if(bd.pressure&&bt!=='marker'){
-    const avgP=prs&&prs.length?prs.reduce((a,b)=>a+(b||0.5),0)/prs.length:0.7;
-    const clampedP=Math.max(0.3,Math.min(1.0,avgP||0.7));
-    ctx.lineWidth=sz*bd.widthMult*clampedP;
+  if(bd.pressure&&bt!=='marker'&&prs&&prs.length>1){
+    // Per-segment: pressure varies width, taper fades ends naturally
+    const cp=smoothPts(pts,sm);
+    for(let i=1;i<pts.length;i++){
+      const p=calcP(pts,prs,i),taper=getTaper(i,pts.length);
+      ctx.globalAlpha=op*bd.alpha*fl;
+      ctx.lineWidth=Math.max(0.5,sz*bd.widthMult*p*taper);
+      ctx.beginPath();
+      if(cp&&cp[i-1]){
+        ctx.moveTo(pts[i-1][0],pts[i-1][1]);
+        ctx.bezierCurveTo(cp[i-1][0],cp[i-1][1],cp[i-1][2],cp[i-1][3],pts[i][0],pts[i][1]);
+      }else{
+        ctx.moveTo(pts[i-1][0],pts[i-1][1]);ctx.lineTo(pts[i][0],pts[i][1]);
+      }
+      ctx.stroke();
+    }
+  }else{
+    ctx.globalAlpha=op*bd.alpha*fl;
+    ctx.lineWidth=sz*bd.widthMult;
     dPath(ctx,pts,sm);ctx.stroke();
-  }else{ctx.lineWidth=sz*bd.widthMult;dPath(ctx,pts,sm);ctx.stroke();}
+  }
   ctx.restore();
 }
 
@@ -1163,7 +1179,7 @@ function onMove(e){
   }
   const prev=curStroke.points[curStroke.points.length-1];
   curStroke.points.push([x,y]);curStroke.pressures.push(e.pressure||0);lastX=x;lastY=y;
-  const needsFullRedraw=(brushType==='pen'||brushType==='marker'||brushType==='ink'||brushType==='pencil'||brushType==='pastel'||brushType==='watercolor'||brushType==='bristle');
+  const needsFullRedraw=(brushType==='pen'||brushType==='marker'||brushType==='ink'||brushType==='pencil'||brushType==='pastel'||brushType==='watercolor');
   if(needsFullRedraw){actCtx().clearRect(0,0,CW,CH);if(actLayer()?._committed)actCtx().putImageData(actLayer()._committed,0,0);renderStroke(actCtx(),curStroke);}
   else{renderStroke(actCtx(),{...curStroke,points:[prev,[x,y]],pressures:curStroke.pressures.slice(-2)});}
   composite();
@@ -1173,8 +1189,13 @@ function onUp(){
   if(_panDragging){_panDragging=false;body.classList.remove('dragging');return;}
   if(!isDrawing||!isDrawer)return;isDrawing=false;ptrId=null;
   if(curStroke?.points.length>0){
-    actCtx().clearRect(0,0,CW,CH);if(actLayer()?._committed)actCtx().putImageData(actLayer()._committed,0,0);
-    renderStroke(actCtx(),curStroke);if(actLayer())actLayer()._committed=actCtx().getImageData(0,0,CW,CH);
+    // Bristle: canvas already has the incremental accumulation — don't wipe and re-render
+    // (re-render would look different due to rng fiber positions)
+    if(brushType!=='bristle'&&brushType!=='airbrush'){
+      actCtx().clearRect(0,0,CW,CH);if(actLayer()?._committed)actCtx().putImageData(actLayer()._committed,0,0);
+      renderStroke(actCtx(),curStroke);
+    }
+    if(actLayer())actLayer()._committed=actCtx().getImageData(0,0,CW,CH);
     composite();wsSend({type:'draw',stroke:{...curStroke}});showSyncSpin();
     addLog(`Stroke: ${brushType} pts=${curStroke.points.length}`,'draw');
   }
@@ -1270,6 +1291,7 @@ function _exitTransformMode(){
   _txActive=false;_txLayerIdx=-1;_txOrigData=null;
   document.getElementById('transform-overlay').classList.remove('active');
   document.getElementById('transform-indicator').classList.remove('show');
+  document.getElementById('btn-transform-tb').classList.remove('tx-active');
 }
 function startTransform(){
   const l=actLayer();if(!l){showToast('No active layer','warn');return;}
@@ -1280,6 +1302,7 @@ function startTransform(){
   updateTxBox();
   document.getElementById('transform-overlay').classList.add('active');
   document.getElementById('transform-indicator').classList.add('show');
+  document.getElementById('btn-transform-tb').classList.add('tx-active');
   closeAllPanels();showToast('Transform: drag handles • ESC cancel • Enter apply');
 }
 function updateTxBox(){
@@ -1336,6 +1359,10 @@ function endTransform(){
 
 document.getElementById('transform-done').addEventListener('click',e=>{e.stopPropagation();endTransform();});
 document.getElementById('transform-cancel').addEventListener('click',e=>{e.stopPropagation();cancelTransform();});
+document.getElementById('btn-transform-tb').addEventListener('click',()=>{
+  if(!isDrawer)return;
+  if(_txActive){endTransform();}else{startTransform();}
+});
 
 // Handle transform handles
 const txOverlay=document.getElementById('transform-overlay');

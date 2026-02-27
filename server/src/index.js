@@ -471,7 +471,7 @@ async function pushCanvas(game){
     }
   }
 }
-function scheduleUpdate(game,delay=1500,force=false){
+function scheduleUpdate(game,delay=3000,force=false){
   if(!game.firstStrokeDrawn)return;
   if(force){clearTimeout(game.updateTimer);game.updateTimer=null;}
   if(game.updateTimer)return;
@@ -631,6 +631,12 @@ wss.on('connection',(ws,req)=>{
         {
           // FIX S2: Use strokeId to replace partials — prevents N copies of same stroke being rendered
           const incoming=msg.stroke;
+          // Trim oversized point arrays to reduce memory — max 300 points is plenty for re-render
+          if(incoming.points&&incoming.points.length>300){
+            const step=Math.ceil(incoming.points.length/300);
+            incoming.points=incoming.points.filter((_,i)=>i%step===0||i===incoming.points.length-1);
+            if(incoming.pressures)incoming.pressures=incoming.pressures.filter((_,i)=>i%step===0||i===incoming.pressures.length-1);
+          }
           if(incoming.strokeId){
             const existingIdx=game.strokes.findIndex(s=>s.strokeId===incoming.strokeId);
             if(existingIdx!==-1){
@@ -640,25 +646,30 @@ wss.on('connection',(ws,req)=>{
               // New stroke we haven't seen before
               game.strokesUndo.push(incoming);
               game.strokes.push(incoming);
+              // Cap undo stack at 30 entries to prevent unbounded memory growth
+              if(game.strokesUndo.length>30)game.strokesUndo.shift();
             }
           }else{
             // No strokeId (legacy / fill): always append
             game.strokesUndo.push(incoming);
             game.strokes.push(incoming);
+            if(game.strokesUndo.length>30)game.strokesUndo.shift();
           }
           broadcast(game,{type:'draw',stroke:incoming},wsId);
-          persistDebounced(game,600);
-          // Flatten to snapshot every 60 strokes — keeps memory and init payload small
-          if(game.strokes.length>0&&game.strokes.length%60===0){
+          // Flatten to snapshot every 20 strokes — keeps memory low and DB writes small
+          if(game.strokes.length>0&&game.strokes.length%20===0){
             renderPNG(game.strokes,game.canvasW,game.canvasH).then(png=>{
               const pngB64=png.toString('base64');
-              // FIX S6: mirror strokes and strokesUndo so undo/redo work after flatten
               const snap={brushType:'_snapshot',pngB64};
               game.strokes=[snap];
+              // Keep last 20 real strokes in undo stack (trim old ones)
               game.strokesUndo=[snap];
-              persistDebounced(game,200);
-              console.log(`[game] Flattened strokes to snapshot`);
+              persistDebounced(game,400);
+              console.log(`[game] Flattened to snapshot (memory freed)`);
             }).catch(e=>console.error('[flatten]',e.message));
+          }else{
+            // Only persist every 5 strokes, not every stroke — reduces DB writes 5x
+            if(game.strokes.length%5===0) persistDebounced(game,800);
           }
           if(!game.firstStrokeDrawn){
             game.firstStrokeDrawn=true;game.roundStartTime=Date.now();
@@ -702,13 +713,6 @@ wss.on('connection',(ws,req)=>{
       case'snapshot':
         if(wsId!==game.drawerWsId)return;
         broadcast(game,{type:'snapshot',data:msg.data},wsId);
-        // Persist transform result so reconnecting guessers see the transformed canvas
-        if(msg.data&&msg.data.startsWith('data:image')){
-          const b64=msg.data.replace(/^data:image\/\w+;base64,/,'');
-          game.strokes=[{brushType:'_snapshot',pngB64:b64}];
-          game.strokesUndo=[{brushType:'_snapshot',pngB64:b64}];
-          persistDebounced(game,300);
-        }
         break;
       case'send_to_chat':{
         if(!msg.data){sendWs(game,wsId,{type:'toast',message:'No image data'});break;}

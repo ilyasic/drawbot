@@ -248,7 +248,9 @@ function renderStroke(ctx,s){
         g.addColorStop(0.5, `rgba(${cr},${cg},${cb},${(peakA*0.25).toFixed(4)})`);
         g.addColorStop(1,   `rgba(${cr},${cg},${cb},0)`);
         oc.fillStyle=g;
-        oc.beginPath();oc.arc(bx,by,rad,0,Math.PI*2);oc.fill();
+        // fillRect on transparent off-screen: gradient fades to 0 at edges,
+        // so no rectangle corners are visible — safer than arc() on napi-rs
+        oc.fillRect(bx-rad,by-rad,rad*2,rad*2);
       }catch(e){}
     };
     _paintBlob(pts[0][0],pts[0][1]);
@@ -272,14 +274,14 @@ function renderStroke(ctx,s){
     ctx.strokeStyle=col;ctx.lineCap='round';ctx.lineJoin='round';
     ctx.globalCompositeOperation='source-over';
     for(let l=0;l<5;l++){
-      ctx.globalAlpha=op*0.025*fl;ctx.lineWidth=sz*bd.widthMult*pMult*(0.75+rng()*0.5);
+      ctx.globalAlpha=op*0.06*fl;ctx.lineWidth=sz*bd.widthMult*pMult*(0.75+rng()*0.5);
       ctx.beginPath();ctx.moveTo(pts[0][0]+(rng()-.5)*sz*.25,pts[0][1]+(rng()-.5)*sz*.25);
       for(let i=1;i<pts.length;i++)ctx.lineTo(pts[i][0]+(rng()-.5)*sz*.3,pts[i][1]+(rng()-.5)*sz*.3);
       ctx.stroke();
     }
     const edge=createCanvas(ctx.canvas.width,ctx.canvas.height);const ec=edge.getContext('2d');
     ec.strokeStyle=col;ec.lineCap='round';ec.lineJoin='round';
-    ec.lineWidth=sz*bd.widthMult*pMult+4;ec.globalAlpha=op*0.28*fl;
+    ec.lineWidth=sz*bd.widthMult*pMult+4;ec.globalAlpha=op*0.40*fl;
     ec.beginPath();ec.moveTo(pts[0][0],pts[0][1]);
     for(let i=1;i<pts.length;i++)ec.lineTo(pts[i][0],pts[i][1]);ec.stroke();
     ec.globalCompositeOperation='destination-out';ec.lineWidth=sz*bd.widthMult*pMult-1;ec.globalAlpha=1;
@@ -290,8 +292,8 @@ function renderStroke(ctx,s){
   }
   // ── Bristle: individual fibers that flex and converge at taper ends ───────
   if(bt==='bristle'){
-    const fiberCount=Math.max(4,Math.floor(sz*0.6));
-    const spread=sz*0.45;
+    const fiberCount=Math.max(6,Math.floor(sz*0.7));
+    const spread=sz*0.65;
     const fibers=Array.from({length:fiberCount},()=>({
       ox:(rng()-.5)*spread*2,oy:(rng()-.5)*spread*2,
       stiffness:0.4+rng()*0.6,thick:0.6+rng()*0.8,
@@ -309,7 +311,7 @@ function renderStroke(ctx,s){
         const taper=getTaper(i,pts.length);
         const fx0=pts[i-1][0]+(f.ox+vx)*taper,fy0=pts[i-1][1]+(f.oy+vy)*taper;
         const fx1=pts[i][0]+(f.ox+vx)*taper,fy1=pts[i][1]+(f.oy+vy)*taper;
-        ctx.globalAlpha=Math.min(0.9,op*bd.alpha*fl*f.stiffness*taper);
+        ctx.globalAlpha=Math.min(0.95,op*bd.alpha*fl*f.stiffness*taper*1.4);
         ctx.strokeStyle=col;ctx.lineWidth=lw;
         ctx.beginPath();ctx.moveTo(fx0,fy0);ctx.lineTo(fx1,fy1);ctx.stroke();
       }

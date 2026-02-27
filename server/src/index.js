@@ -236,19 +236,21 @@ function renderStroke(ctx,s){
   if(bt==='airbrush'){
     const cr=parseInt(col.slice(1,3),16),cg=parseInt(col.slice(3,5),16),cb=parseInt(col.slice(5,7),16);
     const rad=Math.max(4,sz*(4.5-fd*2.0));
-    const stepDist=Math.max(1,rad*0.20);
-    const peakA=op*(0.015+fd*0.07);
+    const stepDist=Math.max(1,rad*0.15);
+    const peakA=op*(0.07+fd*0.20);
+    const off=createCanvas(ctx.canvas.width,ctx.canvas.height);
+    const oc=off.getContext('2d');
+    oc.globalCompositeOperation='source-over';
     const _paintBlob=(bx,by)=>{
       try{
-        const g=ctx.createRadialGradient(bx,by,0,bx,by,rad);
-        g.addColorStop(0,  `rgba(${cr},${cg},${cb},${peakA.toFixed(4)})`);
-        g.addColorStop(0.4,`rgba(${cr},${cg},${cb},${(peakA*0.4).toFixed(4)})`);
-        g.addColorStop(1,  `rgba(${cr},${cg},${cb},0)`);
-        ctx.globalAlpha=1;ctx.fillStyle=g;
-        ctx.beginPath();ctx.arc(bx,by,rad,0,Math.PI*2);ctx.fill();
+        const g=oc.createRadialGradient(bx,by,0,bx,by,rad);
+        g.addColorStop(0,   `rgba(${cr},${cg},${cb},${peakA.toFixed(4)})`);
+        g.addColorStop(0.5, `rgba(${cr},${cg},${cb},${(peakA*0.25).toFixed(4)})`);
+        g.addColorStop(1,   `rgba(${cr},${cg},${cb},0)`);
+        oc.fillStyle=g;
+        oc.beginPath();oc.arc(bx,by,rad,0,Math.PI*2);oc.fill();
       }catch(e){}
     };
-    ctx.globalCompositeOperation='source-over';
     _paintBlob(pts[0][0],pts[0][1]);
     let lpx=pts[0][0],lpy=pts[0][1];
     for(let i=1;i<pts.length;i++){
@@ -258,10 +260,13 @@ function renderStroke(ctx,s){
       for(let s=1;s<=steps;s++)_paintBlob(lpx+dx*(s/steps),lpy+dy*(s/steps));
       lpx=pts[i][0];lpy=pts[i][1];
     }
+    ctx.globalAlpha=1;
+    ctx.globalCompositeOperation='source-over';
+    ctx.drawImage(off,0,0);
     ctx.restore();return;
   }
 
-  if(bt==='watercolor'){
+    if(bt==='watercolor'){
     const avgP=prs&&prs.length?prs.reduce((a,b)=>a+(b||0.5),0)/prs.length:0.7;
     const pMult=Math.max(0.4,Math.min(1.4,avgP));
     ctx.strokeStyle=col;ctx.lineCap='round';ctx.lineJoin='round';

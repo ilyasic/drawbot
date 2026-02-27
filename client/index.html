@@ -72,7 +72,8 @@ html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(
 #tx-move{background:rgba(255,255,255,.1);border:none;cursor:move;pointer-events:all;
   position:absolute;inset:0;transform:none;width:100%;height:100%;border-radius:0;}
 #transform-btns{position:fixed;bottom:max(24px,var(--safe-b));left:50%;transform:translateX(-50%);
-  display:flex;gap:8px;z-index:200;pointer-events:all;}
+  display:none;gap:8px;z-index:600;pointer-events:all;}
+#transform-btns.show{display:flex;}
 #transform-done,#transform-cancel{background:var(--btn-bg);color:#fff;border:none;padding:8px 20px;border-radius:20px;
   font-size:.78rem;font-weight:700;cursor:pointer;font-family:'Syne',sans-serif;pointer-events:all;box-shadow:0 3px 12px rgba(0,0,0,.5);}
 #transform-cancel{background:var(--surface3);color:var(--text2);}
@@ -607,10 +608,10 @@ body.panning.dragging #cv-draw{cursor:grabbing!important;}
       <div class="tx-handle" id="tx-rot">↻</div>
       <div class="tx-handle" id="tx-move"></div>
     </div>
-    <div id="transform-btns">
-      <button id="transform-cancel">✕ Cancel</button>
-      <button id="transform-done">✓ Apply</button>
-    </div>
+  </div>
+  <div id="transform-btns">
+    <button id="transform-cancel">✕ Cancel</button>
+    <button id="transform-done">✓ Apply</button>
   </div>
   <div id="waiting-overlay"><button id="start-btn">▶ NEW ROUND</button></div>
   <div id="mask-indicator">MASK EDITING</div>
@@ -643,6 +644,7 @@ body.panning.dragging #cv-draw{cursor:grabbing!important;}
     <button class="tbtn"      id="btn-redo">↪</button>
     <button class="tbtn tred" id="btn-clear">✕</button>
     <button class="tbtn"      id="btn-layers">📋</button>
+    <button class="tbtn"      id="btn-transform-tb">⧁</button>
     <div id="sz-op-label"><div id="sz-op-size">8px</div><div id="sz-op-opacity">100%</div></div>
   </div>
 </div>
@@ -1288,11 +1290,12 @@ let _txX=0,_txY=0,_txW=0,_txH=0,_txRot=0,_txCX=0,_txCY=0;
 let _txDragging=false,_txHandle=null,_txSX=0,_txSY=0,_txOX=0,_txOY=0,_txOW=0,_txOH=0;
 
 function _exitTransformMode(){
-  // Single cleanup path — always safe to call
   _txActive=false;_txLayerIdx=-1;_txOrigData=null;
   document.getElementById('transform-overlay').classList.remove('active');
   document.getElementById('transform-indicator').classList.remove('show');
   document.getElementById('layer-transform').classList.remove('on');
+  document.getElementById('btn-transform-tb')?.classList.remove('tx-active');
+  document.getElementById('transform-btns').classList.remove('show');
 }
 function startTransform(){
   const l=actLayer();if(!l){showToast('No active layer','warn');return;}
@@ -1304,6 +1307,8 @@ function startTransform(){
   document.getElementById('transform-overlay').classList.add('active');
   document.getElementById('transform-indicator').classList.add('show');
   document.getElementById('layer-transform').classList.add('on');
+  document.getElementById('btn-transform-tb')?.classList.add('tx-active');
+  document.getElementById('transform-btns').classList.add('show');
   closeAllPanels();showToast('Transform: drag handles • ESC cancel • Enter apply');
 }
 function updateTxBox(){
@@ -1360,6 +1365,10 @@ function endTransform(){
 
 document.getElementById('transform-done').addEventListener('click',e=>{e.stopPropagation();endTransform();});
 document.getElementById('transform-cancel').addEventListener('click',e=>{e.stopPropagation();cancelTransform();});
+document.getElementById('btn-transform-tb')?.addEventListener('click',()=>{
+  if(!isDrawer)return;
+  if(_txActive){endTransform();}else{startTransform();}
+});
 
 
 // Handle transform handles

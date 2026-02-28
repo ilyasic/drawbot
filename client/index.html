@@ -1216,7 +1216,8 @@ function sendFinalImage(cb){
   }catch(e){console.error('[final_image]',e);}
   if(cb)setTimeout(cb,100); // let WS send before proceeding
 }
-  // Send flattened canvas to server so virtual canvas matches client exactly.
+function sendVcUpdate(){
+// Send flattened canvas to server so virtual canvas matches client exactly.
   // Used after operations that are layer-dependent: fill, eraser, layer merge/delete.
   if(!isDrawer)return;
   try{
@@ -1843,7 +1844,7 @@ function connect(){
   if(!myName||!myRoom)return;
   addLog(`Connecting… room=${myRoom} name=${myName}`,'system');
   const proto=location.protocol==='https:'?'wss':'ws';
-  ws=new WebSocket(`${proto}://${location.host}/ws?room=${encodeURIComponent(myRoom)}&canvas=${encodeURIComponent(myCanvasId)}&name=${encodeURIComponent(myName)}&userId=${encodeURIComponent(myTgId)}`);
+  ws=new WebSocket(`${proto}://${location.host}/ws?room=${encodeURIComponent(myRoom)}&name=${encodeURIComponent(myName)}&userId=${encodeURIComponent(myTgId)}`);
   ws.onopen=()=>{document.getElementById('conn-dot').style.background='var(--green)';addLog(`WebSocket connected`,'connect');wsSend({type:'canvas_size',w:CW,h:CH});};
   ws.onmessage=({data})=>{
     let m;try{m=JSON.parse(data);}catch{return;}
@@ -1936,14 +1937,15 @@ function connect(){
         if(m.correct){showToast(`🎉 ${m.name} got it!`,'ok');sfxCorrect();}break;
       case'score_update':
         addChat('ok',`🏆 ${m.name} +${m.pts}pts${m.timeBonus?' ⚡+'+m.timeBonus:''}`);
-        // Haptic on correct guess
         window.Telegram?.WebApp?.HapticFeedback?.notificationOccurred('success');
+        // Drawer sends final image now — arrives before server calls postResult
+        if(isDrawer)sendFinalImage(null);
         if(m.board){updatePlayers(m.board);updateLb(m.board);}break;
       case'round_end':
         if(_txActive)cancelTransform();
         sfxRoundEnd();
-        // Drawer sends pixel-perfect final image immediately so postResult uses it
-        if(isDrawer)sendFinalImage(null);
+        // Send final image for timeout/done cases (guess case handled by score_update)
+        if(isDrawer&&!m.keepDrawing&&!m.guesser)sendFinalImage(null);
         if(m.keepDrawing&&isDrawer){
           // Someone guessed — drawer keeps canvas, no popup, just a banner
           const b=document.createElement('div');
@@ -1974,18 +1976,32 @@ function connect(){
         document.getElementById('waiting-overlay').classList.remove('hidden');
         addLog(`Round end: word=${m.word} guesser=${m.guesser||'none'} reason=${m.reason}`,'round');break;
       case'new_canvas':
-        // Server created a fresh canvas — drawer gets new word, everyone clears
         myCanvasId=m.canvasId||myCanvasId;
+        isDrawing=false;curStroke=null;
         clearAll();
         if(isDrawer){
           currentWord=m.word||'';
           document.getElementById('word-display').textContent=(m.word||'').toUpperCase();
           document.getElementById('s-current-word').textContent=(m.word||'').toUpperCase();
+          // Keep toolbar visible — drawer is still active on new canvas
+          document.getElementById('toolbar').classList.add('visible');
           showToast('New canvas! Draw: '+m.word,'ok');
         }
         document.getElementById('waiting-overlay').classList.add('hidden');
-        addLog(`New canvas started: ${m.canvasId}`,'round');
+        document.getElementById('role-pill').className='role-pill drawer';
+        document.getElementById('role-pill').textContent='DRAW';
+        addLog(`New canvas: ${m.canvasId}`,'round');
         break;
+      case'locked':{
+        // No active game — show lock screen and close
+        const lock=document.createElement('div');
+        lock.style.cssText='position:fixed;inset:0;background:var(--bg,#1a1a2e);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;z-index:9999;';
+        lock.innerHTML=`<div style="font-size:3rem">🔒</div><div style="color:var(--text1,#fff);font-size:1.1rem;font-weight:700;text-align:center;padding:0 24px">${m.message||'No active game'}</div><div style="color:var(--text3,#888);font-size:.85rem;text-align:center;padding:0 32px">Ask the group admin to start a game with /startgame</div>`;
+        document.body.appendChild(lock);
+        // Close WebApp after 2.5s
+        setTimeout(()=>window.Telegram?.WebApp?.close(),2500);
+        break;
+      }
       case'status':document.getElementById('word-display').textContent=m.message;addChat('sys',m.message);break;
       case'player_joined':
         addChat('sys',`${m.name} joined (${m.count})`);
@@ -2043,8 +2059,12 @@ function doJoin(roomId,playerName,tgId,canvasId){
     doJoin(parsed.roomId,'Player'+~~(Math.random()*900+100),tgId,parsed.canvasId);
   }else{
     if(attempt<15){setTimeout(()=>tryAuto(attempt+1),100);return;}
-    document.getElementById('join-overlay').style.display='flex';
-    const n=tgName||'';if(n)document.getElementById('name-in').value=n;
+    // No room param — show lock screen, canvas only opens from Telegram
+    const lock=document.createElement('div');
+    lock.style.cssText='position:fixed;inset:0;background:#1a1a2e;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;z-index:9999;';
+    lock.innerHTML='<div style="font-size:3rem">🔒</div><div style="color:#fff;font-size:1.1rem;font-weight:700;text-align:center;padding:0 24px">Open this from Telegram</div><div style="color:#888;font-size:.85rem;text-align:center;padding:0 32px">This canvas is only accessible during an active game session</div>';
+    document.body.appendChild(lock);
+    setTimeout(()=>window.Telegram?.WebApp?.close(),3000);
   }
 })(0);
 

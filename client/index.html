@@ -1152,6 +1152,8 @@ function onDown(e){
     saveUndo();const ctx=actCtx();floodFill(ctx,x,y,currentColor,30);
     if(actLayer())actLayer()._committed=ctx.getImageData(0,0,CW,CH);composite();
     wsSend({type:'draw',stroke:{color:currentColor,size:brushSize,opacity:brushOpacity,flow:brushFlow,brushType:'fill',smoothing:0,points:[[x,y]],seed:0,isMask:editMask,fogDensity}});
+    // Send flattened canvas to server so virtual canvas matches (fill is layer-dependent)
+    sendVcUpdate();
     showSyncSpin();addLog(`Fill (${~~x},${~~y})=${currentColor}`,'draw');return;
   }
   ptrId=e.pointerId;area.setPointerCapture?.(ptrId);saveUndo();isDrawing=true;
@@ -1191,19 +1193,29 @@ function onMove(e){
   scheduleComposite();
   if(curStroke.points.length%8===0){wsSend({type:'draw',stroke:{...curStroke}});showSyncSpin();}
 }
+function sendVcUpdate(){
+  // Send flattened canvas to server so virtual canvas matches client exactly.
+  // Used after operations that are layer-dependent: fill, eraser, layer merge/delete.
+  if(!isDrawer)return;
+  try{
+    const tmp=document.createElement('canvas');tmp.width=CW;tmp.height=CH;
+    flattenTo(tmp.getContext('2d'));
+    wsSend({type:'vc_update',data:tmp.toDataURL('image/jpeg',0.82)});
+  }catch(e){console.error('[vc_update]',e);}
+}
 function onUp(){
   if(_panDragging){_panDragging=false;body.classList.remove('dragging');return;}
   if(!isDrawing||!isDrawer)return;isDrawing=false;ptrId=null;
   if(curStroke?.points.length>0){
-    // Bristle: canvas already has the incremental accumulation — don't wipe and re-render
-    // (re-render would look different due to rng fiber positions)
     if(brushType!=='bristle'&&brushType!=='airbrush'){
       actCtx().clearRect(0,0,CW,CH);if(actLayer()?._committed)actCtx().putImageData(actLayer()._committed,0,0);
       renderStroke(actCtx(),curStroke);
     }
     if(actLayer())actLayer()._committed=actCtx().getImageData(0,0,CW,CH);
     composite();wsSend({type:'draw',stroke:{...curStroke}});showSyncSpin();
-    addLog(`Stroke: ${brushType} pts=${curStroke.points.length}`,'draw');
+    // Eraser is layer-dependent (destination-out reveals below) — sync vc after stroke
+    if(curStroke.brushType==='eraser')sendVcUpdate();
+    addLog(`Stroke: ${curStroke.brushType} pts=${curStroke.points.length}`,'draw');
   }
   curStroke=null;
 }
@@ -1416,8 +1428,8 @@ document.getElementById('layer-transform').addEventListener('click',()=>{startTr
 document.getElementById('layer-add').addEventListener('click',()=>{if(layers.length>=MAX_LAYERS){showToast('Max layers','warn');return;}const nl=mkLayer(`Layer ${layers.length+1}`);layers.push(nl);actIdx=layers.length-1;renderLayerPanel();composite();showToast('Layer added');});
 document.getElementById('layer-add-mask').addEventListener('click',()=>{const l=actLayer();if(!l)return;if(!l.maskCanvas){const mc=document.createElement('canvas');mc.width=CW;mc.height=CH;const mctx=mc.getContext('2d');mctx.fillStyle='#fff';mctx.fillRect(0,0,CW,CH);l.maskCanvas=mc;l.maskCtx=mctx;}actIdx=layers.indexOf(l);editMask=!editMask;renderLayerPanel();updateMaskInd();composite();showToast(editMask?'Editing mask':'Mask added');});
 document.getElementById('layer-duplicate').addEventListener('click',()=>{if(layers.length>=MAX_LAYERS){showToast('Max layers','warn');return;}const l=actLayer();if(!l)return;const nl=mkLayer(l.name+' copy');nl.ctx.drawImage(l.canvas,0,0);nl.opacity=l.opacity;nl.blendMode=l.blendMode;nl._committed=nl.ctx.getImageData(0,0,CW,CH);if(l.maskCanvas){const mc=document.createElement('canvas');mc.width=CW;mc.height=CH;const mctx=mc.getContext('2d');mctx.drawImage(l.maskCanvas,0,0);nl.maskCanvas=mc;nl.maskCtx=mctx;}layers.push(nl);actIdx=layers.length-1;renderLayerPanel();composite();showToast('Layer duplicated');});
-document.getElementById('layer-merge-down').addEventListener('click',()=>{if(actIdx===0){showToast('Nothing below','warn');return;}const top=layers[actIdx],bot=layers[actIdx-1];bot.ctx.save();bot.ctx.globalAlpha=top.opacity;bot.ctx.globalCompositeOperation=top.blendMode||'source-over';bot.ctx.drawImage(top.canvas,0,0);bot.ctx.restore();bot._committed=bot.ctx.getImageData(0,0,CW,CH);layers.splice(actIdx,1);actIdx--;renderLayerPanel();composite();showToast('Merged down');});
-document.getElementById('layer-flatten').addEventListener('click',()=>{if(!confirm('Flatten all layers?'))return;const tmp=document.createElement('canvas');tmp.width=CW;tmp.height=CH;flattenTo(tmp.getContext('2d'));layers=[];layers.push(mkLayer('Background'));layers[0].ctx.drawImage(tmp,0,0);layers[0]._committed=layers[0].ctx.getImageData(0,0,CW,CH);actIdx=0;editMask=false;renderLayerPanel();composite();showToast('Flattened','ok');});
+document.getElementById('layer-merge-down').addEventListener('click',()=>{if(actIdx===0){showToast('Nothing below','warn');return;}const top=layers[actIdx],bot=layers[actIdx-1];bot.ctx.save();bot.ctx.globalAlpha=top.opacity;bot.ctx.globalCompositeOperation=top.blendMode||'source-over';bot.ctx.drawImage(top.canvas,0,0);bot.ctx.restore();bot._committed=bot.ctx.getImageData(0,0,CW,CH);layers.splice(actIdx,1);actIdx--;renderLayerPanel();composite();showToast('Merged down');sendVcUpdate();});
+document.getElementById('layer-flatten').addEventListener('click',()=>{if(!confirm('Flatten all layers?'))return;const tmp=document.createElement('canvas');tmp.width=CW;tmp.height=CH;flattenTo(tmp.getContext('2d'));layers=[];layers.push(mkLayer('Background'));layers[0].ctx.drawImage(tmp,0,0);layers[0]._committed=layers[0].ctx.getImageData(0,0,CW,CH);actIdx=0;editMask=false;renderLayerPanel();composite();showToast('Flattened','ok');sendVcUpdate();});
 
 // ─── Color Picker ───
 let _cpH=210,_cpS=0.65,_cpV=0.18;
@@ -1514,24 +1526,25 @@ function showSyncDone(){document.getElementById('sync-spin').style.display='none
 
 // ─── Toast ───
 let _tt=null;const toastEl=document.getElementById('toast');
-function showToast(msg,cls=''){
-  // Use Telegram native popup — zero CSS, works outside mini app
+// Game events that deserve a Telegram native popup
+const GAME_TOASTS=new Set(['round_end','leaderboard','score','guessed','correct']);
+function showToast(msg,cls='',important=false){
   const tg=window.Telegram?.WebApp;
+  // Haptic for all toasts
   if(tg){
-    // Haptic feedback based on type
     if(cls==='ok')tg.HapticFeedback?.notificationOccurred('success');
     else if(cls==='err')tg.HapticFeedback?.notificationOccurred('error');
-    else tg.HapticFeedback?.notificationOccurred('warning');
-    // Short messages use native alert, longer use showPopup
-    if(msg.length<60){
-      tg.showPopup({message:msg,buttons:[{type:'close'}]},{});
-    }else{
-      tg.showAlert(msg);
-    }
-  }else{
-    // Fallback for browser testing
-    toastEl.textContent=msg;toastEl.className='show '+cls;clearTimeout(_tt);_tt=setTimeout(()=>toastEl.className='',2800);
+    else if(cls==='warn')tg.HapticFeedback?.notificationOccurred('warning');
+    else tg.HapticFeedback?.impactOccurred('light');
   }
+  // Important game events → Telegram popup; tool feedback → lightweight DOM toast
+  if(important&&tg){
+    tg.showPopup({message:msg,buttons:[{type:'close'}]});
+    return;
+  }
+  // DOM toast — fast, non-blocking, no tap needed
+  toastEl.textContent=msg;toastEl.className='show '+(cls||'');
+  clearTimeout(_tt);_tt=setTimeout(()=>toastEl.className='',2000);
 }
 
 // ─── Chat ───

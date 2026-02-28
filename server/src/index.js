@@ -30,43 +30,63 @@ db.pragma('journal_mode = WAL');
 db.pragma('synchronous = NORMAL');
 db.exec(`
   CREATE TABLE IF NOT EXISTS games (
-    chat_id TEXT PRIMARY KEY, phase TEXT NOT NULL DEFAULT 'idle',
+    canvas_id TEXT PRIMARY KEY,
+    chat_id TEXT NOT NULL, phase TEXT NOT NULL DEFAULT 'idle',
     drawer_tg_id TEXT, drawer_name TEXT, word TEXT,
     hint_revealed TEXT, strokes TEXT,
     round_start INTEGER DEFAULT 0, first_stroke INTEGER DEFAULT 0,
     last_hint_at INTEGER DEFAULT 0, pinned_msg_id INTEGER,
-    canvas_w INTEGER DEFAULT 1080, canvas_h INTEGER DEFAULT 1080, updated_at INTEGER
+    canvas_w INTEGER DEFAULT 1080, canvas_h INTEGER DEFAULT 1080,
+    status TEXT DEFAULT 'active',
+    final_jpeg TEXT,
+    updated_at INTEGER
   );
+  CREATE INDEX IF NOT EXISTS games_chat ON games(chat_id);
 `);
 try{db.exec(`ALTER TABLE games ADD COLUMN pinned_msg_id INTEGER`);}catch{}
 try{db.exec(`ALTER TABLE games ADD COLUMN canvas_w INTEGER DEFAULT 1080`);}catch{}
 try{db.exec(`ALTER TABLE games ADD COLUMN canvas_h INTEGER DEFAULT 1080`);}catch{}
+try{db.exec(`ALTER TABLE games ADD COLUMN canvas_id TEXT`);}catch{}
+try{db.exec(`ALTER TABLE games ADD COLUMN status TEXT DEFAULT 'active'`);}catch{}
+try{db.exec(`ALTER TABLE games ADD COLUMN final_jpeg TEXT`);}catch{}
+// Migrate old rows: set canvas_id = chat_id if null (backward compat)
+try{db.exec(`UPDATE games SET canvas_id=chat_id WHERE canvas_id IS NULL`);}catch{}
+try{db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS games_canvas ON games(canvas_id)`);}catch{}
+try{db.exec(`CREATE INDEX IF NOT EXISTS games_chat ON games(chat_id)`);}catch{}
 
 const stmtUpsert = db.prepare(`
-  INSERT INTO games (chat_id,phase,drawer_tg_id,drawer_name,word,hint_revealed,strokes,
-    round_start,first_stroke,last_hint_at,pinned_msg_id,canvas_w,canvas_h,updated_at)
-  VALUES (@chat_id,@phase,@drawer_tg_id,@drawer_name,@word,@hint_revealed,@strokes,
-    @round_start,@first_stroke,@last_hint_at,@pinned_msg_id,@canvas_w,@canvas_h,@updated_at)
-  ON CONFLICT(chat_id) DO UPDATE SET
+  INSERT INTO games (canvas_id,chat_id,phase,drawer_tg_id,drawer_name,word,hint_revealed,strokes,
+    round_start,first_stroke,last_hint_at,pinned_msg_id,canvas_w,canvas_h,status,final_jpeg,updated_at)
+  VALUES (@canvas_id,@chat_id,@phase,@drawer_tg_id,@drawer_name,@word,@hint_revealed,@strokes,
+    @round_start,@first_stroke,@last_hint_at,@pinned_msg_id,@canvas_w,@canvas_h,@status,@final_jpeg,@updated_at)
+  ON CONFLICT(canvas_id) DO UPDATE SET
     phase=excluded.phase,drawer_tg_id=excluded.drawer_tg_id,drawer_name=excluded.drawer_name,
     word=excluded.word,hint_revealed=excluded.hint_revealed,strokes=excluded.strokes,
     round_start=excluded.round_start,first_stroke=excluded.first_stroke,
     last_hint_at=excluded.last_hint_at,pinned_msg_id=excluded.pinned_msg_id,
-    canvas_w=excluded.canvas_w,canvas_h=excluded.canvas_h,updated_at=excluded.updated_at
+    canvas_w=excluded.canvas_w,canvas_h=excluded.canvas_h,
+    status=excluded.status,final_jpeg=excluded.final_jpeg,updated_at=excluded.updated_at
 `);
-const stmtGet = db.prepare(`SELECT * FROM games WHERE chat_id = ?`);
-const stmtAll = db.prepare(`SELECT * FROM games WHERE phase != 'idle'`);
+const stmtGet    = db.prepare(`SELECT * FROM games WHERE canvas_id = ?`);
+const stmtGetChat= db.prepare(`SELECT * FROM games WHERE chat_id = ? ORDER BY updated_at DESC`);
+const stmtAll    = db.prepare(`SELECT * FROM games WHERE phase != 'idle'`);
+// Get active canvas for a chat (the one currently being drawn)
+const stmtActive = db.prepare(`SELECT * FROM games WHERE chat_id=? AND phase='drawing' ORDER BY updated_at DESC LIMIT 1`);
+// Get latest canvas (any phase) for a chat
+const stmtLatest = db.prepare(`SELECT * FROM games WHERE chat_id=? ORDER BY updated_at DESC LIMIT 1`);
 
 function persistGame(game){
   try{
     stmtUpsert.run({
-      chat_id:game.chatId,phase:game.phase,drawer_tg_id:game.drawerTgId||null,
-      drawer_name:game.drawerName||'',word:game.word||null,
-      hint_revealed:JSON.stringify(game.hintRevealed||[]),
+      canvas_id:game.canvasId,chat_id:game.chatId,phase:game.phase,
+      drawer_tg_id:game.drawerTgId||null,drawer_name:game.drawerName||'',
+      word:game.word||null,hint_revealed:JSON.stringify(game.hintRevealed||[]),
       strokes:JSON.stringify(game.strokes||[]),
       round_start:game.roundStartTime||0,first_stroke:game.firstStrokeDrawn?1:0,
       last_hint_at:game.lastHintAt||0,pinned_msg_id:game.pinnedMsgId||null,
       canvas_w:game.canvasW||DEFAULT_CW,canvas_h:game.canvasH||DEFAULT_CH,
+      status:game.status||'active',
+      final_jpeg:game.finalJpeg||null,
       updated_at:Date.now(),
     });
   }catch(e){console.error('[db]',e.message);}
@@ -242,20 +262,68 @@ async function vcRebuild(game){
   }
 }
 
-// ── Game state ────────────────────────────────────────────────────────────────
+// canvases Map: canvasId → game object
+// chatActiveCanvas Map: chatId → canvasId of currently drawing canvas
 const games=new Map();
-function makeGame(chatId){return{chatId,phase:'idle',drawerTgId:null,drawerName:'',drawerWsId:null,word:null,hintRevealed:[],strokes:[],strokesUndo:[],roundStartTime:0,firstStrokeDrawn:false,lastHintAt:0,roundTimer:null,hintTimer:null,updateTimer:null,pinnedMsgId:null,scores:new Map(),clients:new Map(),canvasW:DEFAULT_CW,canvasH:DEFAULT_CH,retryAfterUntil:0,vc:null};}
+const chatActiveCanvas=new Map(); // chatId → canvasId
+
+function makeGame(chatId,canvasId){
+  return{chatId,canvasId:canvasId||chatId,phase:'idle',drawerTgId:null,drawerName:'',
+    drawerWsId:null,word:null,hintRevealed:[],strokes:[],strokesUndo:[],
+    roundStartTime:0,firstStrokeDrawn:false,lastHintAt:0,roundTimer:null,
+    hintTimer:null,updateTimer:null,pinnedMsgId:null,scores:new Map(),
+    clients:new Map(),canvasW:DEFAULT_CW,canvasH:DEFAULT_CH,
+    retryAfterUntil:0,vc:null,status:'active',finalJpeg:null};
+}
 function rowToGame(row){
-  const g=makeGame(row.chat_id);
-  g.phase=row.phase;g.drawerTgId=row.drawer_tg_id||null;g.drawerName=row.drawer_name||'';g.word=row.word||null;
-  g.hintRevealed=JSON.parse(row.hint_revealed||'[]');g.strokes=JSON.parse(row.strokes||'[]');g.strokesUndo=[];
-  g.roundStartTime=row.round_start||0;g.firstStrokeDrawn=row.first_stroke===1;g.lastHintAt=row.last_hint_at||0;
-  g.pinnedMsgId=row.pinned_msg_id||null;g.canvasW=row.canvas_w||DEFAULT_CW;g.canvasH=row.canvas_h||DEFAULT_CH;
+  const g=makeGame(row.chat_id,row.canvas_id||row.chat_id);
+  g.phase=row.phase;g.drawerTgId=row.drawer_tg_id||null;g.drawerName=row.drawer_name||'';
+  g.word=row.word||null;g.hintRevealed=JSON.parse(row.hint_revealed||'[]');
+  g.strokes=JSON.parse(row.strokes||'[]');g.strokesUndo=[];
+  g.roundStartTime=row.round_start||0;g.firstStrokeDrawn=row.first_stroke===1;
+  g.lastHintAt=row.last_hint_at||0;g.pinnedMsgId=row.pinned_msg_id||null;
+  g.canvasW=row.canvas_w||DEFAULT_CW;g.canvasH=row.canvas_h||DEFAULT_CH;
+  g.status=row.status||'active';g.finalJpeg=row.final_jpeg||null;
   if(g.strokes.length>0&&g.phase==='drawing'){g.vc=makeVC(g.canvasW,g.canvasH);vcRebuild(g).catch(()=>{});}
   return g;
 }
-function getOrMakeGame(chatId){const k=String(chatId);if(!games.has(k)){const row=stmtGet.get(k);if(row){const g=rowToGame(row);games.set(k,g);return g;}games.set(k,makeGame(k));}return games.get(k);}
-function restoreAll(){const rows=stmtAll.all();for(const row of rows){const g=rowToGame(row);games.set(row.chat_id,g);}console.log(`[db] Restored ${rows.length} game(s)`);}
+function getActiveGame(chatId){
+  // Return in-memory active canvas for this chat
+  const cid=chatActiveCanvas.get(String(chatId));
+  if(cid)return games.get(cid)||null;
+  // Fallback: check all in-memory games for this chat
+  for(const [,g] of games){if(g.chatId===String(chatId)&&g.phase==='drawing')return g;}
+  return null;
+}
+function getOrMakeGame(chatId){
+  // Get or create the active game for this chat
+  const existing=getActiveGame(String(chatId));
+  if(existing)return existing;
+  // Try loading from DB
+  const row=stmtActive.get(String(chatId));
+  if(row){const g=rowToGame(row);games.set(g.canvasId,g);chatActiveCanvas.set(g.chatId,g.canvasId);return g;}
+  // Make new
+  const g=makeGame(String(chatId),String(chatId));
+  games.set(g.canvasId,g);
+  return g;
+}
+function getOrMakeGameByCanvas(canvasId,chatId){
+  if(games.has(canvasId))return games.get(canvasId);
+  const row=stmtGet.get(canvasId);
+  if(row){const g=rowToGame(row);games.set(g.canvasId,g);return g;}
+  const g=makeGame(String(chatId),canvasId);
+  games.set(canvasId,g);
+  return g;
+}
+function restoreAll(){
+  const rows=stmtAll.all();
+  for(const row of rows){
+    const g=rowToGame(row);
+    games.set(g.canvasId,g);
+    if(g.phase==='drawing')chatActiveCanvas.set(g.chatId,g.canvasId);
+  }
+  console.log(`[db] Restored ${rows.length} canvas(es)`);
+}
 
 function broadcast(game,msg,skip=null){const d=JSON.stringify(msg);game.clients.forEach((c,id)=>{if(id!==skip&&c.ws.readyState===WebSocket.OPEN)c.ws.send(d);});}
 function sendWs(game,wsId,msg){const c=game.clients.get(wsId);if(c&&c.ws.readyState===WebSocket.OPEN)c.ws.send(JSON.stringify(msg));}
@@ -267,11 +335,10 @@ function hintCaption(game){
   const cd=Math.ceil((hintCooldownMs(game)-(Date.now()-game.lastHintAt))/1000);
   // Before first stroke: no hint button yet, just letter count
   const hintBtn=game.firstStrokeDrawn
-    ? Markup.button.callback(cd<=0?'💡 Hint':`⏳ Hint (${cd}s)`,`hint:${game.chatId}`)
-    : Markup.button.callback(`${game.word.length} letters — drawing starting…`,`noop:${game.chatId}`);
-  // Open Canvas button so drawer can return if they closed the mini app
+    ? Markup.button.callback(cd<=0?'💡 Hint':`⏳ Hint (${cd}s)`,`hint:${game.canvasId}`)
+    : Markup.button.callback(`${game.word.length} letters — drawing starting…`,`noop:${game.canvasId}`);
   const canvasUrl=botUsername
-    ? `https://t.me/${botUsername}/${WEBAPP_SHORT_NAME}?startapp=${encodeURIComponent(game.chatId+'__'+game.drawerTgId)}`
+    ? `https://t.me/${botUsername}/${WEBAPP_SHORT_NAME}?startapp=${encodeURIComponent(game.chatId+'__'+game.drawerTgId+'__'+game.canvasId)}`
     : null;
   const rows=canvasUrl ? [[hintBtn],[Markup.button.url('🖌 Open Canvas',canvasUrl)]] : [[hintBtn]];
   return{
@@ -312,8 +379,14 @@ function revealNextHint(game){
 }
 
 async function postResult(game,guesser,reason){
-  const jpeg=vcJpeg(game);
-  const lines=[`✅ *Round Over!*`,``,`🖌 Drawer: *${game.drawerName}*`,`🎯 Word: *${game.word}*`,guesser?`🏆 Guessed by: *${guesser}*`:reason==='all_hints'?`🔤 All hints revealed!`:reason==='stopped'?`🛑 Stopped.`:`😮 Round ended.`,``,`📊 *Leaderboard:*`,fmtLb(game),``,`_Use /startgame to play again!_`].join('\n');
+  // Use browser-sourced final image if available (pixel-perfect colors)
+  // Fall back to napi-rs vcJpeg if drawer didn't send final_image
+  const jpeg=game.finalJpeg
+    ? Buffer.from(game.finalJpeg,'base64')
+    : vcJpeg(game);
+  const lines=[`✅ *Round Over!*`,``,`🖌 Drawer: *${game.drawerName}*`,`🎯 Word: *${game.word}*`,
+    guesser?`🏆 Guessed by: *${guesser}*`:reason==='all_hints'?`🔤 All hints revealed!`:reason==='stopped'?`🛑 Stopped.`:`😮 Round ended.`,
+    ``,`📊 *Leaderboard:*`,fmtLb(game),``,`_Use /startgame to play again!_`].join('\n');
   try{
     if(game.pinnedMsgId&&jpeg){await bot.telegram.editMessageMedia(game.chatId,game.pinnedMsgId,null,{type:'photo',media:{source:jpeg,filename:`${game.word}.jpg`},caption:lines,parse_mode:'Markdown'},Markup.inlineKeyboard([]));}
     else if(jpeg){await bot.telegram.sendPhoto(game.chatId,{source:jpeg,filename:`${game.word}.jpg`},{caption:lines,parse_mode:'Markdown'});}
@@ -323,14 +396,20 @@ async function postResult(game,guesser,reason){
 
 async function endGame(game,guesser,reason){
   if(game.phase==='ended'||game.phase==='idle')return;
-  game.phase='ended';clearTimeout(game.roundTimer);clearTimeout(game.hintTimer);clearTimeout(game.updateTimer);game.roundTimer=game.hintTimer=game.updateTimer=null;
-  console.log(`[game] END chatId=${game.chatId} word=${game.word} guesser=${guesser||'none'} reason=${reason}`);
+  game.phase='ended';game.status=guesser?'completed':'pending_guess';
+  clearTimeout(game.roundTimer);clearTimeout(game.hintTimer);clearTimeout(game.updateTimer);
+  game.roundTimer=game.hintTimer=game.updateTimer=null;
+  console.log(`[game] END chatId=${game.chatId} canvasId=${game.canvasId} word=${game.word} guesser=${guesser||'none'} reason=${reason}`);
   if(game.drawerWsId)sendWs(game,game.drawerWsId,{type:'round_end',word:game.word,drawerName:game.drawerName,guesser:guesser||null,reason,board:leaderboard(game),drawerFinish:true,keepDrawing:reason==='guess'});
   broadcast(game,{type:'round_end',word:game.word,drawerName:game.drawerName,guesser:guesser||null,reason,board:leaderboard(game)},game.drawerWsId);
   await postResult(game,guesser,reason);
+  // Remove from active canvas tracking
+  if(chatActiveCanvas.get(game.chatId)===game.canvasId)chatActiveCanvas.delete(game.chatId);
   const savedScores=new Map(game.scores);
   game.vc=null;game.word=null;game.hintRevealed=[];game.strokes=[];game.strokesUndo=[];
-  game.firstStrokeDrawn=false;game.lastHintAt=0;game.drawerTgId=null;game.drawerName='';game.drawerWsId=null;game.pinnedMsgId=null;game.scores=savedScores;
+  game.firstStrokeDrawn=false;game.lastHintAt=0;game.drawerTgId=null;game.drawerName='';
+  game.drawerWsId=null;game.pinnedMsgId=null;game.scores=savedScores;
+  // Keep finalJpeg in game for DB — it's the permanent record of this canvas
   setTimeout(()=>{game.phase='idle';persistGame(game);},3000);
 }
 
@@ -347,19 +426,19 @@ bot.command('startgame',async(ctx)=>{
   try{await bot.telegram.pinChatMessage(chatId,msg.message_id,{disable_notification:true});}catch{}
   persistGame(game);
 });
-bot.command('stopgame',async(ctx)=>{const game=games.get(String(ctx.chat.id));if(!game||game.phase==='idle')return ctx.reply('No active game.');await endGame(game,null,'stopped');ctx.reply('🛑 Stopped.');});
+bot.command('stopgame',async(ctx)=>{const game=getActiveGame(String(ctx.chat.id));if(!game||game.phase==='idle')return ctx.reply('No active game.');await endGame(game,null,'stopped');ctx.reply('🛑 Stopped.');});
 bot.command('skipword',async(ctx)=>{
-  const game=games.get(String(ctx.chat.id));if(!game||game.phase!=='drawing')return ctx.reply('No active round.');
+  const game=getActiveGame(String(ctx.chat.id));if(!game||game.phase!=='drawing')return ctx.reply('No active round.');
   const nw=pickWord();game.word=nw;game.hintRevealed=new Array(nw.length).fill(false);game.strokes=[];game.strokesUndo=[];game.firstStrokeDrawn=false;game.lastHintAt=0;
   if(game.vc){game.vc.ctx.fillStyle='#ffffff';game.vc.ctx.fillRect(0,0,game.canvasW,game.canvasH);}
   clearTimeout(game.hintTimer);game.hintTimer=null;persistGame(game);
   if(game.drawerWsId)sendWs(game,game.drawerWsId,{type:'role',role:'drawer',word:nw,round:1,reconnect:false});
   broadcast(game,{type:'clear'},game.drawerWsId);broadcast(game,{type:'word_skipped',hint:buildHint(nw,game.hintRevealed)},game.drawerWsId);ctx.reply('✅ Word skipped!');
 });
-bot.command('leaderboard',async(ctx)=>{const game=games.get(String(ctx.chat.id));if(!game)return ctx.reply('No game.');ctx.reply(`📊 *Leaderboard*\n\n${fmtLb(game)}`,{parse_mode:'Markdown'});});
+bot.command('leaderboard',async(ctx)=>{const game=getActiveGame(String(ctx.chat.id));if(!game)return ctx.reply('No game.');ctx.reply(`📊 *Leaderboard*\n\n${fmtLb(game)}`,{parse_mode:'Markdown'});});
 
 bot.action(/^claim_draw:(.+)$/,async(ctx)=>{
-  const chatId=ctx.match[1],game=games.get(chatId);
+  const chatId=ctx.match[1],game=getOrMakeGame(chatId);
   if(!game)return ctx.answerCbQuery('❌ No active game.',{show_alert:true});
   if(game.phase!=='waiting_drawer')return ctx.answerCbQuery('❌ Already claimed!',{show_alert:true});
   const tgId=String(ctx.from.id),uname=`${ctx.from.first_name||''} ${ctx.from.last_name||''}`.trim()||ctx.from.username||'Artist';
@@ -367,16 +446,21 @@ bot.action(/^claim_draw:(.+)$/,async(ctx)=>{
   game.word=pickWord();game.hintRevealed=new Array(game.word.length).fill(false);
   game.strokes=[];game.strokesUndo=[];game.roundStartTime=Date.now();
   game.vc=makeVC(game.canvasW,game.canvasH);
+  chatActiveCanvas.set(chatId,game.canvasId);
   persistGame(game);await ctx.answerCbQuery('✅ Open your canvas!');
-  const url=`https://t.me/${botUsername}/${WEBAPP_SHORT_NAME}?startapp=${encodeURIComponent(`${chatId}__${tgId}`)}`;
+  // canvasId in URL so drawer reconnects to correct canvas always
+  const url=`https://t.me/${botUsername}/${WEBAPP_SHORT_NAME}?startapp=${encodeURIComponent(`${chatId}__${tgId}__${game.canvasId}`)}`;
   try{await bot.telegram.editMessageText(chatId,game.pinnedMsgId,null,
     `🎨 *${uname}* is drawing!\n🔤 \`${buildHint(game.word,game.hintRevealed)}\`  —  ${game.word.length} letters\n\n💬 Type your guess!`,
-    {parse_mode:'Markdown',...Markup.inlineKeyboard([[Markup.button.url('🖌 Open Canvas',url)],[Markup.button.callback('💡 Hint',`hint:${chatId}`)]])});}catch(e){console.error('[editInvite]',e.message);}
+    {parse_mode:'Markdown',...Markup.inlineKeyboard([[Markup.button.url('🖌 Open Canvas',url)],[Markup.button.callback('💡 Hint',`hint:${game.canvasId}`)]])});}
+  catch(e){console.error('[editInvite]',e.message);}
 });
 
 bot.action(/^noop:.+$/,async(ctx)=>{await ctx.answerCbQuery('⏳ Wait for the first stroke!');});
 bot.action(/^hint:(.+)$/,async(ctx)=>{
-  const chatId=ctx.match[1],game=games.get(chatId);
+  // canvasId-based routing for hints
+  const canvasId=ctx.match[1];
+  const game=games.get(canvasId)||getActiveGame(canvasId);
   if(!game||game.phase!=='drawing')return ctx.answerCbQuery('❌ No active game!');
   if(!game.firstStrokeDrawn)return ctx.answerCbQuery('⏳ Wait for drawer to start!');
   const cd=Math.ceil((hintCooldownMs(game)-(Date.now()-game.lastHintAt))/1000);
@@ -388,7 +472,7 @@ bot.action(/^hint:(.+)$/,async(ctx)=>{
 
 bot.on('text',async(ctx)=>{
   if(ctx.chat.type==='private')return;
-  const chatId=String(ctx.chat.id),game=games.get(chatId);
+  const chatId=String(ctx.chat.id),game=getActiveGame(chatId);
   if(!game||game.phase!=='drawing'||!game.word)return;
   const text=(ctx.message.text||'').trim();if(text.startsWith('/'))return;
   const name=`${ctx.from.first_name||''} ${ctx.from.last_name||''}`.trim()||ctx.from.username||'Player';
@@ -407,14 +491,21 @@ bot.on('text',async(ctx)=>{
 // ── WebSocket ─────────────────────────────────────────────────────────────────
 wss.on('connection',(ws,req)=>{
   const wsId=uuidv4(),url=new URL(req.url,'http://localhost');
-  const chatId=url.searchParams.get('room')||'',name=url.searchParams.get('name')||'Artist',tgId=url.searchParams.get('userId')||'';
+  const chatId=url.searchParams.get('room')||'';
+  const canvasId=url.searchParams.get('canvas')||chatId; // specific canvas or default to chat
+  const name=url.searchParams.get('name')||'Artist';
+  const tgId=url.searchParams.get('userId')||'';
   if(!chatId){ws.close();return;}
-  const game=getOrMakeGame(chatId);
+  // Route to specific canvas if given, else active game for chat
+  const game=canvasId&&canvasId!==chatId
+    ? getOrMakeGameByCanvas(canvasId,chatId)
+    : getOrMakeGame(chatId);
   const isDrawer=tgId&&tgId===game.drawerTgId&&game.phase==='drawing';
   if(isDrawer&&game.drawerWsId){const old=game.clients.get(game.drawerWsId);if(old&&old.ws.readyState===WebSocket.OPEN)old.ws.close();game.clients.delete(game.drawerWsId);game.drawerWsId=null;}
   game.clients.set(wsId,{ws,name,tgId});
-  console.log(`[ws] +${name} chatId=${chatId} clients=${game.clients.size} drawer=${isDrawer}`);
-  ws.send(JSON.stringify({type:'init',strokes:game.strokes,players:game.clients.size,board:leaderboard(game)}));
+  if(isDrawer)chatActiveCanvas.set(game.chatId,game.canvasId);
+  console.log(`[ws] +${name} chatId=${chatId} canvasId=${game.canvasId} clients=${game.clients.size} drawer=${isDrawer}`);
+  ws.send(JSON.stringify({type:'init',strokes:game.strokes,players:game.clients.size,board:leaderboard(game),canvasId:game.canvasId}));
   if(isDrawer){game.drawerWsId=wsId;ws.send(JSON.stringify({type:'role',role:'drawer',word:game.word,round:1,reconnect:game.strokes.length>0}));}
   else if(game.phase==='drawing'){ws.send(JSON.stringify({type:'role',role:'guesser',hint:buildHint(game.word,game.hintRevealed),round:1}));ws.send(JSON.stringify({type:'status',message:`${game.drawerName} is drawing! Guess in chat!`}));}
   else{ws.send(JSON.stringify({type:'status',message:'No game running. Use /startgame in the group!'}));}
@@ -498,9 +589,71 @@ wss.on('connection',(ws,req)=>{
         if(wsId!==game.drawerWsId||!msg.word||typeof msg.word!=='string')return;
         {const cw=msg.word.trim().toLowerCase().slice(0,40);if(!cw)return;game.word=cw;game.hintRevealed=new Array(cw.length).fill(false);game.strokes=[];game.strokesUndo=[];game.firstStrokeDrawn=false;game.lastHintAt=0;if(game.vc){game.vc.ctx.fillStyle='#ffffff';game.vc.ctx.fillRect(0,0,game.canvasW,game.canvasH);}persistGame(game);sendWs(game,wsId,{type:'word_set',word:cw});sendWs(game,wsId,{type:'role',role:'drawer',word:cw,round:1,reconnect:false});broadcast(game,{type:'clear'},wsId);broadcast(game,{type:'word_skipped',hint:buildHint(cw,game.hintRevealed)},wsId);}
         break;
-      case'done_drawing':if(wsId!==game.drawerWsId)return;endGame(game,null,'done');break;
+      case'final_image':
+        // Drawer sends pixel-perfect flattenTo() JPEG at round end
+        // Used for the final Telegram post — correct colors, no napi-rs rendering
+        if(wsId!==game.drawerWsId||!msg.data)break;
+        {const b64=msg.data.replace(/^data:image\/\w+;base64,/,'');
+        game.finalJpeg=b64;persistDebounced(game,200);}
+        break;
+      case'done_drawing':
+        if(wsId!==game.drawerWsId)return;
+        // Client sends final_image before done_drawing — wait briefly for it
+        setTimeout(()=>endGame(game,null,'done'),300);
+        break;
+      case'new_canvas':
+        // Drawer requests a new canvas
+        // Only allowed if current canvas is completed/pending_guess or idle
+        if(wsId!==game.drawerWsId)return;
+        {const cur=game;
+        if(cur.phase==='drawing'&&cur.firstStrokeDrawn&&cur.status==='active'){
+          sendWs(game,wsId,{type:'toast',message:'Finish or complete the current canvas first!'});return;
+        }
+        // Create new canvas for this drawer in this chat
+        const newId=uuidv4();
+        const ng=makeGame(game.chatId,newId);
+        ng.drawerTgId=game.drawerTgId;ng.drawerName=game.drawerName;
+        ng.phase='drawing';ng.word=pickWord();
+        ng.hintRevealed=new Array(ng.word.length).fill(false);
+        ng.roundStartTime=Date.now();ng.scores=new Map(game.scores);
+        ng.canvasW=game.canvasW;ng.canvasH=game.canvasH;
+        ng.vc=makeVC(ng.canvasW,ng.canvasH);
+        ng.status='active';
+        games.set(newId,ng);
+        chatActiveCanvas.set(ng.chatId,newId);
+        persistGame(ng);
+        // Move all clients from old game to new game
+        game.clients.forEach((c,id)=>{
+          ng.clients.set(id,c);
+          if(id===wsId)ng.drawerWsId=wsId;
+        });
+        game.clients.clear();
+        // Tell drawer about new canvas+word
+        sendWs(ng,wsId,{type:'new_canvas',canvasId:newId,word:ng.word});
+        // Tell guessers to clear and await new drawing
+        broadcast(ng,{type:'clear'},wsId);
+        broadcast(ng,{type:'word_skipped',hint:buildHint(ng.word,ng.hintRevealed)},wsId);
+        // Post new canvas invite to Telegram
+        if(botUsername){
+          const url=`https://t.me/${botUsername}/${WEBAPP_SHORT_NAME}?startapp=${encodeURIComponent(`${ng.chatId}__${ng.drawerTgId}__${newId}`)}`;
+          bot.telegram.sendMessage(ng.chatId,`🎨 *${ng.drawerName}* started a new canvas!\n🔤 \`${buildHint(ng.word,ng.hintRevealed)}\` — ${ng.word.length} letters\n\n💬 Type your guess!`,
+            {parse_mode:'Markdown',...Markup.inlineKeyboard([[Markup.button.url('🖌 Open Canvas',url)],[Markup.button.callback('💡 Hint',`hint:${ng.canvasId}`)]])})
+            .then(m=>{ng.pinnedMsgId=m.message_id;bot.telegram.pinChatMessage(ng.chatId,m.message_id,{disable_notification:true}).catch(()=>{});persistDebounced(ng);})
+            .catch(e=>console.error('[new_canvas]',e.message));
+        }
+        }break;
       case'new_round':
-        {if(game.phase==='drawing'||game.phase==='waiting_drawer'||!botUsername)return;game.phase='waiting_drawer';game.scores=new Map();game.strokes=[];game.strokesUndo=[];game.word=null;game.drawerTgId=null;game.drawerName='';game.drawerWsId=null;game.pinnedMsgId=null;game.vc=null;persistGame(game);bot.telegram.sendMessage(game.chatId,`🎨 *Draw & Guess!*\n\nWho wants to draw? ✏️`,{parse_mode:'Markdown',...Markup.inlineKeyboard([[Markup.button.callback('✏️ I Want to Draw!',`claim_draw:${game.chatId}`)]])}).then(m=>{game.pinnedMsgId=m.message_id;bot.telegram.pinChatMessage(game.chatId,m.message_id,{disable_notification:true}).catch(()=>{});persistDebounced(game);}).catch(e=>console.error('[new_round]',e.message));broadcast(game,{type:'status',message:'Waiting for a drawer… check the group!'});}
+        {if(game.phase==='drawing'||game.phase==='waiting_drawer'||!botUsername)return;
+        // Reset this canvas for a new round (same canvasId, new word)
+        game.phase='waiting_drawer';game.scores=new Map();game.strokes=[];game.strokesUndo=[];
+        game.word=null;game.drawerTgId=null;game.drawerName='';game.drawerWsId=null;
+        game.pinnedMsgId=null;game.vc=null;game.finalJpeg=null;game.status='active';
+        persistGame(game);
+        bot.telegram.sendMessage(game.chatId,`🎨 *Draw & Guess!*\n\nWho wants to draw? ✏️`,
+          {parse_mode:'Markdown',...Markup.inlineKeyboard([[Markup.button.callback('✏️ I Want to Draw!',`claim_draw:${game.chatId}`)]])})
+          .then(m=>{game.pinnedMsgId=m.message_id;bot.telegram.pinChatMessage(game.chatId,m.message_id,{disable_notification:true}).catch(()=>{});persistDebounced(game);})
+          .catch(e=>console.error('[new_round]',e.message));
+        broadcast(game,{type:'status',message:'Waiting for a drawer… check the group!'});}
         break;
       case'get_logs':ws.send(JSON.stringify({type:'logs',logs:[]}));break;
     }

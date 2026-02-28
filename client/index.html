@@ -373,7 +373,7 @@ body.panning.dragging #cv-draw{cursor:grabbing!important;}
 </div>
 
 <!-- Drawer Finish Overlay -->
-<div id="drawer-finish-overlay">
+<div id="drawer-finish-overlay" style="display:none!important">
   <div id="dfo-box">
     <div id="dfo-emoji" style="font-size:2.2rem;margin-bottom:7px">🎉</div>
     <div id="dfo-title" style="font-size:1rem;font-weight:800;margin-bottom:5px"></div>
@@ -558,11 +558,11 @@ body.panning.dragging #cv-draw{cursor:grabbing!important;}
 <!-- Leaderboard Popup -->
 <div class="popup" id="lb-popup">
   <div style="font-size:.8rem;font-weight:700;color:var(--yellow);margin-bottom:3px">🏆 Leaderboard</div>
-  <div id="lb-list"></div>
+  <div id="lb-list" style="display:none"></div>
 </div>
 
 <!-- Round Result Overlay -->
-<div id="round-overlay">
+<div id="round-overlay" style="display:none">
   <div id="round-box">
     <div class="re-emoji" id="re-emoji">🎉</div>
     <div class="re-title" id="re-title"></div>
@@ -613,7 +613,7 @@ body.panning.dragging #cv-draw{cursor:grabbing!important;}
     <button id="transform-cancel">✕ Cancel</button>
     <button id="transform-done">✓ Apply</button>
   </div>
-  <div id="waiting-overlay"><button id="start-btn">▶ NEW ROUND</button></div>
+  <div id="waiting-overlay"><button id="start-btn">▶ NEW ROUND</button><button id="lb-btn" onclick="showLeaderboard()" style="display:none">📊</button></div>
   <div id="mask-indicator">MASK EDITING</div>
   <div id="transform-indicator">TRANSFORM</div>
   <div id="zoom-indicator">100%</div>
@@ -1511,7 +1511,25 @@ function showSyncDone(){document.getElementById('sync-spin').style.display='none
 
 // ─── Toast ───
 let _tt=null;const toastEl=document.getElementById('toast');
-function showToast(msg,cls=''){toastEl.textContent=msg;toastEl.className='show '+cls;clearTimeout(_tt);_tt=setTimeout(()=>toastEl.className='',2800);}
+function showToast(msg,cls=''){
+  // Use Telegram native popup — zero CSS, works outside mini app
+  const tg=window.Telegram?.WebApp;
+  if(tg){
+    // Haptic feedback based on type
+    if(cls==='ok')tg.HapticFeedback?.notificationOccurred('success');
+    else if(cls==='err')tg.HapticFeedback?.notificationOccurred('error');
+    else tg.HapticFeedback?.notificationOccurred('warning');
+    // Short messages use native alert, longer use showPopup
+    if(msg.length<60){
+      tg.showPopup({message:msg,buttons:[{type:'close'}]},{});
+    }else{
+      tg.showAlert(msg);
+    }
+  }else{
+    // Fallback for browser testing
+    toastEl.textContent=msg;toastEl.className='show '+cls;clearTimeout(_tt);_tt=setTimeout(()=>toastEl.className='',2800);
+  }
+}
 
 // ─── Chat ───
 const chatLog=document.getElementById('chat-log');
@@ -1553,7 +1571,17 @@ document.getElementById('dfo-keep').addEventListener('click',()=>{document.getEl
 document.getElementById('dfo-close').addEventListener('click',()=>{document.getElementById('drawer-finish-overlay').style.display='none';document.getElementById('toolbar').classList.remove('visible');isDrawer=false;try{tg?.close();}catch(e){}});
 
 function updatePlayers(board){const list=document.getElementById('player-list');if(!board?.length){list.innerHTML='<div style="font-size:.74rem;color:var(--text2);padding:3px 5px">No players</div>';return;}list.innerHTML=board.map(({name,score,rank})=>`<div style="display:flex;align-items:center;gap:6px;padding:4px 5px;font-size:.78rem"><div style="width:6px;height:6px;border-radius:50%;background:var(--green);flex-shrink:0"></div><div style="flex:1;font-weight:600">${name}</div><div style="color:var(--yellow);font-weight:700;font-size:.72rem;font-family:'JetBrains Mono',monospace">${score}pts${rank===1?' 👑':''}</div></div>`).join('');}
-function updateLb(board){const m=['🥇','🥈','🥉'];document.getElementById('lb-list').innerHTML=(board||[]).slice(0,8).map(({rank,name,score})=>`<div class="lb-row"><span class="lb-rank">${m[rank-1]||rank}</span><span class="lb-name">${name}</span><span class="lb-pts">${score}pts</span></div>`).join('');}
+function updateLb(board){
+  // Store board for on-demand popup — no DOM widget needed
+  window._lastBoard=board||[];
+}
+function showLeaderboard(){
+  const board=window._lastBoard||[];
+  if(!board.length){window.Telegram?.WebApp?.showAlert('No scores yet.');return;}
+  const m=['🥇','🥈','🥉'];
+  const text=board.slice(0,8).map(({rank,name,score})=>`${m[rank-1]||rank+'.'}  ${name}  —  ${score}pts`).join('\n');
+  window.Telegram?.WebApp?.showPopup({title:'📊 Leaderboard',message:text,buttons:[{type:'close'}]});
+}
 
 let isDrawer=false;
 function setRole(role,wordOrHint,round){
@@ -1563,11 +1591,31 @@ function setRole(role,wordOrHint,round){
   const guessRow=document.getElementById('guess-row');
   if(isDrawer){
     // Drawer cannot guess — hide guess input, show drawing info
+    document.getElementById('lb-btn').style.display='inline-block';
     guessRow.style.display='none';
     document.getElementById('hint-display').style.display='none';
   }else{
-    guessRow.style.display='flex';
-    document.getElementById('guess-in').disabled=false;
+    // Use Telegram MainButton for guessing — native, always visible, zero CSS
+    guessRow.style.display='none'; // hide custom input row
+    const tg=window.Telegram?.WebApp;
+    if(tg){
+      tg.MainButton.setText('💬 Type Guess');
+      tg.MainButton.show();
+      tg.MainButton.onClick(()=>{
+        // Telegram has no native text input — show popup with text field fallback
+        // Use prompt() which works in Telegram mini app
+        const guess=prompt('Your guess:');
+        if(guess&&guess.trim()){
+          const t=guess.trim();
+          wsSend({type:'guess',text:t});
+          addChat('me',t);
+        }
+      });
+    }else{
+      // Fallback for browser testing
+      guessRow.style.display='flex';
+      document.getElementById('guess-in').disabled=false;
+    }
   }
   const pill=document.getElementById('role-pill');pill.className='role-pill '+role;pill.textContent=isDrawer?'DRAWING':'GUESSING';
   const wd=document.getElementById('word-display');
@@ -1731,6 +1779,25 @@ document.getElementById('log-copy-btn').addEventListener('click',()=>{const text
 document.getElementById('start-btn').addEventListener('click',()=>{wsSend({type:'new_round'});document.getElementById('start-btn').style.display='none';addLog('New round requested','round');});
 
 // ─── WebSocket ───
+// ── Apply Telegram theme + setup ─────────────────────────────────────────────
+(function applyTgTheme(){
+  const tg=window.Telegram?.WebApp;
+  if(!tg)return;
+  tg.expand();
+  tg.disableVerticalSwipes?.();
+  const tp=tg.themeParams||{};
+  const root=document.documentElement;
+  if(tp.bg_color)          root.style.setProperty('--bg',      tp.bg_color);
+  if(tp.secondary_bg_color)root.style.setProperty('--surface', tp.secondary_bg_color);
+  if(tp.text_color)        root.style.setProperty('--text',     tp.text_color);
+  if(tp.hint_color)        root.style.setProperty('--text2',    tp.hint_color);
+  if(tp.button_color)      root.style.setProperty('--green',    tp.button_color);
+  if(tp.button_text_color) root.style.setProperty('--btn-text', tp.button_text_color);
+  if(tp.accent_text_color) root.style.setProperty('--yellow',   tp.accent_text_color);
+  tg.setHeaderColor?.(tp.bg_color||'#1a1a2e');
+  tg.setBackgroundColor?.(tp.bg_color||'#1a1a2e');
+})();
+
 let ws=null,myName='',myRoom='',myTgId='';
 function wsSend(obj){if(ws&&ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify(obj));}
 function connect(){
@@ -1808,7 +1875,10 @@ function connect(){
       case'hint':
         updateHintDisplay(m.hint);
         document.getElementById('word-display').textContent=`${m.hint.replace(/ /g,'').length} letters`;
-        addChat('sys',`💡 Hint revealed`);showToast('💡 New hint!');sfxHint();break;
+        addChat('sys',`💡 Hint revealed`);
+        // Haptic only — hint text already updated in Telegram chat caption by server
+        window.Telegram?.WebApp?.HapticFeedback?.notificationOccurred('warning');
+        sfxHint();break;
       case'word_skipped':
         updateHintDisplay(m.hint);
         document.getElementById('word-display').textContent='word skipped';
@@ -1818,19 +1888,25 @@ function connect(){
         if(m.correct){showToast(`🎉 ${m.name} got it!`,'ok');sfxCorrect();}break;
       case'score_update':
         addChat('ok',`🏆 ${m.name} +${m.pts}pts${m.timeBonus?' ⚡+'+m.timeBonus:''}`);
+        // Haptic on correct guess
+        window.Telegram?.WebApp?.HapticFeedback?.notificationOccurred('success');
         if(m.board){updatePlayers(m.board);updateLb(m.board);}break;
       case'round_end':
         if(_txActive)cancelTransform(); // never leave transform stuck between rounds
         sfxRoundEnd();
-        if(m.drawerFinish&&isDrawer){
-          const dfo=document.getElementById('drawer-finish-overlay');
-          document.getElementById('dfo-emoji').textContent=m.guesser?'🎉':'😮';
-          document.getElementById('dfo-title').textContent=m.guesser?`${m.guesser} guessed it!`:m.reason==='all_hints'?'All hints shown!':'Round over';
-          document.getElementById('dfo-word').textContent=`"${m.word}"`;
-          document.getElementById('dfo-sub').textContent='Keep drawing or close.';
-          dfo.style.display='flex';
-        }else{
-          showResult(m.guesser?'🎉':(m.reason==='all_hints'?'🔤':'😮'),m.guesser?`${m.guesser} got it!`:(m.reason==='all_hints'?'All hints shown!':'Round over'),m.word,m.guesser?`Artist: ${m.drawerName}`:`Word was: ${m.word}`);
+        // Telegram native popup — replaces all DOM overlays
+        {
+          const tg=window.Telegram?.WebApp;
+          const emoji=m.guesser?'🎉':(m.reason==='all_hints'?'🔤':'😮');
+          const title=m.guesser?`${m.guesser} guessed it!`:(m.reason==='all_hints'?'All hints shown!':'Round over');
+          const board=window._lastBoard||[];
+          const m2=['🥇','🥈','🥉'];
+          const lbText=board.length?'\n\n📊 '+board.slice(0,5).map(({rank,name,score})=>`${m2[rank-1]||rank+'.'} ${name} ${score}pts`).join('  |  '):'';
+          const msg=`${emoji} ${title}\n🎯 Word: ${m.word}${lbText}`;
+          if(tg){
+            tg.HapticFeedback?.notificationOccurred(m.guesser?'success':'error');
+            tg.showPopup({title:'Round Over',message:msg,buttons:[{type:'close'}]});
+          }
         }
         if(m.board){updatePlayers(m.board);updateLb(m.board);}
         if(m.word&&m.drawerName)saveToGallery(m.word,m.drawerName);
@@ -1838,11 +1914,14 @@ function connect(){
         document.getElementById('word-display').textContent='waiting…';
         document.getElementById('role-pill').className='role-pill';document.getElementById('role-pill').textContent='—';
         if(!m.drawerFinish||!isDrawer){document.getElementById('toolbar').classList.remove('visible');isDrawer=false;}
-        document.getElementById('start-btn').style.display='block';
+        document.getElementById('start-btn').style.display='block';document.getElementById('lb-btn').style.display='inline-block';
         addLog(`Round end: word=${m.word} guesser=${m.guesser||'none'} reason=${m.reason}`,'round');break;
       case'leaderboard':if(m.board){updatePlayers(m.board);updateLb(m.board);}break;
       case'status':document.getElementById('word-display').textContent=m.message;addChat('sys',m.message);break;
-      case'player_joined':addChat('sys',`${m.name} joined (${m.count})`);sfxJoin();break;
+      case'player_joined':
+        addChat('sys',`${m.name} joined (${m.count})`);
+        window.Telegram?.WebApp?.HapticFeedback?.impactOccurred('light');
+        sfxJoin();break;
       case'player_left':addChat('sys',`${m.name} left (${m.count})`);break;
       case'toast':showToast(m.message||m.text,'ok');break;
       case'word_set':

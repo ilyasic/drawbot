@@ -13,6 +13,11 @@ const PUBLIC_URL        = (process.env.PUBLIC_URL || '').replace(/\/$/, '');
 const PORT              = process.env.PORT || 3000;
 const WEBAPP_SHORT_NAME = process.env.WEBAPP_SHORT_NAME || 'draw1';
 const HINT_COOLDOWN_MS  = parseInt(process.env.HINT_COOLDOWN_MS || '30000');
+const FIRST_HINT_MS = 30000; // 30s before first hint
+const NEXT_HINT_MS  = 15000; // 15s between subsequent hints
+function hintCooldownMs(game){
+  return (game.hintRevealed||[]).filter(Boolean).length === 0 ? FIRST_HINT_MS : NEXT_HINT_MS;
+}
 const WEBHOOK_SECRET    = process.env.WEBHOOK_SECRET || 'tgbot';
 const DB_PATH           = process.env.DB_PATH || path.join(__dirname, 'drawbot.db');
 const DEFAULT_CW = 1080, DEFAULT_CH = 1080;
@@ -251,8 +256,21 @@ function leaderboard(game){return Array.from(game.scores.entries()).sort((a,b)=>
 function fmtLb(game){const lb=leaderboard(game);if(!lb.length)return'No scores yet.';const m=['🥇','🥈','🥉'];return lb.slice(0,10).map(({rank,name,score})=>`${m[rank-1]||`${rank}.`} *${name}* — ${score} pts`).join('\n');}
 function buildHint(word,rev){return word.split('').map((c,i)=>c===' '?'  ':(rev[i]?c:'_')).join(' ');}
 function hintCaption(game){
-  const hint=buildHint(game.word,game.hintRevealed),cd=Math.ceil((HINT_COOLDOWN_MS-(Date.now()-game.lastHintAt))/1000);
-  return{caption:`🎨 *${game.drawerName}* is drawing!\n🔤 \`${hint}\`  —  ${game.word.length} letters\n\n💬 Type your guess in chat!`,kb:Markup.inlineKeyboard([[Markup.button.callback(cd<=0?'💡 Hint':`⏳ Hint (${cd}s)`,`hint:${game.chatId}`)]])};
+  const hint=buildHint(game.word,game.hintRevealed);
+  const cd=Math.ceil((hintCooldownMs(game)-(Date.now()-game.lastHintAt))/1000);
+  // Before first stroke: no hint button yet, just letter count
+  const hintBtn=game.firstStrokeDrawn
+    ? Markup.button.callback(cd<=0?'💡 Hint':`⏳ Hint (${cd}s)`,`hint:${game.chatId}`)
+    : Markup.button.callback(`${game.word.length} letters — drawing starting…`,`noop:${game.chatId}`);
+  // Open Canvas button so drawer can return if they closed the mini app
+  const canvasUrl=botUsername
+    ? `https://t.me/${botUsername}/${WEBAPP_SHORT_NAME}?startapp=${encodeURIComponent(game.chatId+'__'+game.drawerTgId)}`
+    : null;
+  const rows=canvasUrl ? [[hintBtn],[Markup.button.url('🖌 Open Canvas',canvasUrl)]] : [[hintBtn]];
+  return{
+    caption:`🎨 *${game.drawerName}* is drawing!\n🔤 \`${hint}\`  —  ${game.word.length} letters\n\n💬 Type your guess in chat!`,
+    kb:Markup.inlineKeyboard(rows)
+  };
 }
 
 async function pushCanvas(game){
@@ -300,7 +318,7 @@ async function endGame(game,guesser,reason){
   if(game.phase==='ended'||game.phase==='idle')return;
   game.phase='ended';clearTimeout(game.roundTimer);clearTimeout(game.hintTimer);clearTimeout(game.updateTimer);game.roundTimer=game.hintTimer=game.updateTimer=null;
   console.log(`[game] END chatId=${game.chatId} word=${game.word} guesser=${guesser||'none'} reason=${reason}`);
-  if(game.drawerWsId)sendWs(game,game.drawerWsId,{type:'round_end',word:game.word,drawerName:game.drawerName,guesser:guesser||null,reason,board:leaderboard(game),drawerFinish:true});
+  if(game.drawerWsId)sendWs(game,game.drawerWsId,{type:'round_end',word:game.word,drawerName:game.drawerName,guesser:guesser||null,reason,board:leaderboard(game),drawerFinish:true,keepDrawing:reason==='guess'});
   broadcast(game,{type:'round_end',word:game.word,drawerName:game.drawerName,guesser:guesser||null,reason,board:leaderboard(game)},game.drawerWsId);
   await postResult(game,guesser,reason);
   const savedScores=new Map(game.scores);
@@ -349,11 +367,12 @@ bot.action(/^claim_draw:(.+)$/,async(ctx)=>{
     {parse_mode:'Markdown',...Markup.inlineKeyboard([[Markup.button.url('🖌 Open Canvas',url)],[Markup.button.callback('💡 Hint',`hint:${chatId}`)]])});}catch(e){console.error('[editInvite]',e.message);}
 });
 
+bot.action(/^noop:.+$/,async(ctx)=>{await ctx.answerCbQuery('⏳ Wait for the first stroke!');});
 bot.action(/^hint:(.+)$/,async(ctx)=>{
   const chatId=ctx.match[1],game=games.get(chatId);
   if(!game||game.phase!=='drawing')return ctx.answerCbQuery('❌ No active game!');
   if(!game.firstStrokeDrawn)return ctx.answerCbQuery('⏳ Wait for drawer to start!');
-  const cd=Math.ceil((HINT_COOLDOWN_MS-(Date.now()-game.lastHintAt))/1000);
+  const cd=Math.ceil((hintCooldownMs(game)-(Date.now()-game.lastHintAt))/1000);
   if(cd>0)return ctx.answerCbQuery(`⏳ Wait ${cd}s!`);
   if(!game.word.split('').some((c,i)=>c!==' '&&!game.hintRevealed[i]))return ctx.answerCbQuery('🤷 No more hints!');
   const hint=revealNextHint(game);if(!hint)return ctx.answerCbQuery('No hints!');
@@ -415,7 +434,7 @@ wss.on('connection',(ws,req)=>{
         broadcast(game,{type:'draw',stroke:inc},wsId);
         if(game.strokes.length>0&&game.strokes.length%20===0){const j=vcJpeg(game);if(j){const snap={brushType:'_snapshot',pngB64:j.toString('base64')};game.strokes=[snap];game.strokesUndo=[snap];persistDebounced(game,400);console.log('[game] Flattened');}}
         else if(game.strokes.length%5===0)persistDebounced(game,800);
-        if(!game.firstStrokeDrawn){game.firstStrokeDrawn=true;game.roundStartTime=Date.now();persistDebounced(game,200);setTimeout(()=>pushCanvas(game),500);}
+        if(!game.firstStrokeDrawn){game.firstStrokeDrawn=true;game.roundStartTime=Date.now();persistDebounced(game,200);setTimeout(()=>pushCanvas(game),500);broadcast(game,{type:'first_stroke'},game.drawerWsId);}
         else{scheduleUpdate(game);}
         }break;
       case'undo':

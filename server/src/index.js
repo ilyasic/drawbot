@@ -232,9 +232,7 @@ function vcPaint(game,stroke){
   }
   renderStroke(game.vc.ctx,stroke);
 }
-// PNG preserves exact pixel values — no gamma/color-space conversion during encode.
-// JPEG via napi-rs/Skia applies a gamma curve that makes colors darker than browser canvas.
-function vcJpeg(game){if(!game.vc)return null;try{return game.vc.canvas.toBuffer('image/png');}catch(e){console.error('[vc]',e.message);return null;}}
+function vcJpeg(game){if(!game.vc)return null;try{return game.vc.canvas.toBuffer('image/jpeg',{quality:0.92});}catch(e){console.error('[vc]',e.message);return null;}}
 async function vcRebuild(game){
   if(!game.vc)return;
   game.vc.ctx.fillStyle='#ffffff';game.vc.ctx.fillRect(0,0,game.canvasW,game.canvasH);
@@ -288,12 +286,12 @@ async function pushCanvas(game){
   const jpeg=vcJpeg(game);if(!jpeg){console.warn('[push] no vc');return;}
   const{caption,kb}=hintCaption(game);
   try{
-    if(game.pinnedMsgId){await bot.telegram.editMessageMedia(game.chatId,game.pinnedMsgId,null,{type:'photo',media:{source:jpeg,filename:'drawing.png'},caption,parse_mode:'Markdown'},kb);}
-    else{const m=await bot.telegram.sendPhoto(game.chatId,{source:jpeg,filename:'drawing.png'},{caption,parse_mode:'Markdown',...kb});game.pinnedMsgId=m.message_id;try{await bot.telegram.pinChatMessage(game.chatId,m.message_id,{disable_notification:true});}catch{}persistDebounced(game);}
+    if(game.pinnedMsgId){await bot.telegram.editMessageMedia(game.chatId,game.pinnedMsgId,null,{type:'photo',media:{source:jpeg,filename:'drawing.jpg'},caption,parse_mode:'Markdown'},kb);}
+    else{const m=await bot.telegram.sendPhoto(game.chatId,{source:jpeg,filename:'drawing.jpg'},{caption,parse_mode:'Markdown',...kb});game.pinnedMsgId=m.message_id;try{await bot.telegram.pinChatMessage(game.chatId,m.message_id,{disable_notification:true});}catch{}persistDebounced(game);}
   }catch(e){
     if(/not modified/i.test(e.message))return;
     if(e.response?.error_code===429||/too many requests/i.test(e.message)){const ra=(e.response?.parameters?.retry_after||10)*1000+500;game.retryAfterUntil=Date.now()+ra;setTimeout(()=>pushCanvas(game),ra);return;}
-    if(/not found|deleted|ECONNRESET|ETIMEDOUT/i.test(e.message)){game.pinnedMsgId=null;try{const m=await bot.telegram.sendPhoto(game.chatId,{source:jpeg,filename:'drawing.png'},{caption,parse_mode:'Markdown',...kb});game.pinnedMsgId=m.message_id;try{await bot.telegram.pinChatMessage(game.chatId,m.message_id,{disable_notification:true});}catch{}persistDebounced(game);}catch{}}
+    if(/not found|deleted|ECONNRESET|ETIMEDOUT/i.test(e.message)){game.pinnedMsgId=null;try{const m=await bot.telegram.sendPhoto(game.chatId,{source:jpeg,filename:'drawing.jpg'},{caption,parse_mode:'Markdown',...kb});game.pinnedMsgId=m.message_id;try{await bot.telegram.pinChatMessage(game.chatId,m.message_id,{disable_notification:true});}catch{}persistDebounced(game);}catch{}}
   }
 }
 function scheduleUpdate(game,delay=3000,force=false){
@@ -317,8 +315,8 @@ async function postResult(game,guesser,reason){
   const jpeg=vcJpeg(game);
   const lines=[`✅ *Round Over!*`,``,`🖌 Drawer: *${game.drawerName}*`,`🎯 Word: *${game.word}*`,guesser?`🏆 Guessed by: *${guesser}*`:reason==='all_hints'?`🔤 All hints revealed!`:reason==='stopped'?`🛑 Stopped.`:`😮 Round ended.`,``,`📊 *Leaderboard:*`,fmtLb(game),``,`_Use /startgame to play again!_`].join('\n');
   try{
-    if(game.pinnedMsgId&&jpeg){await bot.telegram.editMessageMedia(game.chatId,game.pinnedMsgId,null,{type:'photo',media:{source:jpeg,filename:`${game.word}.png`},caption:lines,parse_mode:'Markdown'},Markup.inlineKeyboard([]));}
-    else if(jpeg){await bot.telegram.sendPhoto(game.chatId,{source:jpeg,filename:`${game.word}.png`},{caption:lines,parse_mode:'Markdown'});}
+    if(game.pinnedMsgId&&jpeg){await bot.telegram.editMessageMedia(game.chatId,game.pinnedMsgId,null,{type:'photo',media:{source:jpeg,filename:`${game.word}.jpg`},caption:lines,parse_mode:'Markdown'},Markup.inlineKeyboard([]));}
+    else if(jpeg){await bot.telegram.sendPhoto(game.chatId,{source:jpeg,filename:`${game.word}.jpg`},{caption:lines,parse_mode:'Markdown'});}
     else{await bot.telegram.sendMessage(game.chatId,lines,{parse_mode:'Markdown'});}
   }catch(e){console.error('[postResult]',e.message);try{await bot.telegram.sendMessage(game.chatId,lines,{parse_mode:'Markdown'});}catch{}}
 }
@@ -448,11 +446,11 @@ wss.on('connection',(ws,req)=>{
         }break;
       case'undo':
         if(wsId!==game.drawerWsId)return;
-        if(game.strokes.length>0){game.strokes.pop();vcRebuild(game).then(()=>{const j=vcJpeg(game);if(j)broadcast(game,{type:'snapshot',data:'data:image/png;base64,'+j.toString('base64')},game.drawerWsId);}).catch(()=>{});persistDebounced(game);scheduleUpdate(game,800,true);}
+        if(game.strokes.length>0){game.strokes.pop();vcRebuild(game).then(()=>{const j=vcJpeg(game);if(j)broadcast(game,{type:'snapshot',data:'data:image/jpeg;base64,'+j.toString('base64')},game.drawerWsId);}).catch(()=>{});persistDebounced(game);scheduleUpdate(game,800,true);}
         break;
       case'redo':
         if(wsId!==game.drawerWsId)return;
-        {const next=game.strokesUndo[game.strokes.length];if(next){game.strokes.push(next);vcPaint(game,next);const j=vcJpeg(game);if(j)broadcast(game,{type:'snapshot',data:'data:image/png;base64,'+j.toString('base64')},game.drawerWsId);persistDebounced(game);scheduleUpdate(game,800,true);}}
+        {const next=game.strokesUndo[game.strokes.length];if(next){game.strokes.push(next);vcPaint(game,next);const j=vcJpeg(game);if(j)broadcast(game,{type:'snapshot',data:'data:image/jpeg;base64,'+j.toString('base64')},game.drawerWsId);persistDebounced(game);scheduleUpdate(game,800,true);}}
         break;
       case'clear':
         if(wsId!==game.drawerWsId)return;
@@ -487,7 +485,7 @@ wss.on('connection',(ws,req)=>{
         break;
       case'send_to_chat':
         if(!msg.data||!tgId){sendWs(game,wsId,{type:'toast',message:!tgId?'Cannot identify user':'No image data'});break;}
-        (async()=>{try{const buf=Buffer.from(msg.data.replace(/^data:image\/\w+;base64,/,''),'base64');await bot.telegram.sendPhoto(tgId,{source:buf,filename:'drawing.png'},{caption:`🎨 *${name}*`+(game.word?` — word: *${game.word}*`:''),parse_mode:'Markdown'});sendWs(game,wsId,{type:'toast',message:'Sent ✅'});}catch(e){sendWs(game,wsId,{type:'toast',message:e.message.includes('bot was blocked')||e.message.includes('chat not found')?'Start the bot privately first!':'Send failed: '+e.message});}})();
+        (async()=>{try{const buf=Buffer.from(msg.data.replace(/^data:image\/\w+;base64,/,''),'base64');await bot.telegram.sendPhoto(tgId,{source:buf,filename:'drawing.jpg'},{caption:`🎨 *${name}*`+(game.word?` — word: *${game.word}*`:''),parse_mode:'Markdown'});sendWs(game,wsId,{type:'toast',message:'Sent ✅'});}catch(e){sendWs(game,wsId,{type:'toast',message:e.message.includes('bot was blocked')||e.message.includes('chat not found')?'Start the bot privately first!':'Send failed: '+e.message});}})();
         break;
       case'guess':
         {const t=(msg.text||'').trim();if(!t)return;const ok=game.word&&t.toLowerCase()===game.word.toLowerCase();broadcast(game,{type:'guess',name,text:t,correct:ok});if(ok){const hintsGiven=game.hintRevealed.filter(Boolean).length,elapsed=(Date.now()-game.roundStartTime)/1000,timeBonus=Math.max(0,Math.floor((120-elapsed)/10)),pts=Math.max(10,100-hintsGiven*10+timeBonus);game.scores.set(name,(game.scores.get(name)||0)+pts);game.scores.set(game.drawerName,(game.scores.get(game.drawerName)||0)+50);broadcast(game,{type:'score_update',name,pts,timeBonus,board:leaderboard(game)});bot.telegram.sendMessage(game.chatId,`🎉 *${name}* guessed it! Word was *${game.word}* ✅  +${pts} pts`,{parse_mode:'Markdown'}).catch(()=>{});endGame(game,name,'guess');}}

@@ -145,7 +145,14 @@ function renderStroke(ctx,s){
     sm=s.smoothing!=null?s.smoothing:(BD[bt]?.smoothing??0.5),
     bd=BD[bt]||BD.pen,rng=makePRNG(s.seed||12345),prs=s.pressures||null,fd=s.fogDensity!=null?s.fogDensity:0.4;
   ctx.save();ctx.setLineDash([]);ctx.globalAlpha=1;ctx.globalCompositeOperation='source-over';
-  if(bt==='eraser'){ctx.globalCompositeOperation='destination-out';ctx.globalAlpha=1;ctx.strokeStyle='rgba(0,0,0,1)';ctx.lineWidth=sz*bd.widthMult;ctx.lineCap='round';ctx.lineJoin='round';ctx.setLineDash([]);drawPath(ctx,pts,sm);ctx.stroke();ctx.restore();return;}
+  if(bt==='eraser'){
+    // Server canvas is flat (no layers) — destination-out makes transparent → black in JPEG
+    // Paint white instead to match the white canvas background
+    ctx.globalCompositeOperation='source-over';ctx.globalAlpha=1;
+    ctx.strokeStyle='#ffffff';ctx.lineWidth=sz*(bd?.widthMult||1);
+    ctx.lineCap='round';ctx.lineJoin='round';ctx.setLineDash([]);
+    drawPath(ctx,pts,sm);ctx.stroke();ctx.restore();return;
+  }
   if(bt==='line'){ctx.globalCompositeOperation='source-over';ctx.globalAlpha=op*fl;ctx.strokeStyle=col;ctx.lineWidth=sz;ctx.lineCap='round';ctx.setLineDash([]);ctx.beginPath();ctx.moveTo(pts[0][0],pts[0][1]);ctx.lineTo(pts[pts.length-1][0],pts[pts.length-1][1]);ctx.stroke();ctx.restore();return;}
   if(bt==='fill'){
     const[fx,fy]=pts[0],sx=Math.round(fx),sy=Math.round(fy),w=ctx.canvas.width,h=ctx.canvas.height;
@@ -451,7 +458,31 @@ wss.on('connection',(ws,req)=>{
         if(game.vc){game.vc.ctx.fillStyle='#ffffff';game.vc.ctx.fillRect(0,0,game.canvasW,game.canvasH);}
         broadcast(game,{type:'clear'});persistDebounced(game);break;
       case'snapshot':
-        if(wsId!==game.drawerWsId)return;broadcast(game,{type:'snapshot',data:msg.data},wsId);break;
+        if(wsId!==game.drawerWsId)return;
+        // Update virtual canvas so pushCanvas shows the correct flattened result
+        if(msg.data&&game.vc){
+          const b64=msg.data.replace(/^data:image\/\w+;base64,/,'');
+          loadImage(Buffer.from(b64,'base64')).then(img=>{
+            if(!game.vc)return;
+            game.vc.ctx.fillStyle='#ffffff';
+            game.vc.ctx.fillRect(0,0,game.canvasW,game.canvasH);
+            game.vc.ctx.drawImage(img,0,0);
+          }).catch(()=>{});
+        }
+        broadcast(game,{type:'snapshot',data:msg.data},wsId);
+        break;
+      case'vc_update':
+        // Drawer sends flattened snapshot after fill/eraser/layer ops
+        // Update virtual canvas only — don't broadcast (guessers already see via stroke)
+        if(wsId!==game.drawerWsId||!msg.data||!game.vc)break;
+        {const b64=msg.data.replace(/^data:image\/\w+;base64,/,'');
+        loadImage(Buffer.from(b64,'base64')).then(img=>{
+          if(!game.vc)return;
+          game.vc.ctx.fillStyle='#ffffff';
+          game.vc.ctx.fillRect(0,0,game.canvasW,game.canvasH);
+          game.vc.ctx.drawImage(img,0,0);
+        }).catch(()=>{});}
+        break;
       case'send_to_chat':
         if(!msg.data||!tgId){sendWs(game,wsId,{type:'toast',message:!tgId?'Cannot identify user':'No image data'});break;}
         (async()=>{try{const buf=Buffer.from(msg.data.replace(/^data:image\/\w+;base64,/,''),'base64');await bot.telegram.sendPhoto(tgId,{source:buf,filename:'drawing.jpg'},{caption:`🎨 *${name}*`+(game.word?` — word: *${game.word}*`:''),parse_mode:'Markdown'});sendWs(game,wsId,{type:'toast',message:'Sent ✅'});}catch(e){sendWs(game,wsId,{type:'toast',message:e.message.includes('bot was blocked')||e.message.includes('chat not found')?'Start the bot privately first!':'Send failed: '+e.message});}})();

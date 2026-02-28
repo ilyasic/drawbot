@@ -79,7 +79,8 @@ html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(
 #transform-cancel{background:var(--surface3);color:var(--text2);}
 
 #waiting-overlay{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;
-  justify-content:center;gap:12px;z-index:10;pointer-events:none;}
+  justify-content:center;gap:12px;z-index:10;pointer-events:none;transition:opacity .2s;}
+#waiting-overlay.hidden{opacity:0;pointer-events:none;}
 #start-btn{background:var(--btn-bg);color:#fff;border:none;padding:12px 32px;border-radius:var(--r);
   font-size:.9rem;font-family:'Syne',sans-serif;font-weight:700;cursor:pointer;
   box-shadow:0 4px 20px rgba(196,149,106,.4);pointer-events:all;display:none;
@@ -758,6 +759,8 @@ function actLayer(){return layers[actIdx];}
 function actCtx(){const l=actLayer();if(!l){layers.push(mkLayer('Layer 1'));actIdx=0;}const la=actLayer();return(editMask&&la.maskCtx)?la.maskCtx:la.ctx;}
 
 function makeTmp(){const c=document.createElement('canvas');c.width=CW;c.height=CH;return c;}
+let _cPending=false;
+function scheduleComposite(){if(_cPending)return;_cPending=true;requestAnimationFrame(()=>{_cPending=false;composite();});}
 function composite(){
   layersCtx.clearRect(0,0,CW,CH);
   layers.forEach(l=>{
@@ -1159,7 +1162,7 @@ function onDown(e){
   const strokeId=Date.now().toString(36)+Math.random().toString(36).slice(2,6);
   curStroke={color:currentColor,size:brushSize,opacity:brushOpacity,flow:brushFlow,
     brushType,smoothing:sm,seed,isMask:editMask,strokeId,fogDensity,points:[[x,y]],pressures:[initP]};
-  renderStroke(actCtx(),{...curStroke,points:[[x,y],[x+.01,y+.01]]});composite();
+  renderStroke(actCtx(),{...curStroke,points:[[x,y],[x+.01,y+.01]]});scheduleComposite();
 }
 function onMove(e){
   // Pan mode (space/alt drag)
@@ -1178,14 +1181,14 @@ function onMove(e){
   const dx=x-lastX,dy=y-lastY;if(dx*dx+dy*dy<.3)return;
   if(brushType==='line'){
     actCtx().clearRect(0,0,CW,CH);if(actLayer()?._committed)actCtx().putImageData(actLayer()._committed,0,0);
-    renderStroke(actCtx(),{...curStroke,points:[[lsx,lsy],[x,y]]});curStroke.points=[[lsx,lsy],[x,y]];lastX=x;lastY=y;composite();return;
+    renderStroke(actCtx(),{...curStroke,points:[[lsx,lsy],[x,y]]});curStroke.points=[[lsx,lsy],[x,y]];lastX=x;lastY=y;scheduleComposite();return;
   }
   const prev=curStroke.points[curStroke.points.length-1];
   curStroke.points.push([x,y]);curStroke.pressures.push(e.pressure||0);lastX=x;lastY=y;
   const needsFullRedraw=(brushType==='pen'||brushType==='marker'||brushType==='ink'||brushType==='pencil'||brushType==='pastel'||brushType==='watercolor');
   if(needsFullRedraw){actCtx().clearRect(0,0,CW,CH);if(actLayer()?._committed)actCtx().putImageData(actLayer()._committed,0,0);renderStroke(actCtx(),curStroke);}
   else{renderStroke(actCtx(),{...curStroke,points:[prev,[x,y]],pressures:curStroke.pressures.slice(-2)});}
-  composite();
+  scheduleComposite();
   if(curStroke.points.length%8===0){wsSend({type:'draw',stroke:{...curStroke}});showSyncSpin();}
 }
 function onUp(){
@@ -1588,6 +1591,8 @@ function setRole(role,wordOrHint,round){
   isDrawer=role==='drawer';
   document.getElementById('toolbar').classList.toggle('visible',isDrawer);
   document.getElementById('chat-panel').classList.add('visible');
+  // Hide waiting overlay when actively playing (drawer or guesser)
+  document.getElementById('waiting-overlay').classList.add('hidden');
   const guessRow=document.getElementById('guess-row');
   if(isDrawer){
     // Drawer cannot guess — hide guess input, show drawing info
@@ -1627,10 +1632,10 @@ function setRole(role,wordOrHint,round){
     updateHintDisplay('');
   }else{
     currentWord='';
-    // Show blank placeholder tiles for guessers
+    // Show blank placeholder tiles for guessers — letter count visible from the start
     const hint=typeof wordOrHint==='number'?'_'.repeat(wordOrHint):wordOrHint;
-    // word-display shows short info, hint-display shows the tiles
-    wd.textContent=`${hint.replace(/_/g,'_').split('').filter(c=>c!=' ').length} letters`;
+    const lc=typeof wordOrHint==='number'?wordOrHint:hint.replace(/ /g,'').length;
+    wd.textContent=`${lc} letters`;
     updateHintDisplay(hint);
     setTimeout(fitCanvas,50);addLog(`Role: GUESSER — hint: ${hint}`,'round');
   }
@@ -1872,11 +1877,20 @@ function connect(){
         if(m.role==='drawer'&&!m.reconnect)clearAll();
         setRole(m.role,m.role==='drawer'?m.word:m.hint,m.round);
         break;
+      case'first_stroke':
+        // Drawer started — hint button now active in Telegram chat caption
+        if(!isDrawer){
+          const wd=document.getElementById('word-display');
+          const lc=(wd.textContent.match(/\d+/)||['?'])[0];
+          wd.textContent=`${lc} letters — hint in 30s`;
+        }
+        break;
       case'hint':
         updateHintDisplay(m.hint);
-        document.getElementById('word-display').textContent=`${m.hint.replace(/ /g,'').length} letters`;
-        addChat('sys',`💡 Hint revealed`);
-        // Haptic only — hint text already updated in Telegram chat caption by server
+        {const lc=m.hint.replace(/ /g,'').length;
+        const nextSec=m.nextCooldownMs?Math.round(m.nextCooldownMs/1000):15;
+        document.getElementById('word-display').textContent=`${lc} letters — next hint in ${nextSec}s`;}
+        addChat('sys','💡 Hint revealed');
         window.Telegram?.WebApp?.HapticFeedback?.notificationOccurred('warning');
         sfxHint();break;
       case'word_skipped':
@@ -1892,10 +1906,17 @@ function connect(){
         window.Telegram?.WebApp?.HapticFeedback?.notificationOccurred('success');
         if(m.board){updatePlayers(m.board);updateLb(m.board);}break;
       case'round_end':
-        if(_txActive)cancelTransform(); // never leave transform stuck between rounds
+        if(_txActive)cancelTransform();
         sfxRoundEnd();
-        // Telegram native popup — replaces all DOM overlays
-        {
+        if(m.keepDrawing&&isDrawer){
+          // Someone guessed — drawer keeps canvas, no popup, just a banner
+          const b=document.createElement('div');
+          b.style.cssText='position:fixed;top:58px;left:50%;transform:translateX(-50%);background:rgba(0,180,80,.93);color:#fff;padding:8px 22px;border-radius:20px;font-weight:700;font-size:.88rem;z-index:999;pointer-events:none;box-shadow:0 2px 12px rgba(0,0,0,.35)';
+          b.textContent='\uD83C\uDF89 '+(m.guesser||'Someone')+' guessed it! Keep drawing or close.';
+          document.body.appendChild(b);setTimeout(()=>b.remove(),5000);
+          // Don't reset toolbar — drawer stays active
+        }else{
+          // Normal round end — show native popup
           const tg=window.Telegram?.WebApp;
           const emoji=m.guesser?'🎉':(m.reason==='all_hints'?'🔤':'😮');
           const title=m.guesser?`${m.guesser} guessed it!`:(m.reason==='all_hints'?'All hints shown!':'Round over');
@@ -1903,18 +1924,18 @@ function connect(){
           const m2=['🥇','🥈','🥉'];
           const lbText=board.length?'\n\n📊 '+board.slice(0,5).map(({rank,name,score})=>`${m2[rank-1]||rank+'.'} ${name} ${score}pts`).join('  |  '):'';
           const msg=`${emoji} ${title}\n🎯 Word: ${m.word}${lbText}`;
-          if(tg){
-            tg.HapticFeedback?.notificationOccurred(m.guesser?'success':'error');
-            tg.showPopup({title:'Round Over',message:msg,buttons:[{type:'close'}]});
-          }
+          if(tg){tg.HapticFeedback?.notificationOccurred(m.guesser?'success':'error');tg.showPopup({title:'Round Over',message:msg,buttons:[{type:'close'}]});}
         }
         if(m.board){updatePlayers(m.board);updateLb(m.board);}
         if(m.word&&m.drawerName)saveToGallery(m.word,m.drawerName);
         updateHintDisplay('');
         document.getElementById('word-display').textContent='waiting…';
         document.getElementById('role-pill').className='role-pill';document.getElementById('role-pill').textContent='—';
-        if(!m.drawerFinish||!isDrawer){document.getElementById('toolbar').classList.remove('visible');isDrawer=false;}
+        if(!m.keepDrawing){
+          if(!m.drawerFinish||!isDrawer){document.getElementById('toolbar').classList.remove('visible');isDrawer=false;}
+        }
         document.getElementById('start-btn').style.display='block';document.getElementById('lb-btn').style.display='inline-block';
+        document.getElementById('waiting-overlay').classList.remove('hidden');
         addLog(`Round end: word=${m.word} guesser=${m.guesser||'none'} reason=${m.reason}`,'round');break;
       case'leaderboard':if(m.board){updatePlayers(m.board);updateLb(m.board);}break;
       case'status':document.getElementById('word-display').textContent=m.message;addChat('sys',m.message);break;

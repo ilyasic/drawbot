@@ -1213,8 +1213,6 @@ function onUp(){
     }
     if(actLayer())actLayer()._committed=actCtx().getImageData(0,0,CW,CH);
     composite();wsSend({type:'draw',stroke:{...curStroke}});showSyncSpin();
-    // Eraser is layer-dependent (destination-out reveals below) — sync vc after stroke
-    if(curStroke.brushType==='eraser')sendVcUpdate();
     addLog(`Stroke: ${curStroke.brushType} pts=${curStroke.points.length}`,'draw');
   }
   curStroke=null;

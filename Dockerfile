@@ -1,12 +1,13 @@
 FROM node:20-slim
-
 WORKDIR /app
 
+# Install dependencies first (cached layer)
 COPY package*.json ./
 RUN npm install
 
-COPY . .
+# Copy server and public files
+COPY server.js ./
+COPY public/ ./public/
 
 EXPOSE 3000
-
-CMD ["node", "server/src/index.js"]
+CMD ["node", "server.js"]

@@ -1,21 +1,22 @@
 {
-  "name": "drawguess-bot",
+  "name": "draw-and-guess",
   "version": "1.0.0",
-  "description": "Draw & Guess Telegram Mini App",
-  "main": "server/src/index.js",
+  "description": "Telegram Mini App — Draw & Guess game",
+  "main": "server.js",
   "scripts": {
-    "start": "node server/src/index.js"
+    "start": "node server.js",
+    "dev": "node --watch server.js"
   },
   "dependencies": {
     "@napi-rs/canvas": "^0.1.44",
     "better-sqlite3": "^9.4.3",
-    "dotenv": "^16.0.0",
-    "express": "^4.18.0",
-    "telegraf": "^4.15.0",
-    "uuid": "^9.0.0",
-    "ws": "^8.13.0"
+    "dotenv": "^16.4.5",
+    "express": "^4.18.3",
+    "telegraf": "^4.16.3",
+    "uuid": "^9.0.1",
+    "ws": "^8.16.0"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   }
 }

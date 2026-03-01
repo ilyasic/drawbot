@@ -362,18 +362,36 @@ function revealNextHint(game){
 }
 
 async function postResult(game,guesser,reason){
-  // Use browser-sourced final image if available (pixel-perfect colors)
-  // Fall back to napi-rs vcJpeg if drawer didn't send final_image
-  const jpeg=game.finalJpeg
-    ? Buffer.from(game.finalJpeg,'base64')
-    : vcJpeg(game);
+  // Wait up to 2s for browser-sourced final_image (pixel-perfect colors)
+  const jpeg = await new Promise(resolve=>{
+    if(game.finalJpeg){resolve(Buffer.from(game.finalJpeg,'base64'));return;}
+    const deadline=Date.now()+2000;
+    const poll=setInterval(()=>{
+      if(game.finalJpeg){clearInterval(poll);resolve(Buffer.from(game.finalJpeg,'base64'));return;}
+      if(Date.now()>=deadline){clearInterval(poll);resolve(vcJpeg(game));console.warn('[postResult] finalJpeg timeout — using vcJpeg fallback');}
+    },100);
+  });
   const lines=[`✅ *Round Over!*`,``,`🖌 Drawer: *${game.drawerName}*`,`🎯 Word: *${game.word}*`,
     guesser?`🏆 Guessed by: *${guesser}*`:reason==='all_hints'?`🔤 All hints revealed!`:reason==='stopped'?`🛑 Stopped.`:`😮 Round ended.`,
     ``,`📊 *Leaderboard:*`,fmtLb(game),``,`_Use /startgame to play again!_`].join('\n');
   try{
-    if(game.pinnedMsgId&&jpeg){await bot.telegram.editMessageMedia(game.chatId,game.pinnedMsgId,null,{type:'photo',media:{source:jpeg,filename:`${game.word}.jpg`},caption:lines,parse_mode:'Markdown'},Markup.inlineKeyboard([]));}
-    else if(jpeg){await bot.telegram.sendPhoto(game.chatId,{source:jpeg,filename:`${game.word}.jpg`},{caption:lines,parse_mode:'Markdown'});}
-    else{await bot.telegram.sendMessage(game.chatId,lines,{parse_mode:'Markdown'});}
+    if(reason==='guess'&&botUsername&&game.drawerTgId){
+      // Guess case: post result as a NEW message with "Continue Drawing" button
+      // Keep the pinned message alive (drawer may want to reopen canvas)
+      const continueUrl=`https://t.me/${botUsername}/${WEBAPP_SHORT_NAME}?startapp=${encodeURIComponent(`${game.chatId}__${game.drawerTgId}`)}`;
+      const kb=Markup.inlineKeyboard([[Markup.button.url('🖌 Continue Drawing',continueUrl)],[Markup.button.callback('▶ New Round',`new_round_btn:${game.chatId}`)]]);
+      if(jpeg){await bot.telegram.sendPhoto(game.chatId,{source:jpeg,filename:`${game.word}.jpg`},{caption:lines,parse_mode:'Markdown',...kb});}
+      else{await bot.telegram.sendMessage(game.chatId,lines,{parse_mode:'Markdown',...kb});}
+      // Also update the pinned message to show the result image with continue button
+      if(game.pinnedMsgId&&jpeg){
+        try{await bot.telegram.editMessageMedia(game.chatId,game.pinnedMsgId,null,{type:'photo',media:{source:jpeg,filename:`${game.word}.jpg`},caption:`🖌 *${game.drawerName}*'s canvas\n\nRound over! Tap to continue drawing.`,parse_mode:'Markdown'},Markup.inlineKeyboard([[Markup.button.url('🖌 Continue Drawing',continueUrl)]]));}catch{}
+      }
+    } else {
+      // Done/timeout/stopped: replace pinned message with result
+      if(game.pinnedMsgId&&jpeg){await bot.telegram.editMessageMedia(game.chatId,game.pinnedMsgId,null,{type:'photo',media:{source:jpeg,filename:`${game.word}.jpg`},caption:lines,parse_mode:'Markdown'},Markup.inlineKeyboard([]));}
+      else if(jpeg){await bot.telegram.sendPhoto(game.chatId,{source:jpeg,filename:`${game.word}.jpg`},{caption:lines,parse_mode:'Markdown'});}
+      else{await bot.telegram.sendMessage(game.chatId,lines,{parse_mode:'Markdown'});}
+    }
   }catch(e){console.error('[postResult]',e.message);try{await bot.telegram.sendMessage(game.chatId,lines,{parse_mode:'Markdown'});}catch{}}
 }
 
@@ -387,13 +405,15 @@ async function endGame(game,guesser,reason){
   broadcast(game,{type:'round_end',word:game.word,drawerName:game.drawerName,guesser:guesser||null,reason,board:leaderboard(game)},game.drawerWsId);
   await postResult(game,guesser,reason);
   const savedScores=new Map(game.scores);
+  // On guess: keep pinnedMsgId alive so drawer can reopen canvas; clear it otherwise
+  const keepPinned=reason==='guess';
   game.vc=null;game.word=null;game.hintRevealed=[];game.strokes=[];game.strokesUndo=[];
   game.firstStrokeDrawn=false;game.lastHintAt=0;game.drawerTgId=null;game.drawerName='';
-  game.drawerWsId=null;game.pinnedMsgId=null;game.scores=savedScores;
-  // Keep finalJpeg in game for DB — it's the permanent record of this canvas
+  game.drawerWsId=null;if(!keepPinned)game.pinnedMsgId=null;game.scores=savedScores;
   setTimeout(()=>{
     game.phase='idle';
-    game.canvasId=game.chatId; // reset canvasId to chatId for next round
+    game.canvasId=game.chatId;
+    game.pinnedMsgId=null; // clear after 3s regardless
     persistGame(game);
   },3000);
 }
@@ -442,6 +462,20 @@ bot.action(/^claim_draw:(.+)$/,async(ctx)=>{
 });
 
 bot.action(/^noop:.+$/,async(ctx)=>{await ctx.answerCbQuery('⏳ Wait for the first stroke!');});
+bot.action(/^new_round_btn:(.+)$/,async(ctx)=>{
+  const chatId=ctx.match[1],game=getOrMakeGame(chatId);
+  await ctx.answerCbQuery('Starting new round…');
+  if(game.phase==='waiting_drawer'||game.phase==='drawing')return;
+  game.phase='waiting_drawer';game.scores=new Map();game.strokes=[];game.strokesUndo=[];
+  game.word=null;game.drawerTgId=null;game.drawerName='';game.drawerWsId=null;
+  game.pinnedMsgId=null;game.vc=null;game.finalJpeg=null;game.status='active';
+  persistGame(game);
+  bot.telegram.sendMessage(chatId,`🎨 *Draw & Guess!*\n\nWho wants to draw? ✏️`,
+    {parse_mode:'Markdown',...Markup.inlineKeyboard([[Markup.button.callback('✏️ I Want to Draw!',`claim_draw:${chatId}`)]])})
+    .then(m=>{game.pinnedMsgId=m.message_id;bot.telegram.pinChatMessage(chatId,m.message_id,{disable_notification:true}).catch(()=>{});persistDebounced(game);})
+    .catch(e=>console.error('[new_round_btn]',e.message));
+  broadcast(game,{type:'status',message:'Waiting for a drawer… check the group!'});
+});
 bot.action(/^hint:(.+)$/,async(ctx)=>{
   // canvasId-based routing for hints
   const chatId=ctx.match[1];
@@ -493,8 +527,13 @@ wss.on('connection',(ws,req)=>{
   ws.send(JSON.stringify({type:'init',strokes:game.strokes,players:game.clients.size,board:leaderboard(game),canvasId:game.canvasId}));
   if(isDrawer){game.drawerWsId=wsId;ws.send(JSON.stringify({type:'role',role:'drawer',word:game.word,round:1,reconnect:game.strokes.length>0}));}
   else if(game.phase==='drawing'){ws.send(JSON.stringify({type:'role',role:'guesser',hint:buildHint(game.word,game.hintRevealed),round:1}));ws.send(JSON.stringify({type:'status',message:`${game.drawerName} is drawing! Guess in chat!`}));}
+  else if(tgId&&tgId===game.drawerTgId&&(game.phase==='ended'||game.phase==='idle')){
+    // Drawer reconnecting after round ended — let them in for free drawing (not part of game)
+    game.drawerWsId=wsId;
+    ws.send(JSON.stringify({type:'role',role:'drawer_free',word:null,round:0,reconnect:true}));
+    ws.send(JSON.stringify({type:'status',message:'Round over — you can keep drawing freely!'}));
+  }
   else{
-    // No active game — lock the canvas, don't let anyone in
     ws.send(JSON.stringify({type:'locked',message:'No active game. Start one with /startgame in the group!'}));
     setTimeout(()=>ws.close(),500);
     return;
@@ -519,11 +558,14 @@ wss.on('connection',(ws,req)=>{
         if(inc.points&&inc.points.length>300){const step=Math.ceil(inc.points.length/300);inc.points=inc.points.filter((_,i)=>i%step===0||i===inc.points.length-1);if(inc.pressures)inc.pressures=inc.pressures.filter((_,i)=>i%step===0||i===inc.pressures.length-1);}
         if(inc.strokeId){const ei=game.strokes.findIndex(s=>s.strokeId===inc.strokeId);if(ei!==-1){game.strokes[ei]=inc;vcPaint(game,inc);}else{game.strokesUndo.push(inc);game.strokes.push(inc);if(game.strokesUndo.length>30)game.strokesUndo.shift();vcPaint(game,inc);}}
         else{game.strokesUndo.push(inc);game.strokes.push(inc);if(game.strokesUndo.length>30)game.strokesUndo.shift();vcPaint(game,inc);}
-        broadcast(game,{type:'draw',stroke:inc},wsId);
-        if(game.strokes.length>0&&game.strokes.length%20===0){const j=vcJpeg(game);if(j){const snap={brushType:'_snapshot',pngB64:j.toString('base64')};game.strokes=[snap];game.strokesUndo=[snap];persistDebounced(game,400);console.log('[game] Flattened');}}
-        else if(game.strokes.length%5===0)persistDebounced(game,800);
-        if(!game.firstStrokeDrawn){game.firstStrokeDrawn=true;game.roundStartTime=Date.now();persistDebounced(game,200);setTimeout(()=>pushCanvas(game),500);broadcast(game,{type:'first_stroke'},game.drawerWsId);}
-        else{scheduleUpdate(game);}
+        // Only broadcast/push to Telegram during active game — not in drawer_free mode
+        if(game.phase==='drawing'){
+          broadcast(game,{type:'draw',stroke:inc},wsId);
+          if(game.strokes.length>0&&game.strokes.length%20===0){const j=vcJpeg(game);if(j){const snap={brushType:'_snapshot',pngB64:j.toString('base64')};game.strokes=[snap];game.strokesUndo=[snap];persistDebounced(game,400);console.log('[game] Flattened');}}
+          else if(game.strokes.length%5===0)persistDebounced(game,800);
+          if(!game.firstStrokeDrawn){game.firstStrokeDrawn=true;game.roundStartTime=Date.now();persistDebounced(game,200);setTimeout(()=>pushCanvas(game),500);broadcast(game,{type:'first_stroke'},game.drawerWsId);}
+          else{scheduleUpdate(game);}
+        }
         }break;
       case'undo':
         if(wsId!==game.drawerWsId)return;

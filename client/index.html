@@ -1205,16 +1205,18 @@ function sendVcUpdate(){
   }catch(e){console.error('[vc_update]',e);}
 }
 function sendFinalImage(cb){
-  // Send pixel-perfect flattened JPEG to server for the final chat photo
-  // Only from drawer, only once at natural round end — zero cost during drawing
   if(!isDrawer){if(cb)cb();return;}
   try{
+    // Capture exactly what the drawer sees: bgCv (white) + layersCv (composited layers)
+    // This is pixel-identical to the screen — no flattenTo approximation needed
     const tmp=document.createElement('canvas');tmp.width=CW;tmp.height=CH;
-    flattenTo(tmp.getContext('2d'));
+    const tc=tmp.getContext('2d');
+    tc.drawImage(bgCv,0,0);       // white background
+    tc.drawImage(layersCv,0,0);   // all layers composited exactly as shown
     wsSend({type:'final_image',data:tmp.toDataURL('image/jpeg',0.92)});
     addLog('Final image sent to server','system');
   }catch(e){console.error('[final_image]',e);}
-  if(cb)setTimeout(cb,100); // let WS send before proceeding
+  if(cb)setTimeout(cb,100);
 }
 function sendVcUpdate(){
 // Send flattened canvas to server so virtual canvas matches client exactly.
@@ -1622,53 +1624,46 @@ function showLeaderboard(){
 
 let isDrawer=false;
 function setRole(role,wordOrHint,round){
-  isDrawer=role==='drawer';
+  isDrawer=role==='drawer'||role==='drawer_free';
   document.getElementById('toolbar').classList.toggle('visible',isDrawer);
   document.getElementById('chat-panel').classList.add('visible');
-  // Hide waiting overlay when actively playing (drawer or guesser)
   document.getElementById('waiting-overlay').classList.add('hidden');
   const guessRow=document.getElementById('guess-row');
   if(isDrawer){
-    // Drawer cannot guess — hide guess input, show drawing info
     document.getElementById('lb-btn').style.display='inline-block';
     guessRow.style.display='none';
     document.getElementById('hint-display').style.display='none';
   }else{
-    // Use Telegram MainButton for guessing — native, always visible, zero CSS
-    guessRow.style.display='none'; // hide custom input row
+    guessRow.style.display='none';
     const tg=window.Telegram?.WebApp;
     if(tg){
-      tg.MainButton.setText('💬 Type Guess');
-      tg.MainButton.show();
-      tg.MainButton.onClick(()=>{
-        // Telegram has no native text input — show popup with text field fallback
-        // Use prompt() which works in Telegram mini app
-        const guess=prompt('Your guess:');
-        if(guess&&guess.trim()){
-          const t=guess.trim();
-          wsSend({type:'guess',text:t});
-          addChat('me',t);
-        }
-      });
-    }else{
-      // Fallback for browser testing
-      guessRow.style.display='flex';
-      document.getElementById('guess-in').disabled=false;
-    }
+      tg.MainButton.setText('💬 Type Guess');tg.MainButton.show();
+      tg.MainButton.onClick(()=>{const guess=prompt('Your guess:');if(guess&&guess.trim()){const t=guess.trim();wsSend({type:'guess',text:t});addChat('me',t);}});
+    }else{guessRow.style.display='flex';document.getElementById('guess-in').disabled=false;}
   }
-  const pill=document.getElementById('role-pill');pill.className='role-pill '+role;pill.textContent=isDrawer?'DRAWING':'GUESSING';
+  const pill=document.getElementById('role-pill');
+  if(role==='drawer_free'){
+    pill.className='role-pill drawer';pill.textContent='FREE DRAW';
+  }else{
+    pill.className='role-pill '+role;pill.textContent=isDrawer?'DRAWING':'GUESSING';
+  }
   const wd=document.getElementById('word-display');
-  if(isDrawer){
-    currentWord=wordOrHint;
-    wd.textContent=wordOrHint.toUpperCase();
-    document.getElementById('s-current-word').textContent=wordOrHint.toUpperCase();
+  if(role==='drawer_free'){
+    currentWord='';
+    wd.textContent='Free Drawing';
+    document.getElementById('s-current-word').textContent='—';
+    showToast('Draw freely — round is over','ok');
+    updateHintDisplay('');
+  }else if(isDrawer){
+    currentWord=wordOrHint||'';
+    wd.textContent=(wordOrHint||'').toUpperCase();
+    document.getElementById('s-current-word').textContent=(wordOrHint||'').toUpperCase();
     showToast(`Word: ${wordOrHint}`,'ok');sfxRoundStart();addLog(`Round started — you are DRAWER`,'round');
     updateHintDisplay('');
   }else{
     currentWord='';
-    // Show blank placeholder tiles for guessers — letter count visible from the start
     const hint=typeof wordOrHint==='number'?'_'.repeat(wordOrHint):wordOrHint;
-    const lc=typeof wordOrHint==='number'?wordOrHint:hint.replace(/ /g,'').length;
+    const lc=typeof wordOrHint==='number'?wordOrHint:(hint||'').replace(/ /g,'').length;
     wd.textContent=`${lc} letters`;
     updateHintDisplay(hint);
     setTimeout(fitCanvas,50);addLog(`Role: GUESSER — hint: ${hint}`,'round');
@@ -1910,7 +1905,8 @@ function connect(){
       }
       case'role':
         if(m.role==='drawer'&&!m.reconnect)clearAll();
-        setRole(m.role,m.role==='drawer'?m.word:m.hint,m.round);
+        // drawer_free: never clear — drawer keeps their canvas to continue drawing
+        setRole(m.role,m.role==='drawer'?m.word:(m.role==='drawer_free'?null:m.hint),m.round);
         break;
       case'first_stroke':
         // Drawer started — hint button now active in Telegram chat caption
@@ -1947,12 +1943,16 @@ function connect(){
         // Send final image for timeout/done cases (guess case handled by score_update)
         if(isDrawer&&!m.keepDrawing&&!m.guesser)sendFinalImage(null);
         if(m.keepDrawing&&isDrawer){
-          // Someone guessed — drawer keeps canvas, no popup, just a banner
+          // Someone guessed — drawer keeps canvas active, show persistent overlay
+          // Remove any existing continue overlay
+          document.getElementById('continue-overlay')?.remove();
           const b=document.createElement('div');
-          b.style.cssText='position:fixed;top:58px;left:50%;transform:translateX(-50%);background:rgba(0,180,80,.93);color:#fff;padding:8px 22px;border-radius:20px;font-weight:700;font-size:.88rem;z-index:999;pointer-events:none;box-shadow:0 2px 12px rgba(0,0,0,.35)';
-          b.textContent='\uD83C\uDF89 '+(m.guesser||'Someone')+' guessed it! Keep drawing or close.';
-          document.body.appendChild(b);setTimeout(()=>b.remove(),5000);
-          // Don't reset toolbar — drawer stays active
+          b.id='continue-overlay';
+          b.style.cssText='position:fixed;top:54px;left:0;right:0;background:rgba(0,150,60,.95);color:#fff;padding:10px 16px;display:flex;align-items:center;justify-content:space-between;z-index:900;font-size:.85rem;font-weight:700;';
+          b.innerHTML=`<span>🎉 ${m.guesser||'Someone'} guessed it!</span><button onclick="this.parentElement.remove()" style="background:rgba(255,255,255,.25);border:none;color:#fff;padding:4px 10px;border-radius:12px;font-size:.78rem;cursor:pointer;font-weight:700">✕ dismiss</button>`;
+          document.body.appendChild(b);
+          // Toolbar stays fully visible — drawer can keep drawing freely
+          // waiting-overlay stays hidden
         }else{
           // Normal round end — show native popup
           const tg=window.Telegram?.WebApp;
@@ -1964,16 +1964,16 @@ function connect(){
           const msg=`${emoji} ${title}\n🎯 Word: ${m.word}${lbText}`;
           if(tg){tg.HapticFeedback?.notificationOccurred(m.guesser?'success':'error');tg.showPopup({title:'Round Over',message:msg,buttons:[{type:'close'}]});}
         }
-        if(m.board){updatePlayers(m.board);updateLb(m.board);}
+        if(m.board){updatePlayers(m.board);updateLb(m.board);window._lastBoard=m.board;}
         if(m.word&&m.drawerName)saveToGallery(m.word,m.drawerName);
-        updateHintDisplay('');
-        document.getElementById('word-display').textContent='waiting…';
-        document.getElementById('role-pill').className='role-pill';document.getElementById('role-pill').textContent='—';
         if(!m.keepDrawing){
+          updateHintDisplay('');
+          document.getElementById('word-display').textContent='waiting…';
+          document.getElementById('role-pill').className='role-pill';document.getElementById('role-pill').textContent='—';
           if(!m.drawerFinish||!isDrawer){document.getElementById('toolbar').classList.remove('visible');isDrawer=false;}
+          document.getElementById('start-btn').style.display='block';document.getElementById('lb-btn').style.display='inline-block';
+          document.getElementById('waiting-overlay').classList.remove('hidden');
         }
-        document.getElementById('start-btn').style.display='block';document.getElementById('lb-btn').style.display='inline-block';
-        document.getElementById('waiting-overlay').classList.remove('hidden');
         addLog(`Round end: word=${m.word} guesser=${m.guesser||'none'} reason=${m.reason}`,'round');break;
       case'new_canvas':
         myCanvasId=m.canvasId||myCanvasId;

@@ -105,7 +105,7 @@ app.get('/ping',(_,res)=>res.send('pong'));
 const WEBHOOK_PATH=`/webhook/${WEBHOOK_SECRET}`,WEBHOOK_URL=`${PUBLIC_URL}${WEBHOOK_PATH}`;
 app.post(WEBHOOK_PATH,async(req,res)=>{res.sendStatus(200);try{await bot.handleUpdate(req.body);}catch(e){console.error('[webhook]',e.message);}});
 app.get(WEBHOOK_PATH,(_,res)=>res.send('Webhook active ✅'));
-app.use(express.static(path.join(__dirname,'public')));
+app.use(express.static(path.join(__dirname,'../../client')));
 
 const WORDS=['cat','dog','sun','car','fish','bird','moon','tree','house','flower','apple','pizza','smile','heart','star','cake','boat','rain','snow','book','guitar','elephant','rainbow','castle','dragon','piano','volcano','butterfly','telescope','snowman','dinosaur','waterfall','helicopter','cactus','penguin','banana','scissors','telephone','umbrella','bicycle','submarine','tornado','lighthouse','compass','anchor','mermaid','unicorn','wizard','knight','ninja','pirate','robot','alien','crown','bridge'];
 function pickWord(){return WORDS[Math.floor(Math.random()*WORDS.length)];}
@@ -453,6 +453,14 @@ bot.action(/^claim_draw:(.+)$/,async(ctx)=>{
   game.strokes=[];game.strokesUndo=[];game.roundStartTime=Date.now();
   game.vc=makeVC(game.canvasW,game.canvasH);
   persistGame(game);await ctx.answerCbQuery('✅ Open your canvas!');
+  // If drawer already has a WS open (waiting state), promote them to drawer now
+  for(const [wid,cl] of game.clients){
+    if(cl.tgId===tgId&&cl.ws.readyState===WebSocket.OPEN){
+      game.drawerWsId=wid;
+      cl.ws.send(JSON.stringify({type:'role',role:'drawer',word:game.word,round:1,reconnect:false}));
+      break;
+    }
+  }
   // canvasId in URL so drawer reconnects to correct canvas always
   const url=`https://t.me/${botUsername}/${WEBAPP_SHORT_NAME}?startapp=${encodeURIComponent(`${chatId}__${tgId}`)}`;
   try{await bot.telegram.editMessageText(chatId,game.pinnedMsgId,null,
@@ -519,22 +527,27 @@ wss.on('connection',(ws,req)=>{
   const game=getOrMakeGame(chatId);
   // If client specified a canvasId and it doesn't match current, 
   // they may be reconnecting to an old finished canvas — still use current game
-  const isDrawer=tgId&&tgId===game.drawerTgId&&game.phase==='drawing';
-  if(isDrawer&&game.drawerWsId){const old=game.clients.get(game.drawerWsId);if(old&&old.ws.readyState===WebSocket.OPEN)old.ws.close();game.clients.delete(game.drawerWsId);game.drawerWsId=null;}
+  const isDrawer = tgId && tgId === game.drawerTgId && game.phase === 'drawing';
+  if(isDrawer && game.drawerWsId){const old=game.clients.get(game.drawerWsId);if(old&&old.ws.readyState===WebSocket.OPEN)old.ws.close();game.clients.delete(game.drawerWsId);game.drawerWsId=null;}
   game.clients.set(wsId,{ws,name,tgId});
-  // game is always keyed by chatId — no separate tracking needed
-  console.log(`[ws] +${name} chatId=${chatId} canvasId=${game.canvasId} clients=${game.clients.size} drawer=${isDrawer}`);
+  console.log(`[ws] +${name} chatId=${chatId} phase=${game.phase} drawer=${isDrawer} tgId=${tgId} drawerTgId=${game.drawerTgId}`);
   ws.send(JSON.stringify({type:'init',strokes:game.strokes,players:game.clients.size,board:leaderboard(game),canvasId:game.canvasId}));
-  if(isDrawer){game.drawerWsId=wsId;ws.send(JSON.stringify({type:'role',role:'drawer',word:game.word,round:1,reconnect:game.strokes.length>0}));}
-  else if(game.phase==='drawing'){ws.send(JSON.stringify({type:'role',role:'guesser',hint:buildHint(game.word,game.hintRevealed),round:1}));ws.send(JSON.stringify({type:'status',message:`${game.drawerName} is drawing! Guess in chat!`}));}
-  else if(tgId&&tgId===game.drawerTgId&&(game.phase==='ended'||game.phase==='idle')){
-    // Drawer reconnecting after round ended — let them in for free drawing (not part of game)
+  if(isDrawer){
+    game.drawerWsId=wsId;
+    ws.send(JSON.stringify({type:'role',role:'drawer',word:game.word,round:1,reconnect:game.strokes.length>0}));
+  } else if(game.phase==='drawing'){
+    ws.send(JSON.stringify({type:'role',role:'guesser',hint:buildHint(game.word,game.hintRevealed),round:1}));
+    ws.send(JSON.stringify({type:'status',message:`${game.drawerName} is drawing! Guess in chat!`}));
+  } else if(tgId && tgId===game.drawerTgId && (game.phase==='ended'||game.phase==='idle')){
+    // Drawer reconnecting after round ended — free drawing mode
     game.drawerWsId=wsId;
     ws.send(JSON.stringify({type:'role',role:'drawer_free',word:null,round:0,reconnect:true}));
-    ws.send(JSON.stringify({type:'status',message:'Round over — you can keep drawing freely!'}));
-  }
-  else{
-    ws.send(JSON.stringify({type:'locked',message:'No active game. Start one with /startgame in the group!'}));
+  } else if(game.phase==='waiting_drawer'||game.phase==='idle'){
+    // Game exists but no drawer yet, or between rounds — show waiting screen, not locked
+    ws.send(JSON.stringify({type:'waiting',message:'⏳ Waiting for someone to tap "I Want to Draw!" in the group.'}));
+  } else {
+    // No chatId or completely unknown state — lock
+    ws.send(JSON.stringify({type:'locked',message:'No active game. Use /startgame in the group!'}));
     setTimeout(()=>ws.close(),500);
     return;
   }

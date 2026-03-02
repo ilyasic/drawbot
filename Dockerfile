@@ -5,9 +5,10 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm install
 
-# Copy server and public files
+# Copy server and client files
 COPY server.js ./
-COPY public/ ./public/
+COPY index.html ./
+COPY style.css ./
 
 EXPOSE 3000
 CMD ["node", "server.js"]

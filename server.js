@@ -105,8 +105,9 @@ app.get('/ping',(_,res)=>res.send('pong'));
 const WEBHOOK_PATH=`/webhook/${WEBHOOK_SECRET}`,WEBHOOK_URL=`${PUBLIC_URL}${WEBHOOK_PATH}`;
 app.post(WEBHOOK_PATH,async(req,res)=>{res.sendStatus(200);try{await bot.handleUpdate(req.body);}catch(e){console.error('[webhook]',e.message);}});
 app.get(WEBHOOK_PATH,(_,res)=>res.send('Webhook active ✅'));
-app.use(express.static(path.join(__dirname)));
-app.get('*',(req,res)=>res.sendFile(path.join(__dirname,'index.html')));
+const CLIENT_DIR = path.join(__dirname);
+app.use(express.static(CLIENT_DIR));
+app.get('/', (_,res) => res.sendFile(path.join(CLIENT_DIR,'index.html')));
 
 const WORDS=['cat','dog','sun','car','fish','bird','moon','tree','house','flower','apple','pizza','smile','heart','star','cake','boat','rain','snow','book','guitar','elephant','rainbow','castle','dragon','piano','volcano','butterfly','telescope','snowman','dinosaur','waterfall','helicopter','cactus','penguin','banana','scissors','telephone','umbrella','bicycle','submarine','tornado','lighthouse','compass','anchor','mermaid','unicorn','wizard','knight','ninja','pirate','robot','alien','crown','bridge'];
 function pickWord(){return WORDS[Math.floor(Math.random()*WORDS.length)];}
